@@ -109,6 +109,10 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
     assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'DELETE')).status, 200);
 
+    const readiness = await request('/setup-readiness').then((response) => response.json()) as { ready: boolean; completedSteps: number };
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.completedSteps, 4);
+
     const invalidResponse = await request('/cold-storages', 'POST', {
       name: 'Invalid',
       capacityKg: 100,

@@ -134,6 +134,7 @@ function sensorAssignmentInput(body: unknown): SensorAssignmentInput {
 export function createSetupRouter(repository: SetupRepository) {
   const router = Router();
 
+  router.get('/setup-readiness', async (_request, response) => response.json(await repository.setupReadiness()));
   router.get('/cold-storages', async (_request, response) => response.json(await repository.listColdStorages()));
   router.post('/cold-storages', async (request, response) => response.status(201).json(await repository.createColdStorage(coldStorageInput(request.body))));
   router.put('/cold-storages/:id', async (request, response) => response.json(await repository.updateColdStorage(resourceId(request.params.id), coldStorageInput(request.body))));
