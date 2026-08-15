@@ -1,8 +1,10 @@
 export const coldStorageStatuses = ['AVAILABLE', 'FULL', 'UNAVAILABLE'] as const;
 export const vehicleStatuses = ['AVAILABLE', 'ASSIGNED', 'DELAYED', 'UNAVAILABLE'] as const;
+export const destinationStatuses = ['AVAILABLE', 'UNAVAILABLE'] as const;
 
 export type ColdStorageStatus = typeof coldStorageStatuses[number];
 export type VehicleStatus = typeof vehicleStatuses[number];
+export type DestinationStatus = typeof destinationStatuses[number];
 
 export type ColdStorage = {
   id: string;
@@ -27,3 +29,17 @@ export type Vehicle = {
 };
 
 export type VehicleInput = Omit<Vehicle, 'id' | 'updatedAt'>;
+
+export type Destination = {
+  id: string;
+  name: string;
+  address: string;
+  travelMinutes: number;
+  receivingStart: string;
+  receivingEnd: string;
+  status: DestinationStatus;
+  notes: string | null;
+  updatedAt: string;
+};
+
+export type DestinationInput = Omit<Destination, 'id' | 'updatedAt'>;

@@ -8,10 +8,11 @@ import { createDatabase } from '../persistence/database';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
-test('manages cold storage and vehicle resources', { skip: !connectionString }, async () => {
+test('manages setup resources', { skip: !connectionString }, async () => {
   const database = createDatabase(connectionString);
   await database.coldStorage.deleteMany();
   await database.vehicle.deleteMany();
+  await database.destination.deleteMany();
   const server = createApp(database).listen(0);
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
@@ -63,6 +64,30 @@ test('manages cold storage and vehicle resources', { skip: !connectionString }, 
     assert.equal(updatedVehicleResponse.status, 200);
     assert.equal((await updatedVehicleResponse.json() as { status: string }).status, 'AVAILABLE');
 
+    const destinationResponse = await request('/destinations', 'POST', {
+      name: 'Processor A',
+      address: 'Tanjung Perak, Surabaya',
+      travelMinutes: 45,
+      receivingStart: '08:00',
+      receivingEnd: '16:00',
+      status: 'AVAILABLE',
+      notes: 'Call before dispatch',
+    });
+    assert.equal(destinationResponse.status, 201);
+    const destination = await destinationResponse.json() as { id: string };
+
+    const updatedDestinationResponse = await request(`/destinations/${destination.id}`, 'PUT', {
+      name: 'Processor A',
+      address: 'Tanjung Perak, Surabaya',
+      travelMinutes: 50,
+      receivingStart: '09:00',
+      receivingEnd: '17:00',
+      status: 'UNAVAILABLE',
+      notes: null,
+    });
+    assert.equal(updatedDestinationResponse.status, 200);
+    assert.equal((await updatedDestinationResponse.json() as { status: string }).status, 'UNAVAILABLE');
+
     const invalidResponse = await request('/cold-storages', 'POST', {
       name: 'Invalid',
       capacityKg: 100,
@@ -73,6 +98,7 @@ test('manages cold storage and vehicle resources', { skip: !connectionString }, 
 
     assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'DELETE')).status, 204);
     assert.equal((await request(`/vehicles/${vehicle.id}`, 'DELETE')).status, 204);
+    assert.equal((await request(`/destinations/${destination.id}`, 'DELETE')).status, 204);
   } finally {
     server.close();
     await database.$disconnect();

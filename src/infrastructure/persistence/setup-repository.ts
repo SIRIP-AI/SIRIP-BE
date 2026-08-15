@@ -1,5 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { ColdStorageInput, VehicleInput } from '../../domain/setup/resources';
+import type { ColdStorageInput, DestinationInput, VehicleInput } from '../../domain/setup/resources';
 import { ConflictError, NotFoundError } from '../../domain/setup/errors';
 import type { Database } from './database';
 
@@ -29,6 +29,34 @@ function vehicleResponse(resource: {
     id: resource.id.toString(),
     availableFrom: resource.availableFrom?.toISOString() ?? null,
     updatedAt: resource.updatedAt.toISOString(),
+  };
+}
+
+function destinationResponse(resource: {
+  id: bigint;
+  name: string;
+  address: string;
+  travelMinutes: number;
+  receivingStart: Date;
+  receivingEnd: Date;
+  status: string;
+  notes: string | null;
+  updatedAt: Date;
+}) {
+  return {
+    ...resource,
+    id: resource.id.toString(),
+    receivingStart: resource.receivingStart.toISOString().slice(11, 16),
+    receivingEnd: resource.receivingEnd.toISOString().slice(11, 16),
+    updatedAt: resource.updatedAt.toISOString(),
+  };
+}
+
+function destinationData(input: DestinationInput) {
+  return {
+    ...input,
+    receivingStart: new Date(`1970-01-01T${input.receivingStart}:00.000Z`),
+    receivingEnd: new Date(`1970-01-01T${input.receivingEnd}:00.000Z`),
   };
 }
 
@@ -100,6 +128,34 @@ export class SetupRepository {
   async deleteVehicle(id: bigint) {
     try {
       await this.database.vehicle.delete({ where: { id } });
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async listDestinations() {
+    return (await this.database.destination.findMany({ orderBy: { name: 'asc' } })).map(destinationResponse);
+  }
+
+  async createDestination(input: DestinationInput) {
+    try {
+      return destinationResponse(await this.database.destination.create({ data: destinationData(input) }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async updateDestination(id: bigint, input: DestinationInput) {
+    try {
+      return destinationResponse(await this.database.destination.update({ where: { id }, data: destinationData(input) }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async deleteDestination(id: bigint) {
+    try {
+      await this.database.destination.delete({ where: { id } });
     } catch (error) {
       translateDatabaseError(error);
     }
