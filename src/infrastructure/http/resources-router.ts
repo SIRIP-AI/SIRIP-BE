@@ -10,9 +10,9 @@ import {
   type SensorAssignmentInput,
   type SensorInput,
   type VehicleInput,
-} from '../../domain/setup/resources';
-import { RequestError } from '../../domain/setup/errors';
-import type { SetupRepository } from '../persistence/setup-repository';
+} from '../../domain/resources';
+import { RequestError } from '../../domain/errors';
+import type { ResourceRepository } from '../persistence/resource-repository';
 
 function bodyObject(body: unknown) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
@@ -131,10 +131,9 @@ function sensorAssignmentInput(body: unknown): SensorAssignmentInput {
   return { batchCode: text(value, 'batchCode') };
 }
 
-export function createSetupRouter(repository: SetupRepository) {
+export function createResourcesRouter(repository: ResourceRepository) {
   const router = Router();
 
-  router.get('/setup-readiness', async (_request, response) => response.json(await repository.setupReadiness()));
   router.get('/cold-storages', async (_request, response) => response.json(await repository.listColdStorages()));
   router.post('/cold-storages', async (request, response) => response.status(201).json(await repository.createColdStorage(coldStorageInput(request.body))));
   router.put('/cold-storages/:id', async (request, response) => response.json(await repository.updateColdStorage(resourceId(request.params.id), coldStorageInput(request.body))));

@@ -8,7 +8,7 @@ import { createDatabase } from '../persistence/database';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
-test('manages setup resources', { skip: !connectionString }, async () => {
+test('manages operational resources', { skip: !connectionString }, async () => {
   const database = createDatabase(connectionString);
   await database.temperatureReading.deleteMany();
   await database.sensorSession.deleteMany();
@@ -108,10 +108,6 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     assert.equal((await assignmentResponse.json() as { assignment: { batchCode: string } }).assignment.batchCode, 'B-017');
     assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
     assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'DELETE')).status, 200);
-
-    const readiness = await request('/setup-readiness').then((response) => response.json()) as { ready: boolean; completedSteps: number };
-    assert.equal(readiness.ready, true);
-    assert.equal(readiness.completedSteps, 3);
 
     const invalidResponse = await request('/cold-storages', 'POST', {
       name: 'Invalid',

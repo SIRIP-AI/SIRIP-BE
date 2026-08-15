@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/setup/resources';
-import { ConflictError, NotFoundError } from '../../domain/setup/errors';
+import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/resources';
+import { ConflictError, NotFoundError } from '../../domain/errors';
 import type { Database } from './database';
 
 function coldStorageResponse(resource: {
@@ -101,7 +101,7 @@ function translateDatabaseError(error: unknown): never {
   throw error;
 }
 
-export class SetupRepository {
+export class ResourceRepository {
   constructor(private readonly database: Database) {}
 
   async listColdStorages() {
@@ -261,20 +261,6 @@ export class SetupRepository {
     } catch (error) {
       translateDatabaseError(error);
     }
-  }
-
-  async setupReadiness() {
-    const [coldStorages, vehicles, destinations] = await Promise.all([
-      this.database.coldStorage.count(),
-      this.database.vehicle.count(),
-      this.database.destination.count(),
-    ]);
-    const steps = [
-      { key: 'coldStorages', label: 'Configure cold storage', complete: coldStorages > 0, count: coldStorages },
-      { key: 'vehicles', label: 'Configure trucks', complete: vehicles > 0, count: vehicles },
-      { key: 'destinations', label: 'Configure destinations', complete: destinations > 0, count: destinations },
-    ];
-    return { ready: steps.every((step) => step.complete), completedSteps: steps.filter((step) => step.complete).length, totalSteps: steps.length, steps };
   }
 
   async sensorDiagnostics(id: bigint) {

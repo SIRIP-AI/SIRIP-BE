@@ -1,9 +1,9 @@
 import express, { type ErrorRequestHandler } from 'express';
 
-import { RequestError } from '../../domain/setup/errors';
+import { RequestError } from '../../domain/errors';
 import type { Database } from '../persistence/database';
-import { SetupRepository } from '../persistence/setup-repository';
-import { createSetupRouter } from './setup-router';
+import { ResourceRepository } from '../persistence/resource-repository';
+import { createResourcesRouter } from './resources-router';
 
 export function createApp(database: Database) {
   const app = express();
@@ -18,7 +18,7 @@ export function createApp(database: Database) {
   });
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
-  app.use('/api', createSetupRouter(new SetupRepository(database)));
+  app.use('/api', createResourcesRouter(new ResourceRepository(database)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {
