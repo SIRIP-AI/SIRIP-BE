@@ -194,6 +194,7 @@ model Vehicle {
   capacityKg        Float              @map("capacity_kg")
   status            VehicleStatus
   delayMinutes      Int                @default(0) @map("delay_minutes")
+  restriction       String?
   availableFrom     DateTime?          @map("available_from") @db.Timestamptz
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   operationalEvents OperationalEvent[]

@@ -38,6 +38,14 @@ function status<const T extends readonly string[]>(body: Record<string, unknown>
   return value as T[number];
 }
 
+function nullableText(body: Record<string, unknown>, field: string) {
+  const value = body[field];
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') throw new RequestError(`${field} must be text`, 400);
+  if (value.trim().length > 500) throw new RequestError(`${field} must be at most 500 characters`, 400);
+  return value.trim() || null;
+}
+
 function nullableDateTime(body: Record<string, unknown>, field: string) {
   const value = body[field];
   if (value === null || value === '') return null;
@@ -70,6 +78,7 @@ function vehicleInput(body: unknown): VehicleInput {
     capacityKg: positiveNumber(value, 'capacityKg'),
     status: status(value, 'status', vehicleStatuses),
     delayMinutes: integer(value, 'delayMinutes'),
+    restriction: nullableText(value, 'restriction'),
     availableFrom: nullableDateTime(value, 'availableFrom'),
   };
 }

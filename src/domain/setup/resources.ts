@@ -21,6 +21,7 @@ export type Vehicle = {
   capacityKg: number;
   status: VehicleStatus;
   delayMinutes: number;
+  restriction: string | null;
   availableFrom: string | null;
   updatedAt: string;
 };

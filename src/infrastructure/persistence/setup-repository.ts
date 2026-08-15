@@ -20,6 +20,7 @@ function vehicleResponse(resource: {
   capacityKg: number;
   status: string;
   delayMinutes: number;
+  restriction: string | null;
   availableFrom: Date | null;
   updatedAt: Date;
 }) {

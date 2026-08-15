@@ -46,6 +46,7 @@ test('manages cold storage and vehicle resources', { skip: !connectionString }, 
       capacityKg: 800,
       status: 'DELAYED',
       delayMinutes: 90,
+      restriction: 'Bridge weight restriction',
       availableFrom: '2026-08-15T12:00:00.000Z',
     });
     assert.equal(vehicleResponse.status, 201);
@@ -56,6 +57,7 @@ test('manages cold storage and vehicle resources', { skip: !connectionString }, 
       capacityKg: 800,
       status: 'AVAILABLE',
       delayMinutes: 0,
+      restriction: null,
       availableFrom: null,
     });
     assert.equal(updatedVehicleResponse.status, 200);
