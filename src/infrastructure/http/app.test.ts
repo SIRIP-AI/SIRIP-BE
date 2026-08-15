@@ -1,0 +1,78 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
+import test from 'node:test';
+
+import { createApp } from './app';
+import { createDatabase } from '../persistence/database';
+
+const connectionString = process.env.TEST_DATABASE_URL;
+
+test('manages cold storage and vehicle resources', { skip: !connectionString }, async () => {
+  const database = createDatabase(connectionString);
+  await database.coldStorage.deleteMany();
+  await database.vehicle.deleteMany();
+  const server = createApp(database).listen(0);
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+  const request = (path: string, method = 'GET', body?: object) => fetch(`${baseUrl}${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  try {
+    const coldStorageResponse = await request('/cold-storages', 'POST', {
+      name: 'Cold Room 1',
+      capacityKg: 500,
+      availableCapacityKg: 220,
+      status: 'AVAILABLE',
+    });
+    assert.equal(coldStorageResponse.status, 201);
+    const coldStorage = await coldStorageResponse.json() as { id: string };
+
+    const updatedColdStorageResponse = await request(`/cold-storages/${coldStorage.id}`, 'PUT', {
+      name: 'Cold Room 1',
+      capacityKg: 500,
+      availableCapacityKg: 0,
+      status: 'FULL',
+    });
+    assert.equal(updatedColdStorageResponse.status, 200);
+    assert.equal((await updatedColdStorageResponse.json() as { status: string }).status, 'FULL');
+    assert.equal((await request('/cold-storages').then((response) => response.json()) as unknown[]).length, 1);
+
+    const vehicleResponse = await request('/vehicles', 'POST', {
+      code: 'TR-02',
+      capacityKg: 800,
+      status: 'DELAYED',
+      delayMinutes: 90,
+      availableFrom: '2026-08-15T12:00:00.000Z',
+    });
+    assert.equal(vehicleResponse.status, 201);
+    const vehicle = await vehicleResponse.json() as { id: string };
+
+    const updatedVehicleResponse = await request(`/vehicles/${vehicle.id}`, 'PUT', {
+      code: 'TR-02',
+      capacityKg: 800,
+      status: 'AVAILABLE',
+      delayMinutes: 0,
+      availableFrom: null,
+    });
+    assert.equal(updatedVehicleResponse.status, 200);
+    assert.equal((await updatedVehicleResponse.json() as { status: string }).status, 'AVAILABLE');
+
+    const invalidResponse = await request('/cold-storages', 'POST', {
+      name: 'Invalid',
+      capacityKg: 100,
+      availableCapacityKg: 101,
+      status: 'AVAILABLE',
+    });
+    assert.equal(invalidResponse.status, 400);
+
+    assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'DELETE')).status, 204);
+    assert.equal((await request(`/vehicles/${vehicle.id}`, 'DELETE')).status, 204);
+  } finally {
+    server.close();
+    await database.$disconnect();
+  }
+});

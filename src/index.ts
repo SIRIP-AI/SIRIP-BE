@@ -1,14 +1,18 @@
-import express, { Request, Response } from 'express';
+import { createApp } from './infrastructure/http/app';
+import { createDatabase } from './infrastructure/persistence/database';
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const database = createDatabase();
+const app = createApp(database);
+const port = Number(process.env.PORT ?? 3000);
 
-app.use(express.json());
-
-app.get('/', (req: Request, res: Response) => {
-  res.json({ message: 'hello world' });
+const server = app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+async function shutdown() {
+  server.close();
+  await database.$disconnect();
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
