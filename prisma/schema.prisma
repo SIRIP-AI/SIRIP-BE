@@ -110,6 +110,7 @@ model FishingTrip {
   endedAt    DateTime?         @map("ended_at") @db.Timestamptz
   status     FishingTripStatus
   createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  deletedAt  DateTime?         @map("deleted_at") @db.Timestamptz
   batches    Batch[]
 
   @@map("fishing_trips")
@@ -130,6 +131,7 @@ model Batch {
   currentTemperatureC        Float?        @map("current_temperature_c")
   createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt                  DateTime?     @map("deleted_at") @db.Timestamptz
   fishingTrip                FishingTrip?  @relation(fields: [fishingTripId], references: [id])
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
