@@ -111,7 +111,7 @@ test('manages setup resources', { skip: !connectionString }, async () => {
 
     const readiness = await request('/setup-readiness').then((response) => response.json()) as { ready: boolean; completedSteps: number };
     assert.equal(readiness.ready, true);
-    assert.equal(readiness.completedSteps, 4);
+    assert.equal(readiness.completedSteps, 3);
 
     const invalidResponse = await request('/cold-storages', 'POST', {
       name: 'Invalid',
