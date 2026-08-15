@@ -1,0 +1,281 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum FishingTripStatus {
+  ACTIVE
+  COMPLETED
+}
+
+enum BatchStatus {
+  MONITORING
+  ACTIVE
+  INSPECTION_HOLD
+  HANDED_OVER
+  CLOSED
+}
+
+enum SensorStatus {
+  AVAILABLE
+  ASSIGNED
+  OFFLINE
+  ERROR
+}
+
+enum SensorSessionStatus {
+  ACTIVE
+  COMPLETED
+}
+
+enum ColdStorageStatus {
+  AVAILABLE
+  FULL
+  UNAVAILABLE
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  ASSIGNED
+  DELAYED
+  UNAVAILABLE
+}
+
+enum DestinationStatus {
+  AVAILABLE
+  UNAVAILABLE
+}
+
+enum OperationalEventType {
+  TEMPERATURE_EXCURSION
+  TRUCK_DELAY
+  STORAGE_CHANGE
+  DESTINATION_CHANGE
+  INSPECTION_HOLD
+  OTHER
+}
+
+enum OperationalEventSource {
+  SYSTEM
+  WEB
+  WHATSAPP
+}
+
+enum PlanStatus {
+  PROPOSED
+  ACTIVE
+  SUPERSEDED
+  DISMISSED
+}
+
+enum PlanActionType {
+  STORE
+  LOAD
+  DISPATCH
+  HANDOVER
+  INSPECT
+  OTHER
+}
+
+enum PlanStepStatus {
+  UPCOMING
+  COMPLETED
+  CANCELED
+}
+
+model User {
+  id            BigInt   @id @default(autoincrement())
+  name          String
+  email         String   @unique
+  phone         String
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  approvedPlans Plan[]   @relation("ApprovedPlans")
+
+  @@map("users")
+}
+
+model FishingTrip {
+  id         BigInt            @id @default(autoincrement())
+  code       String            @unique
+  vesselName String            @map("vessel_name")
+  startedAt  DateTime          @map("started_at") @db.Timestamptz
+  endedAt    DateTime?         @map("ended_at") @db.Timestamptz
+  status     FishingTripStatus
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  batches    Batch[]
+
+  @@map("fishing_trips")
+}
+
+model Batch {
+  id                         BigInt        @id @default(autoincrement())
+  code                       String        @unique
+  fishingTripId              BigInt?       @map("fishing_trip_id")
+  weightKg                   Float         @map("weight_kg")
+  grade                      String
+  status                     BatchStatus
+  receivedAt                 DateTime      @map("received_at") @db.Timestamptz
+  handedOverAt               DateTime?     @map("handed_over_at") @db.Timestamptz
+  equivalentQualityAgeDays   Float?        @map("equivalent_quality_age_days")
+  remainingQualityWindowDays Float?        @map("remaining_quality_window_days")
+  qualityEstimateStartedAt   DateTime?     @map("quality_estimate_started_at") @db.Timestamptz
+  currentTemperatureC        Float?        @map("current_temperature_c")
+  createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                  DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  fishingTrip                FishingTrip?  @relation(fields: [fishingTripId], references: [id])
+  sensorSessions             SensorSession[]
+  operationalEvents          OperationalEvent[]
+  planSteps                  PlanStep[]
+
+  @@map("batches")
+}
+
+model Sensor {
+  id         BigInt          @id @default(autoincrement())
+  code       String          @unique
+  deviceUid  String          @unique @map("device_uid")
+  status     SensorStatus
+  lastSeenAt DateTime?       @map("last_seen_at") @db.Timestamptz
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  sessions   SensorSession[]
+
+  @@map("sensors")
+}
+
+model SensorSession {
+  id           BigInt              @id @default(autoincrement())
+  sensorId     BigInt              @map("sensor_id")
+  batchId      BigInt              @map("batch_id")
+  startedAt    DateTime            @map("started_at") @db.Timestamptz
+  endedAt      DateTime?           @map("ended_at") @db.Timestamptz
+  status       SensorSessionStatus
+  lastSyncedAt DateTime?           @map("last_synced_at") @db.Timestamptz
+  sensor       Sensor              @relation(fields: [sensorId], references: [id])
+  batch        Batch               @relation(fields: [batchId], references: [id])
+  readings     TemperatureReading[]
+
+  @@map("sensor_sessions")
+}
+
+model TemperatureReading {
+  id              BigInt        @id @default(autoincrement())
+  sensorSessionId BigInt        @map("sensor_session_id")
+  temperatureC    Float         @map("temperature_c")
+  measuredAt      DateTime      @map("measured_at") @db.Timestamptz
+  receivedAt      DateTime      @map("received_at") @db.Timestamptz
+  readingUid      String        @unique @map("reading_uid")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  sensorSession   SensorSession @relation(fields: [sensorSessionId], references: [id])
+
+  @@map("temperature_readings")
+}
+
+model ColdStorage {
+  id                  BigInt             @id @default(autoincrement())
+  name                String             @unique
+  capacityKg          Float              @map("capacity_kg")
+  availableCapacityKg Float              @map("available_capacity_kg")
+  status              ColdStorageStatus
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  operationalEvents   OperationalEvent[]
+  planSteps           PlanStep[]
+
+  @@map("cold_storages")
+}
+
+model Vehicle {
+  id                BigInt             @id @default(autoincrement())
+  code              String             @unique
+  capacityKg        Float              @map("capacity_kg")
+  status            VehicleStatus
+  delayMinutes      Int                @default(0) @map("delay_minutes")
+  availableFrom     DateTime?          @map("available_from") @db.Timestamptz
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  operationalEvents OperationalEvent[]
+  planSteps         PlanStep[]
+
+  @@map("vehicles")
+}
+
+model Destination {
+  id                BigInt             @id @default(autoincrement())
+  name              String             @unique
+  address           String
+  travelMinutes     Int                @map("travel_minutes")
+  receivingStart    DateTime           @map("receiving_start") @db.Time
+  receivingEnd      DateTime           @map("receiving_end") @db.Time
+  status            DestinationStatus
+  notes             String?
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  operationalEvents OperationalEvent[]
+  planSteps         PlanStep[]
+
+  @@map("destinations")
+}
+
+model OperationalEvent {
+  id             BigInt                 @id @default(autoincrement())
+  type           OperationalEventType
+  source         OperationalEventSource
+  batchId        BigInt?                @map("batch_id")
+  vehicleId      BigInt?                @map("vehicle_id")
+  coldStorageId  BigInt?                @map("cold_storage_id")
+  destinationId  BigInt?                @map("destination_id")
+  rawMessage     String?                @map("raw_message")
+  structuredData Json                   @default("{}") @map("structured_data")
+  occurredAt     DateTime               @map("occurred_at") @db.Timestamptz
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  batch          Batch?                 @relation(fields: [batchId], references: [id])
+  vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id])
+  coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id])
+  destination    Destination?           @relation(fields: [destinationId], references: [id])
+  triggeredPlans Plan[]
+
+  @@map("operational_events")
+}
+
+model Plan {
+  id             BigInt            @id @default(autoincrement())
+  version        Int               @unique
+  status         PlanStatus
+  previousPlanId BigInt?           @map("previous_plan_id")
+  triggerEventId BigInt?           @map("trigger_event_id")
+  reason         String
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
+  approvedById   BigInt?           @map("approved_by")
+  previousPlan   Plan?             @relation("PlanVersions", fields: [previousPlanId], references: [id])
+  revisions      Plan[]            @relation("PlanVersions")
+  triggerEvent   OperationalEvent? @relation(fields: [triggerEventId], references: [id])
+  approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
+  steps          PlanStep[]
+
+  @@map("plans")
+}
+
+model PlanStep {
+  id            BigInt         @id @default(autoincrement())
+  planId        BigInt         @map("plan_id")
+  sequence      Int
+  actionType    PlanActionType @map("action_type")
+  batchId       BigInt         @map("batch_id")
+  coldStorageId BigInt?        @map("cold_storage_id")
+  vehicleId     BigInt?        @map("vehicle_id")
+  destinationId BigInt?        @map("destination_id")
+  scheduledAt   DateTime       @map("scheduled_at") @db.Timestamptz
+  status        PlanStepStatus
+  completedAt   DateTime?      @map("completed_at") @db.Timestamptz
+  notes         String?
+  plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  batch         Batch          @relation(fields: [batchId], references: [id])
+  coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id])
+  vehicle       Vehicle?       @relation(fields: [vehicleId], references: [id])
+  destination   Destination?   @relation(fields: [destinationId], references: [id])
+
+  @@unique([planId, sequence])
+  @@map("plan_steps")
+}
