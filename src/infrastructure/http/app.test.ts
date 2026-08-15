@@ -17,6 +17,7 @@ test('manages operational resources', { skip: !connectionString }, async () => {
   await database.plan.deleteMany();
   await database.operationalEvent.deleteMany();
   await database.batch.deleteMany();
+  await database.fishingTrip.deleteMany();
   await database.coldStorage.deleteMany();
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
@@ -33,6 +34,16 @@ test('manages operational resources', { skip: !connectionString }, async () => {
   });
 
   try {
+    const tripResponse = await request('/fishing-trips', 'POST', { code: 'FT-DELETE', vesselName: 'KM Test' });
+    assert.equal(tripResponse.status, 201);
+    const trip = await tripResponse.json() as { id: string };
+    const deletableBatchResponse = await request('/batches', 'POST', { code: 'B-DELETE', fishingTripId: trip.id, weightKg: 10, grade: 'A', receivedAt: new Date().toISOString() });
+    assert.equal(deletableBatchResponse.status, 201);
+    const deletableBatch = await deletableBatchResponse.json() as { id: string };
+    assert.equal((await request(`/fishing-trips/${trip.id}`, 'DELETE')).status, 409);
+    assert.equal((await request(`/batches/${deletableBatch.id}`, 'DELETE')).status, 204);
+    assert.equal((await request('/batches').then((response) => response.json()) as Array<{ id: string }>).some(({ id }) => id === deletableBatch.id), false);
+
     const coldStorageResponse = await request('/cold-storages', 'POST', {
       name: 'Cold Room 1',
       capacityKg: 500,

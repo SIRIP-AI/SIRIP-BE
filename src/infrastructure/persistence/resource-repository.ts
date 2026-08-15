@@ -246,7 +246,7 @@ export class ResourceRepository {
 
   async listSensorAssignmentOptions() {
     return this.database.batch.findMany({
-      where: { status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
+      where: { deletedAt: null, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
       orderBy: { code: 'asc' },
       select: { id: true, code: true, weightKg: true, grade: true },
     }).then((batches) => batches.map((batch) => ({ ...batch, id: batch.id.toString() })));
@@ -258,7 +258,7 @@ export class ResourceRepository {
       if (!sensor) throw new NotFoundError('Sensor');
       if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provision the sensor before assigning it');
       if (sensor.sessions.length) throw new ConflictError('Sensor is already assigned');
-      const batch = await this.database.batch.findUnique({ where: { code: input.batchCode } });
+      const batch = await this.database.batch.findFirst({ where: { code: input.batchCode, deletedAt: null } });
       if (!batch || !['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'].includes(batch.status)) throw new NotFoundError('Assignable batch');
       await this.database.$transaction([
         this.database.sensorSession.create({ data: { sensorId: id, batchId: batch.id, startedAt: new Date(), status: 'ACTIVE' } }),
