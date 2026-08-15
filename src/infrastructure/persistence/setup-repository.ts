@@ -1,5 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { ColdStorageInput, DestinationInput, VehicleInput } from '../../domain/setup/resources';
+import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/setup/resources';
 import { ConflictError, NotFoundError } from '../../domain/setup/errors';
 import type { Database } from './database';
 
@@ -59,6 +59,38 @@ function destinationData(input: DestinationInput) {
     receivingEnd: new Date(`1970-01-01T${input.receivingEnd}:00.000Z`),
   };
 }
+
+function sensorResponse(resource: {
+  id: bigint;
+  code: string;
+  deviceUid: string;
+  status: string;
+  provisioningStatus: string;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+  sessions: Array<{ batch: { code: string }; lastSyncedAt: Date | null }>;
+}) {
+  const session = resource.sessions[0];
+  return {
+    id: resource.id.toString(),
+    code: resource.code,
+    deviceUid: resource.deviceUid,
+    status: resource.status,
+    provisioningStatus: resource.provisioningStatus,
+    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.lastSeenAt ? 'ONLINE' : 'NEVER_CONNECTED',
+    lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
+    createdAt: resource.createdAt.toISOString(),
+    assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
+  };
+}
+
+const sensorInclude = {
+  sessions: {
+    where: { status: 'ACTIVE' as const },
+    select: { batch: { select: { code: true } }, lastSyncedAt: true },
+    take: 1,
+  },
+};
 
 function translateDatabaseError(error: unknown): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -159,5 +191,97 @@ export class SetupRepository {
     } catch (error) {
       translateDatabaseError(error);
     }
+  }
+
+  async listSensors() {
+    return (await this.database.sensor.findMany({ orderBy: { code: 'asc' }, include: sensorInclude })).map(sensorResponse);
+  }
+
+  async createSensor(input: SensorInput) {
+    try {
+      return sensorResponse(await this.database.sensor.create({ data: { ...input, status: 'AVAILABLE' }, include: sensorInclude }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async updateSensor(id: bigint, input: SensorInput) {
+    try {
+      return sensorResponse(await this.database.sensor.update({ where: { id }, data: input, include: sensorInclude }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async deleteSensor(id: bigint) {
+    try {
+      await this.database.sensor.delete({ where: { id } });
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async listSensorAssignmentOptions() {
+    return this.database.batch.findMany({
+      where: { status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
+      orderBy: { code: 'asc' },
+      select: { id: true, code: true, weightKg: true, grade: true },
+    }).then((batches) => batches.map((batch) => ({ ...batch, id: batch.id.toString() })));
+  }
+
+  async assignSensor(id: bigint, input: SensorAssignmentInput) {
+    try {
+      const sensor = await this.database.sensor.findUnique({ where: { id }, include: sensorInclude });
+      if (!sensor) throw new NotFoundError('Sensor');
+      if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provision the sensor before assigning it');
+      if (sensor.sessions.length) throw new ConflictError('Sensor is already assigned');
+      const batch = await this.database.batch.findUnique({ where: { code: input.batchCode } });
+      if (!batch || !['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'].includes(batch.status)) throw new NotFoundError('Assignable batch');
+      await this.database.$transaction([
+        this.database.sensorSession.create({ data: { sensorId: id, batchId: batch.id, startedAt: new Date(), status: 'ACTIVE' } }),
+        this.database.sensor.update({ where: { id }, data: { status: 'ASSIGNED' } }),
+      ]);
+      return sensorResponse(await this.database.sensor.findUniqueOrThrow({ where: { id }, include: sensorInclude }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async unassignSensor(id: bigint) {
+    try {
+      const sensor = await this.database.sensor.findUnique({ where: { id }, include: sensorInclude });
+      if (!sensor) throw new NotFoundError('Sensor');
+      const session = await this.database.sensorSession.findFirst({ where: { sensorId: id, status: 'ACTIVE' } });
+      if (!session) throw new ConflictError('Sensor is not assigned');
+      await this.database.$transaction([
+        this.database.sensorSession.update({ where: { id: session.id }, data: { status: 'COMPLETED', endedAt: new Date() } }),
+        this.database.sensor.update({ where: { id }, data: { status: 'AVAILABLE' } }),
+      ]);
+      return sensorResponse(await this.database.sensor.findUniqueOrThrow({ where: { id }, include: sensorInclude }));
+    } catch (error) {
+      translateDatabaseError(error);
+    }
+  }
+
+  async sensorDiagnostics(id: bigint) {
+    const sensor = await this.database.sensor.findUnique({
+      where: { id },
+      include: {
+        sessions: {
+          orderBy: { startedAt: 'desc' },
+          take: 1,
+          include: { batch: { select: { code: true } }, readings: { orderBy: { measuredAt: 'desc' }, take: 1 } },
+        },
+      },
+    });
+    if (!sensor) throw new NotFoundError('Sensor');
+    const session = sensor.sessions[0];
+    const reading = session?.readings[0];
+    return {
+      sensor: sensorResponse({ ...sensor, sessions: session?.status === 'ACTIVE' ? [session] : [] }),
+      latestReading: reading ? { temperatureC: reading.temperatureC, measuredAt: reading.measuredAt.toISOString(), receivedAt: reading.receivedAt.toISOString() } : null,
+      lastSyncedAt: session?.lastSyncedAt?.toISOString() ?? null,
+      sessionStatus: session?.status ?? null,
+    };
   }
 }

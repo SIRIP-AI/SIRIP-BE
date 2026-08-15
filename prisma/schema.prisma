@@ -28,6 +28,11 @@ enum SensorStatus {
   ERROR
 }
 
+enum SensorProvisioningStatus {
+  PENDING
+  PROVISIONED
+}
+
 enum SensorSessionStatus {
   ACTIVE
   COMPLETED
@@ -138,9 +143,10 @@ model Batch {
 model Sensor {
   id         BigInt          @id @default(autoincrement())
   code       String          @unique
-  deviceUid  String          @unique @map("device_uid")
-  status     SensorStatus
-  lastSeenAt DateTime?       @map("last_seen_at") @db.Timestamptz
+  deviceUid          String                   @unique @map("device_uid")
+  status             SensorStatus
+  provisioningStatus SensorProvisioningStatus @default(PENDING) @map("provisioning_status")
+  lastSeenAt         DateTime?                @map("last_seen_at") @db.Timestamptz
   createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz
   sessions   SensorSession[]
 

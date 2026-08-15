@@ -43,3 +43,16 @@ export type Destination = {
 };
 
 export type DestinationInput = Omit<Destination, 'id' | 'updatedAt'>;
+
+export const sensorProvisioningStatuses = ['PENDING', 'PROVISIONED'] as const;
+export type SensorProvisioningStatus = typeof sensorProvisioningStatuses[number];
+
+export type SensorInput = {
+  code: string;
+  deviceUid: string;
+  provisioningStatus: SensorProvisioningStatus;
+};
+
+export type SensorAssignmentInput = {
+  batchCode: string;
+};

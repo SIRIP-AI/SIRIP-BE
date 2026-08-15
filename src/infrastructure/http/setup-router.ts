@@ -3,9 +3,12 @@ import { Router } from 'express';
 import {
   coldStorageStatuses,
   destinationStatuses,
+  sensorProvisioningStatuses,
   vehicleStatuses,
   type ColdStorageInput,
   type DestinationInput,
+  type SensorAssignmentInput,
+  type SensorInput,
   type VehicleInput,
 } from '../../domain/setup/resources';
 import { RequestError } from '../../domain/setup/errors';
@@ -114,6 +117,20 @@ function destinationInput(body: unknown): DestinationInput {
   };
 }
 
+function sensorInput(body: unknown): SensorInput {
+  const value = bodyObject(body);
+  return {
+    code: text(value, 'code'),
+    deviceUid: text(value, 'deviceUid'),
+    provisioningStatus: status(value, 'provisioningStatus', sensorProvisioningStatuses),
+  };
+}
+
+function sensorAssignmentInput(body: unknown): SensorAssignmentInput {
+  const value = bodyObject(body);
+  return { batchCode: text(value, 'batchCode') };
+}
+
 export function createSetupRouter(repository: SetupRepository) {
   const router = Router();
 
@@ -140,6 +157,18 @@ export function createSetupRouter(repository: SetupRepository) {
     await repository.deleteDestination(resourceId(request.params.id));
     response.sendStatus(204);
   });
+
+  router.get('/sensors', async (_request, response) => response.json(await repository.listSensors()));
+  router.post('/sensors', async (request, response) => response.status(201).json(await repository.createSensor(sensorInput(request.body))));
+  router.put('/sensors/:id', async (request, response) => response.json(await repository.updateSensor(resourceId(request.params.id), sensorInput(request.body))));
+  router.delete('/sensors/:id', async (request, response) => {
+    await repository.deleteSensor(resourceId(request.params.id));
+    response.sendStatus(204);
+  });
+  router.get('/sensor-assignment-options', async (_request, response) => response.json(await repository.listSensorAssignmentOptions()));
+  router.post('/sensors/:id/assignment', async (request, response) => response.json(await repository.assignSensor(resourceId(request.params.id), sensorAssignmentInput(request.body))));
+  router.delete('/sensors/:id/assignment', async (request, response) => response.json(await repository.unassignSensor(resourceId(request.params.id))));
+  router.get('/sensors/:id/diagnostics', async (request, response) => response.json(await repository.sensorDiagnostics(resourceId(request.params.id))));
 
   return router;
 }

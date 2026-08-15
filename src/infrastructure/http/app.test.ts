@@ -10,9 +10,16 @@ const connectionString = process.env.TEST_DATABASE_URL;
 
 test('manages setup resources', { skip: !connectionString }, async () => {
   const database = createDatabase(connectionString);
+  await database.temperatureReading.deleteMany();
+  await database.sensorSession.deleteMany();
+  await database.sensor.deleteMany();
+  await database.batch.deleteMany();
   await database.coldStorage.deleteMany();
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
+  await database.batch.create({
+    data: { code: 'B-017', weightKg: 120, grade: 'A', status: 'ACTIVE', receivedAt: new Date() },
+  });
   const server = createApp(database).listen(0);
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
@@ -88,6 +95,20 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     assert.equal(updatedDestinationResponse.status, 200);
     assert.equal((await updatedDestinationResponse.json() as { status: string }).status, 'UNAVAILABLE');
 
+    const sensorResponse = await request('/sensors', 'POST', {
+      code: 'S-003',
+      deviceUid: 'esp32-s-003',
+      provisioningStatus: 'PROVISIONED',
+    });
+    assert.equal(sensorResponse.status, 201);
+    const sensor = await sensorResponse.json() as { id: string };
+
+    const assignmentResponse = await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-017' });
+    assert.equal(assignmentResponse.status, 200);
+    assert.equal((await assignmentResponse.json() as { assignment: { batchCode: string } }).assignment.batchCode, 'B-017');
+    assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
+    assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'DELETE')).status, 200);
+
     const invalidResponse = await request('/cold-storages', 'POST', {
       name: 'Invalid',
       capacityKg: 100,
@@ -99,6 +120,7 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'DELETE')).status, 204);
     assert.equal((await request(`/vehicles/${vehicle.id}`, 'DELETE')).status, 204);
     assert.equal((await request(`/destinations/${destination.id}`, 'DELETE')).status, 204);
+    assert.equal((await request(`/sensors/${sensor.id}`, 'DELETE')).status, 409);
   } finally {
     server.close();
     await database.$disconnect();
