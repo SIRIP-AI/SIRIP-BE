@@ -1,10 +1,9 @@
 import { Router } from 'express';
 
 import {
-  coldStorageStatuses,
   destinationStatuses,
+  resourceOperationalStatuses,
   sensorProvisioningStatuses,
-  vehicleStatuses,
   type ColdStorageInput,
   type DestinationInput,
   type SensorAssignmentInput,
@@ -64,11 +63,17 @@ function time(body: Record<string, unknown>, field: string) {
   return value;
 }
 
-function nullableDateTime(body: Record<string, unknown>, field: string) {
+function nullableTime(body: Record<string, unknown>, field: string) {
   const value = body[field];
   if (value === null || value === '') return null;
-  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) throw new RequestError(`${field} must be a valid date and time`, 400);
-  return new Date(value).toISOString();
+  if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw new RequestError(`${field} must use HH:mm format`, 400);
+  }
+  return value;
+}
+
+function rejectField(body: Record<string, unknown>, field: string) {
+  if (field in body) throw new RequestError(`${field} cannot be changed through resource configuration`, 400);
 }
 
 function resourceId(value: string) {
@@ -86,18 +91,25 @@ function coldStorageInput(body: unknown): ColdStorageInput {
   const capacityKg = positiveNumber(value, 'capacityKg');
   const availableCapacityKg = positiveNumber(value, 'availableCapacityKg', true);
   if (availableCapacityKg > capacityKg) throw new RequestError('availableCapacityKg cannot exceed capacityKg', 400);
-  return { name: text(value, 'name'), capacityKg, availableCapacityKg, status: status(value, 'status', coldStorageStatuses) };
+  rejectField(value, 'status');
+  return { name: text(value, 'name'), capacityKg, availableCapacityKg, operationalStatus: status(value, 'operationalStatus', resourceOperationalStatuses) };
 }
 
 function vehicleInput(body: unknown): VehicleInput {
   const value = bodyObject(body);
+  rejectField(value, 'status');
+  rejectField(value, 'delayMinutes');
+  const availabilityStart = nullableTime(value, 'availabilityStart');
+  const availabilityEnd = nullableTime(value, 'availabilityEnd');
+  if ((availabilityStart === null) !== (availabilityEnd === null)) throw new RequestError('availabilityStart and availabilityEnd must both be provided', 400);
+  if (availabilityStart && availabilityEnd && availabilityEnd <= availabilityStart) throw new RequestError('availabilityEnd must be after availabilityStart', 400);
   return {
     code: text(value, 'code'),
     capacityKg: positiveNumber(value, 'capacityKg'),
-    status: status(value, 'status', vehicleStatuses),
-    delayMinutes: integer(value, 'delayMinutes'),
+    operationalStatus: status(value, 'operationalStatus', resourceOperationalStatuses),
     restriction: nullableText(value, 'restriction'),
-    availableFrom: nullableDateTime(value, 'availableFrom'),
+    availabilityStart,
+    availabilityEnd,
   };
 }
 

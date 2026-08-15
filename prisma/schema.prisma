@@ -38,16 +38,14 @@ enum SensorSessionStatus {
   COMPLETED
 }
 
-enum ColdStorageStatus {
+enum ResourceOperationalStatus {
   AVAILABLE
-  FULL
   UNAVAILABLE
 }
 
 enum VehicleStatus {
   AVAILABLE
   ASSIGNED
-  DELAYED
   UNAVAILABLE
 }
 
@@ -186,7 +184,7 @@ model ColdStorage {
   name                String             @unique
   capacityKg          Float              @map("capacity_kg")
   availableCapacityKg Float              @map("available_capacity_kg")
-  status              ColdStorageStatus
+  operationalStatus   ResourceOperationalStatus @map("operational_status")
   updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   operationalEvents   OperationalEvent[]
   planSteps           PlanStep[]
@@ -198,10 +196,11 @@ model Vehicle {
   id                BigInt             @id @default(autoincrement())
   code              String             @unique
   capacityKg        Float              @map("capacity_kg")
-  status            VehicleStatus
+  operationalStatus ResourceOperationalStatus @map("operational_status")
   delayMinutes      Int                @default(0) @map("delay_minutes")
   restriction       String?
-  availableFrom     DateTime?          @map("available_from") @db.Timestamptz
+  availabilityStart DateTime?          @map("availability_start") @db.Time
+  availabilityEnd   DateTime?          @map("availability_end") @db.Time
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]

@@ -8,27 +8,34 @@ function coldStorageResponse(resource: {
   name: string;
   capacityKg: number;
   availableCapacityKg: number;
-  status: string;
+  operationalStatus: string;
   updatedAt: Date;
 }) {
-  return { ...resource, id: resource.id.toString(), updatedAt: resource.updatedAt.toISOString() };
+  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : resource.availableCapacityKg === 0 ? 'FULL' : 'AVAILABLE';
+  return { ...resource, id: resource.id.toString(), status, updatedAt: resource.updatedAt.toISOString() };
 }
 
 function vehicleResponse(resource: {
   id: bigint;
   code: string;
   capacityKg: number;
-  status: string;
+  operationalStatus: string;
   delayMinutes: number;
   restriction: string | null;
-  availableFrom: Date | null;
+  availabilityStart: Date | null;
+  availabilityEnd: Date | null;
   updatedAt: Date;
+  planSteps: Array<{ id: bigint }>;
 }) {
+  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : resource.planSteps.length ? 'ASSIGNED' : 'AVAILABLE';
   return {
     ...resource,
     id: resource.id.toString(),
-    availableFrom: resource.availableFrom?.toISOString() ?? null,
+    status,
+    availabilityStart: resource.availabilityStart?.toISOString().slice(11, 16) ?? null,
+    availabilityEnd: resource.availabilityEnd?.toISOString().slice(11, 16) ?? null,
     updatedAt: resource.updatedAt.toISOString(),
+    planSteps: undefined,
   };
 }
 
@@ -57,6 +64,14 @@ function destinationData(input: DestinationInput) {
     ...input,
     receivingStart: new Date(`1970-01-01T${input.receivingStart}:00.000Z`),
     receivingEnd: new Date(`1970-01-01T${input.receivingEnd}:00.000Z`),
+  };
+}
+
+function vehicleData(input: VehicleInput) {
+  return {
+    ...input,
+    availabilityStart: input.availabilityStart ? new Date(`1970-01-01T${input.availabilityStart}:00.000Z`) : null,
+    availabilityEnd: input.availabilityEnd ? new Date(`1970-01-01T${input.availabilityEnd}:00.000Z`) : null,
   };
 }
 
@@ -92,6 +107,14 @@ const sensorInclude = {
   },
 };
 
+const vehicleInclude = {
+  planSteps: {
+    where: { status: 'UPCOMING' as const, plan: { status: 'ACTIVE' as const } },
+    select: { id: true },
+    take: 1,
+  },
+};
+
 function translateDatabaseError(error: unknown): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') throw new ConflictError('A resource with that name or code already exists');
@@ -118,6 +141,11 @@ export class ResourceRepository {
 
   async updateColdStorage(id: bigint, input: ColdStorageInput) {
     try {
+      const existing = await this.database.coldStorage.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError('Resource');
+      if (existing.availableCapacityKg === 0 && existing.operationalStatus !== input.operationalStatus) {
+        throw new ConflictError('Operational status cannot be changed while cold storage is full');
+      }
       return coldStorageResponse(await this.database.coldStorage.update({ where: { id }, data: input }));
     } catch (error) {
       translateDatabaseError(error);
@@ -133,14 +161,12 @@ export class ResourceRepository {
   }
 
   async listVehicles() {
-    return (await this.database.vehicle.findMany({ orderBy: { code: 'asc' } })).map(vehicleResponse);
+    return (await this.database.vehicle.findMany({ orderBy: { code: 'asc' }, include: vehicleInclude })).map(vehicleResponse);
   }
 
   async createVehicle(input: VehicleInput) {
     try {
-      return vehicleResponse(await this.database.vehicle.create({
-        data: { ...input, availableFrom: input.availableFrom ? new Date(input.availableFrom) : null },
-      }));
+      return vehicleResponse(await this.database.vehicle.create({ data: vehicleData(input), include: vehicleInclude }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -148,10 +174,7 @@ export class ResourceRepository {
 
   async updateVehicle(id: bigint, input: VehicleInput) {
     try {
-      return vehicleResponse(await this.database.vehicle.update({
-        where: { id },
-        data: { ...input, availableFrom: input.availableFrom ? new Date(input.availableFrom) : null },
-      }));
+      return vehicleResponse(await this.database.vehicle.update({ where: { id }, data: vehicleData(input), include: vehicleInclude }));
     } catch (error) {
       translateDatabaseError(error);
     }

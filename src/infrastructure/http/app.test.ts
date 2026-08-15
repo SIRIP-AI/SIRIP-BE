@@ -13,11 +13,14 @@ test('manages operational resources', { skip: !connectionString }, async () => {
   await database.temperatureReading.deleteMany();
   await database.sensorSession.deleteMany();
   await database.sensor.deleteMany();
+  await database.planStep.deleteMany();
+  await database.plan.deleteMany();
+  await database.operationalEvent.deleteMany();
   await database.batch.deleteMany();
   await database.coldStorage.deleteMany();
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
-  await database.batch.create({
+  const batch = await database.batch.create({
     data: { code: 'B-017', weightKg: 120, grade: 'A', status: 'ACTIVE', receivedAt: new Date() },
   });
   const server = createApp(database).listen(0);
@@ -34,7 +37,7 @@ test('manages operational resources', { skip: !connectionString }, async () => {
       name: 'Cold Room 1',
       capacityKg: 500,
       availableCapacityKg: 220,
-      status: 'AVAILABLE',
+      operationalStatus: 'AVAILABLE',
     });
     assert.equal(coldStorageResponse.status, 201);
     const coldStorage = await coldStorageResponse.json() as { id: string };
@@ -43,19 +46,25 @@ test('manages operational resources', { skip: !connectionString }, async () => {
       name: 'Cold Room 1',
       capacityKg: 500,
       availableCapacityKg: 0,
-      status: 'FULL',
+      operationalStatus: 'AVAILABLE',
     });
     assert.equal(updatedColdStorageResponse.status, 200);
     assert.equal((await updatedColdStorageResponse.json() as { status: string }).status, 'FULL');
+    assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'PUT', {
+      name: 'Cold Room 1',
+      capacityKg: 500,
+      availableCapacityKg: 0,
+      operationalStatus: 'UNAVAILABLE',
+    })).status, 409);
     assert.equal((await request('/cold-storages').then((response) => response.json()) as unknown[]).length, 1);
 
     const vehicleResponse = await request('/vehicles', 'POST', {
       code: 'TR-02',
       capacityKg: 800,
-      status: 'DELAYED',
-      delayMinutes: 90,
+      operationalStatus: 'AVAILABLE',
       restriction: 'Bridge weight restriction',
-      availableFrom: '2026-08-15T12:00:00.000Z',
+      availabilityStart: '08:00',
+      availabilityEnd: '16:00',
     });
     assert.equal(vehicleResponse.status, 201);
     const vehicle = await vehicleResponse.json() as { id: string };
@@ -63,13 +72,34 @@ test('manages operational resources', { skip: !connectionString }, async () => {
     const updatedVehicleResponse = await request(`/vehicles/${vehicle.id}`, 'PUT', {
       code: 'TR-02',
       capacityKg: 800,
-      status: 'AVAILABLE',
-      delayMinutes: 0,
+      operationalStatus: 'AVAILABLE',
       restriction: null,
-      availableFrom: null,
+      availabilityStart: '09:00',
+      availabilityEnd: '17:00',
     });
     assert.equal(updatedVehicleResponse.status, 200);
     assert.equal((await updatedVehicleResponse.json() as { status: string }).status, 'AVAILABLE');
+    assert.equal((await request(`/vehicles/${vehicle.id}`, 'PUT', {
+      code: 'TR-02',
+      capacityKg: 800,
+      operationalStatus: 'AVAILABLE',
+      delayMinutes: 90,
+      restriction: null,
+      availabilityStart: '09:00',
+      availabilityEnd: '17:00',
+    })).status, 400);
+
+    await database.vehicle.update({ where: { id: BigInt(vehicle.id) }, data: { delayMinutes: 90 } });
+    const delayedVehicle = await request('/vehicles').then((response) => response.json()) as Array<{ status: string; delayMinutes: number }>;
+    assert.equal(delayedVehicle[0].status, 'AVAILABLE');
+    assert.equal(delayedVehicle[0].delayMinutes, 90);
+
+    const plan = await database.plan.create({ data: { version: 1, status: 'ACTIVE', reason: 'Integration test' } });
+    await database.planStep.create({
+      data: { planId: plan.id, sequence: 1, actionType: 'DISPATCH', batchId: batch.id, vehicleId: BigInt(vehicle.id), scheduledAt: new Date(), status: 'UPCOMING' },
+    });
+    const assignedVehicle = await request('/vehicles').then((response) => response.json()) as Array<{ status: string }>;
+    assert.equal(assignedVehicle[0].status, 'ASSIGNED');
 
     const destinationResponse = await request('/destinations', 'POST', {
       name: 'Processor A',
@@ -113,11 +143,12 @@ test('manages operational resources', { skip: !connectionString }, async () => {
       name: 'Invalid',
       capacityKg: 100,
       availableCapacityKg: 101,
-      status: 'AVAILABLE',
+      operationalStatus: 'AVAILABLE',
     });
     assert.equal(invalidResponse.status, 400);
 
     assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'DELETE')).status, 204);
+    await database.plan.delete({ where: { id: plan.id } });
     assert.equal((await request(`/vehicles/${vehicle.id}`, 'DELETE')).status, 204);
     assert.equal((await request(`/destinations/${destination.id}`, 'DELETE')).status, 204);
     assert.equal((await request(`/sensors/${sensor.id}`, 'DELETE')).status, 409);
