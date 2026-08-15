@@ -77,7 +77,7 @@ function sensorResponse(resource: {
     deviceUid: resource.deviceUid,
     status: resource.status,
     provisioningStatus: resource.provisioningStatus,
-    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.lastSeenAt ? 'ONLINE' : 'NEVER_CONNECTED',
+    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' ? 'OFFLINE' : resource.lastSeenAt ? 'ONLINE' : 'NEVER_CONNECTED',
     lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
     createdAt: resource.createdAt.toISOString(),
     assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
