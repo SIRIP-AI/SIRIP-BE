@@ -1,0 +1,37 @@
+import express, { type ErrorRequestHandler } from 'express';
+
+import { RequestError } from '../../domain/errors';
+import type { Database } from '../persistence/database';
+import { ResourceRepository } from '../persistence/resource-repository';
+import { createResourcesRouter } from './resources-router';
+
+export function createApp(database: Database) {
+  const app = express();
+  const origin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
+
+  app.use((request, response, next) => {
+    response.setHeader('Access-Control-Allow-Origin', origin);
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (request.method === 'OPTIONS') return response.sendStatus(204);
+    next();
+  });
+  app.use(express.json());
+  app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
+  app.use('/api', createResourcesRouter(new ResourceRepository(database)));
+
+  const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
+    if (error instanceof RequestError) {
+      response.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof SyntaxError && 'status' in error && error.status === 400) {
+      response.status(400).json({ error: 'Request body must contain valid JSON' });
+      return;
+    }
+    response.status(500).json({ error: 'Internal server error' });
+  };
+  app.use(errorHandler);
+
+  return app;
+}
