@@ -3,8 +3,10 @@ import express, { type ErrorRequestHandler } from 'express';
 import { RequestError } from '../../domain/setup/errors';
 import { AuthService } from '../auth/auth-service';
 import type { Database } from '../persistence/database';
+import { OverviewRepository } from '../persistence/overview-repository';
 import { SetupRepository } from '../persistence/setup-repository';
 import { createAuthRouter, requireAuth } from './auth-router';
+import { createOverviewRouter } from './overview-router';
 import { createSetupRouter } from './setup-router';
 
 export function createApp(database: Database) {
@@ -23,7 +25,7 @@ export function createApp(database: Database) {
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
   app.use('/api/auth', createAuthRouter(auth));
-  app.use('/api', requireAuth(auth), createSetupRouter(new SetupRepository(database)));
+  app.use('/api', requireAuth(auth), createOverviewRouter(new OverviewRepository(database)), createSetupRouter(new SetupRepository(database)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {

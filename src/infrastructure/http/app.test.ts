@@ -11,6 +11,8 @@ const connectionString = process.env.TEST_DATABASE_URL;
 
 test('manages setup resources', { skip: !connectionString }, async () => {
   const database = createDatabase(connectionString);
+  await database.plan.deleteMany();
+  await database.operationalEvent.deleteMany();
   await database.temperatureReading.deleteMany();
   await database.sensorSession.deleteMany();
   await database.sensor.deleteMany();
@@ -19,15 +21,53 @@ test('manages setup resources', { skip: !connectionString }, async () => {
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
   await database.authSession.deleteMany();
-  await database.user.deleteMany({ where: { email: 'new.operator@sirip.local' } });
+  await database.user.deleteMany({ where: { email: { in: ['new.operator@sirip.local', 'other.operator@sirip.local'] } } });
   const passwordHash = await hashPassword('demo-password');
-  await database.user.upsert({
+  const operator = await database.user.upsert({
     where: { email: 'operator@sirip.local' },
     update: { passwordHash },
     create: { name: 'Test Operator', email: 'operator@sirip.local', phone: '+620000000000', passwordHash },
   });
-  await database.batch.create({
-    data: { code: 'B-017', weightKg: 120, grade: 'A', status: 'ACTIVE', receivedAt: new Date() },
+  const otherOperator = await database.user.create({
+    data: { name: 'Other Operator', email: 'other.operator@sirip.local', phone: '+620000000001', passwordHash },
+  });
+  const batch = await database.batch.create({
+    data: { userId: operator.id, code: 'B-017', weightKg: 120, grade: 'A', status: 'ACTIVE', receivedAt: new Date(), currentTemperatureC: 8, remainingQualityWindowDays: 4.2 },
+  });
+  const otherBatch = await database.batch.create({
+    data: { userId: otherOperator.id, code: 'B-OTHER', weightKg: 90, grade: 'A', status: 'ACTIVE', receivedAt: new Date() },
+  });
+  await database.operationalEvent.createMany({ data: [
+    {
+      userId: operator.id,
+      batchId: batch.id,
+      type: 'TEMPERATURE_EXCURSION',
+      source: 'SYSTEM',
+      structuredData: { alert: { active: true, severity: 'CRITICAL', qualityStatus: 'WARNING', title: 'B-017 temperature excursion', description: '8.0°C for 42 min · 4.2 days remaining' } },
+      occurredAt: new Date(),
+    },
+    {
+      userId: otherOperator.id,
+      batchId: otherBatch.id,
+      type: 'OTHER',
+      source: 'SYSTEM',
+      structuredData: { alert: { active: true, severity: 'WARNING', title: 'Other alert', description: 'Must not be visible' } },
+      occurredAt: new Date(),
+    },
+  ] });
+  await database.plan.create({
+    data: {
+      userId: operator.id,
+      version: 3,
+      status: 'ACTIVE',
+      reason: 'Prioritize B-017 after its temperature excursion.',
+      approvedById: operator.id,
+      approvedAt: new Date(),
+      steps: { create: { sequence: 1, actionType: 'INSPECT', batchId: batch.id, scheduledAt: new Date(Date.now() + 60_000), status: 'UPCOMING' } },
+    },
+  });
+  await database.plan.create({
+    data: { userId: otherOperator.id, version: 3, status: 'ACTIVE', reason: 'Other plan' },
   });
   const server = createApp(database).listen(0);
   await once(server, 'listening');
@@ -41,6 +81,7 @@ test('manages setup resources', { skip: !connectionString }, async () => {
 
   try {
     assert.equal((await request('/cold-storages')).status, 401);
+    assert.equal((await request('/overview')).status, 401);
     const signupResponse = await request('/auth/signup', 'POST', {
       name: 'New Operator',
       email: 'new.operator@sirip.local',
@@ -67,6 +108,18 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     cookie = loginResponse.headers.getSetCookie()[0]?.split(';', 1)[0] ?? '';
     assert.ok(cookie);
     assert.equal((await request('/auth/session')).status, 200);
+    const overviewResponse = await request('/overview');
+    assert.equal(overviewResponse.status, 200);
+    const overview = await overviewResponse.json() as {
+      summary: { activeBatchCount: number; atRiskBatchCount: number; activeAlertCount: number; activePlanVersion: number | null };
+      priorityBatches: Array<{ code: string; qualityStatus: string }>;
+      activePlan: { version: number; steps: Array<{ batchCode: string }> } | null;
+      alerts: Array<{ title: string }>;
+    };
+    assert.deepEqual(overview.summary, { activeBatchCount: 1, atRiskBatchCount: 1, activeAlertCount: 1, activePlanVersion: 3 });
+    assert.deepEqual(overview.priorityBatches.map((item) => [item.code, item.qualityStatus]), [['B-017', 'WARNING']]);
+    assert.equal(overview.activePlan?.steps[0]?.batchCode, 'B-017');
+    assert.deepEqual(overview.alerts.map((alert) => alert.title), ['B-017 temperature excursion']);
 
     const coldStorageResponse = await request('/cold-storages', 'POST', {
       name: 'Cold Room 1',

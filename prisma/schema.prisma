@@ -100,8 +100,11 @@ model User {
   phone         String
   passwordHash  String        @map("password_hash")
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz
-  approvedPlans Plan[]        @relation("ApprovedPlans")
-  authSessions  AuthSession[]
+  approvedPlans     Plan[]             @relation("ApprovedPlans")
+  ownedPlans        Plan[]             @relation("OwnedPlans")
+  batches           Batch[]
+  operationalEvents OperationalEvent[]
+  authSessions      AuthSession[]
 
   @@map("users")
 }
@@ -132,6 +135,7 @@ model FishingTrip {
 
 model Batch {
   id                         BigInt        @id @default(autoincrement())
+  userId                     BigInt?       @map("user_id")
   code                       String        @unique
   fishingTripId              BigInt?       @map("fishing_trip_id")
   weightKg                   Float         @map("weight_kg")
@@ -145,11 +149,13 @@ model Batch {
   currentTemperatureC        Float?        @map("current_temperature_c")
   createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  user                       User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   fishingTrip                FishingTrip?  @relation(fields: [fishingTripId], references: [id])
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
   planSteps                  PlanStep[]
 
+  @@index([userId, status])
   @@map("batches")
 }
 
@@ -240,6 +246,7 @@ model Destination {
 
 model OperationalEvent {
   id             BigInt                 @id @default(autoincrement())
+  userId         BigInt?                @map("user_id")
   type           OperationalEventType
   source         OperationalEventSource
   batchId        BigInt?                @map("batch_id")
@@ -250,18 +257,21 @@ model OperationalEvent {
   structuredData Json                   @default("{}") @map("structured_data")
   occurredAt     DateTime               @map("occurred_at") @db.Timestamptz
   createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  user           User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   batch          Batch?                 @relation(fields: [batchId], references: [id])
   vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id])
   coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id])
   destination    Destination?           @relation(fields: [destinationId], references: [id])
   triggeredPlans Plan[]
 
+  @@index([userId, occurredAt])
   @@map("operational_events")
 }
 
 model Plan {
   id             BigInt            @id @default(autoincrement())
-  version        Int               @unique
+  userId         BigInt?           @map("user_id")
+  version        Int
   status         PlanStatus
   previousPlanId BigInt?           @map("previous_plan_id")
   triggerEventId BigInt?           @map("trigger_event_id")
@@ -272,9 +282,11 @@ model Plan {
   previousPlan   Plan?             @relation("PlanVersions", fields: [previousPlanId], references: [id])
   revisions      Plan[]            @relation("PlanVersions")
   triggerEvent   OperationalEvent? @relation(fields: [triggerEventId], references: [id])
+  user           User?             @relation("OwnedPlans", fields: [userId], references: [id], onDelete: Cascade)
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
 
+  @@unique([userId, version])
   @@map("plans")
 }
 

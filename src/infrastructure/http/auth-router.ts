@@ -1,11 +1,13 @@
 import type { RequestHandler } from 'express';
 import { Router } from 'express';
 
-import type { LoginCredentials, RegistrationInput } from '../../domain/auth/auth';
+import type { AuthUser, LoginCredentials, RegistrationInput } from '../../domain/auth/auth';
 import { RequestError } from '../../domain/setup/errors';
 import type { AuthService } from '../auth/auth-service';
 
 const cookieName = 'sirip_session';
+
+export type AuthLocals = { user: AuthUser };
 
 function cookieValue(header: string | undefined) {
   const cookie = header?.split(';').map((value) => value.trim()).find((value) => value.startsWith(`${cookieName}=`));
@@ -81,9 +83,11 @@ export function createAuthRouter(auth: AuthService) {
 }
 
 export function requireAuth(auth: AuthService): RequestHandler {
-  return async (request, _response, next) => {
+  return async (request, response, next) => {
     const token = cookieValue(request.headers.cookie);
-    if (!token || !await auth.session(token)) throw new RequestError('Authentication required', 401);
+    const user = token ? await auth.session(token) : null;
+    if (!user) throw new RequestError('Authentication required', 401);
+    (response.locals as AuthLocals).user = user;
     next();
   };
 }
