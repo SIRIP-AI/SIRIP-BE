@@ -94,14 +94,27 @@ enum PlanStepStatus {
 }
 
 model User {
-  id            BigInt   @id @default(autoincrement())
+  id            BigInt        @id @default(autoincrement())
   name          String
-  email         String   @unique
+  email         String        @unique
   phone         String
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
-  approvedPlans Plan[]   @relation("ApprovedPlans")
+  passwordHash  String        @map("password_hash")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  approvedPlans Plan[]        @relation("ApprovedPlans")
+  authSessions  AuthSession[]
 
   @@map("users")
+}
+
+model AuthSession {
+  tokenHash String   @id @map("token_hash")
+  userId    BigInt   @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("auth_sessions")
 }
 
 model FishingTrip {

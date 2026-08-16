@@ -3,8 +3,9 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 
-import { createApp } from './app';
+import { hashPassword } from '../auth/crypto';
 import { createDatabase } from '../persistence/database';
+import { createApp } from './app';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -17,19 +18,35 @@ test('manages setup resources', { skip: !connectionString }, async () => {
   await database.coldStorage.deleteMany();
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
+  await database.authSession.deleteMany();
+  const passwordHash = await hashPassword('demo-password');
+  await database.user.upsert({
+    where: { email: 'operator@sirip.local' },
+    update: { passwordHash },
+    create: { name: 'Test Operator', email: 'operator@sirip.local', phone: '+620000000000', passwordHash },
+  });
   await database.batch.create({
     data: { code: 'B-017', weightKg: 120, grade: 'A', status: 'ACTIVE', receivedAt: new Date() },
   });
   const server = createApp(database).listen(0);
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+  let cookie = '';
   const request = (path: string, method = 'GET', body?: object) => fetch(`${baseUrl}${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 
   try {
+    assert.equal((await request('/cold-storages')).status, 401);
+    assert.equal((await request('/auth/login', 'POST', { email: 'operator@sirip.local', password: 'wrong-password' })).status, 401);
+    const loginResponse = await request('/auth/login', 'POST', { email: 'operator@sirip.local', password: 'demo-password' });
+    assert.equal(loginResponse.status, 200);
+    cookie = loginResponse.headers.getSetCookie()[0]?.split(';', 1)[0] ?? '';
+    assert.ok(cookie);
+    assert.equal((await request('/auth/session')).status, 200);
+
     const coldStorageResponse = await request('/cold-storages', 'POST', {
       name: 'Cold Room 1',
       capacityKg: 500,
