@@ -38,13 +38,17 @@ function registration(body: unknown): RegistrationInput {
   return { ...login, name, phone };
 }
 
-function sessionCookie(token: string, expiresAt: Date) {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+function secureCookie() {
+  return process.env.COOKIE_SECURE === 'true' || (process.env.COOKIE_SECURE !== 'false' && process.env.NODE_ENV === 'production');
+}
+
+export function sessionCookie(token: string, expiresAt: Date) {
+  const secure = secureCookie() ? '; Secure' : '';
   return `${cookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expiresAt.toUTCString()}${secure}`;
 }
 
 function clearSessionCookie() {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  const secure = secureCookie() ? '; Secure' : '';
   return `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
 
