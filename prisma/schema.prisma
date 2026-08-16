@@ -38,16 +38,14 @@ enum SensorSessionStatus {
   COMPLETED
 }
 
-enum ColdStorageStatus {
+enum ResourceOperationalStatus {
   AVAILABLE
-  FULL
   UNAVAILABLE
 }
 
 enum VehicleStatus {
   AVAILABLE
   ASSIGNED
-  DELAYED
   UNAVAILABLE
 }
 
@@ -103,6 +101,7 @@ model User {
   approvedPlans     Plan[]             @relation("ApprovedPlans")
   ownedPlans        Plan[]             @relation("OwnedPlans")
   batches           Batch[]
+  fishingTrips      FishingTrip[]
   coldStorages      ColdStorage[]
   vehicles          Vehicle[]
   destinations      Destination[]
@@ -126,21 +125,25 @@ model AuthSession {
 
 model FishingTrip {
   id         BigInt            @id @default(autoincrement())
-  code       String            @unique
+  userId     BigInt?           @map("user_id")
+  code       String
   vesselName String            @map("vessel_name")
   startedAt  DateTime          @map("started_at") @db.Timestamptz
   endedAt    DateTime?         @map("ended_at") @db.Timestamptz
   status     FishingTripStatus
   createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  deletedAt  DateTime?         @map("deleted_at") @db.Timestamptz
+  user       User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
   batches    Batch[]
 
+  @@unique([userId, code])
   @@map("fishing_trips")
 }
 
 model Batch {
   id                         BigInt        @id @default(autoincrement())
   userId                     BigInt?       @map("user_id")
-  code                       String        @unique
+  code                       String
   fishingTripId              BigInt?       @map("fishing_trip_id")
   weightKg                   Float         @map("weight_kg")
   grade                      String
@@ -153,12 +156,14 @@ model Batch {
   currentTemperatureC        Float?        @map("current_temperature_c")
   createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt                  DateTime?     @map("deleted_at") @db.Timestamptz
   user                       User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   fishingTrip                FishingTrip?  @relation(fields: [fishingTripId], references: [id])
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
   planSteps                  PlanStep[]
 
+  @@unique([userId, code])
   @@index([userId, status])
   @@map("batches")
 }
@@ -213,7 +218,7 @@ model ColdStorage {
   name                String
   capacityKg          Float              @map("capacity_kg")
   availableCapacityKg Float              @map("available_capacity_kg")
-  status              ColdStorageStatus
+  operationalStatus   ResourceOperationalStatus @map("operational_status")
   updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   user                User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents   OperationalEvent[]
@@ -228,10 +233,11 @@ model Vehicle {
   userId            BigInt?            @map("user_id")
   code              String
   capacityKg        Float              @map("capacity_kg")
-  status            VehicleStatus
+  operationalStatus ResourceOperationalStatus @map("operational_status")
   delayMinutes      Int                @default(0) @map("delay_minutes")
   restriction       String?
-  availableFrom     DateTime?          @map("available_from") @db.Timestamptz
+  availabilityStart DateTime?          @map("availability_start") @db.Time
+  availabilityEnd   DateTime?          @map("availability_end") @db.Time
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents OperationalEvent[]

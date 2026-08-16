@@ -29,24 +29,24 @@ async function seed() {
       await transaction.batch.deleteMany({ where: { userId: user.id } });
 
       const fishingTrip = await transaction.fishingTrip.upsert({
-        where: { code: 'FT-001' },
-        update: { vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' },
-        create: { code: 'FT-001', vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' },
+        where: { userId_code: { userId: user.id, code: 'FT-001' } },
+        update: { vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED', deletedAt: null },
+        create: { userId: user.id, code: 'FT-001', vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' },
       });
       const coldStorage = await transaction.coldStorage.upsert({
         where: { userId_name: { userId: user.id, name: 'Cold Room 1' } },
-        update: { capacityKg: 500, availableCapacityKg: 220, status: 'AVAILABLE' },
-        create: { userId: user.id, name: 'Cold Room 1', capacityKg: 500, availableCapacityKg: 220, status: 'AVAILABLE' },
+        update: { capacityKg: 500, availableCapacityKg: 220, operationalStatus: 'AVAILABLE' },
+        create: { userId: user.id, name: 'Cold Room 1', capacityKg: 500, availableCapacityKg: 220, operationalStatus: 'AVAILABLE' },
       });
       const vehicle = await transaction.vehicle.upsert({
         where: { userId_code: { userId: user.id, code: 'TR-01' } },
-        update: { capacityKg: 800, status: 'AVAILABLE', delayMinutes: 0, restriction: null, availableFrom: null },
-        create: { userId: user.id, code: 'TR-01', capacityKg: 800, status: 'AVAILABLE', delayMinutes: 0 },
+        update: { capacityKg: 800, operationalStatus: 'AVAILABLE', delayMinutes: 0, restriction: null, availabilityStart: new Date('1970-01-01T08:00:00.000Z'), availabilityEnd: new Date('1970-01-01T16:00:00.000Z') },
+        create: { userId: user.id, code: 'TR-01', capacityKg: 800, operationalStatus: 'AVAILABLE', delayMinutes: 0, availabilityStart: new Date('1970-01-01T08:00:00.000Z'), availabilityEnd: new Date('1970-01-01T16:00:00.000Z') },
       });
       await transaction.vehicle.upsert({
         where: { userId_code: { userId: user.id, code: 'TR-02' } },
-        update: { capacityKg: 800, status: 'DELAYED', delayMinutes: 90, restriction: 'Delayed at loading point', availableFrom: minutesFromNow(90) },
-        create: { userId: user.id, code: 'TR-02', capacityKg: 800, status: 'DELAYED', delayMinutes: 90, restriction: 'Delayed at loading point', availableFrom: minutesFromNow(90) },
+        update: { capacityKg: 800, operationalStatus: 'AVAILABLE', delayMinutes: 90, restriction: 'Delayed at loading point', availabilityStart: new Date('1970-01-01T09:30:00.000Z'), availabilityEnd: new Date('1970-01-01T17:30:00.000Z') },
+        create: { userId: user.id, code: 'TR-02', capacityKg: 800, operationalStatus: 'AVAILABLE', delayMinutes: 90, restriction: 'Delayed at loading point', availabilityStart: new Date('1970-01-01T09:30:00.000Z'), availabilityEnd: new Date('1970-01-01T17:30:00.000Z') },
       });
       const destination = await transaction.destination.upsert({
         where: { userId_name: { userId: user.id, name: 'Processor B' } },

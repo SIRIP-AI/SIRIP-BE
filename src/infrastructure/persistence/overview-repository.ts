@@ -50,7 +50,7 @@ export class OverviewRepository {
   async overview(userId: bigint) {
     const [batches, events, activePlan] = await Promise.all([
       this.database.batch.findMany({
-        where: { userId, status: { in: [...activeBatchStatuses] } },
+        where: { userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
         select: {
           id: true,
           code: true,

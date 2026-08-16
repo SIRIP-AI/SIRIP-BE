@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/setup/resources';
-import { ConflictError, NotFoundError } from '../../domain/setup/errors';
+import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/resources';
+import { ConflictError, NotFoundError } from '../../domain/errors';
 import type { Database } from './database';
 
 function coldStorageResponse(resource: {
@@ -8,15 +8,17 @@ function coldStorageResponse(resource: {
   name: string;
   capacityKg: number;
   availableCapacityKg: number;
-  status: string;
+  operationalStatus: string;
   updatedAt: Date;
 }) {
+  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : resource.availableCapacityKg === 0 ? 'FULL' : 'AVAILABLE';
   return {
     id: resource.id.toString(),
     name: resource.name,
     capacityKg: resource.capacityKg,
     availableCapacityKg: resource.availableCapacityKg,
-    status: resource.status,
+    operationalStatus: resource.operationalStatus,
+    status,
     updatedAt: resource.updatedAt.toISOString(),
   };
 }
@@ -25,20 +27,25 @@ function vehicleResponse(resource: {
   id: bigint;
   code: string;
   capacityKg: number;
-  status: string;
+  operationalStatus: string;
   delayMinutes: number;
   restriction: string | null;
-  availableFrom: Date | null;
+  availabilityStart: Date | null;
+  availabilityEnd: Date | null;
   updatedAt: Date;
+  planSteps: Array<{ id: bigint }>;
 }) {
+  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : resource.planSteps.length ? 'ASSIGNED' : 'AVAILABLE';
   return {
     id: resource.id.toString(),
     code: resource.code,
     capacityKg: resource.capacityKg,
-    status: resource.status,
+    operationalStatus: resource.operationalStatus,
+    status,
     delayMinutes: resource.delayMinutes,
     restriction: resource.restriction,
-    availableFrom: resource.availableFrom?.toISOString() ?? null,
+    availabilityStart: resource.availabilityStart?.toISOString().slice(11, 16) ?? null,
+    availabilityEnd: resource.availabilityEnd?.toISOString().slice(11, 16) ?? null,
     updatedAt: resource.updatedAt.toISOString(),
   };
 }
@@ -75,6 +82,14 @@ function destinationData(input: DestinationInput) {
   };
 }
 
+function vehicleData(input: VehicleInput) {
+  return {
+    ...input,
+    availabilityStart: input.availabilityStart ? new Date(`1970-01-01T${input.availabilityStart}:00.000Z`) : null,
+    availabilityEnd: input.availabilityEnd ? new Date(`1970-01-01T${input.availabilityEnd}:00.000Z`) : null,
+  };
+}
+
 function sensorResponse(resource: {
   id: bigint;
   code: string;
@@ -102,8 +117,18 @@ function sensorResponse(resource: {
 function sensorInclude(userId: bigint) {
   return {
     sessions: {
-      where: { status: 'ACTIVE' as const, batch: { userId } },
+      where: { status: 'ACTIVE' as const, batch: { userId, deletedAt: null } },
       select: { batch: { select: { code: true } }, lastSyncedAt: true },
+      take: 1,
+    },
+  };
+}
+
+function vehicleInclude(userId: bigint) {
+  return {
+    planSteps: {
+      where: { status: 'UPCOMING' as const, plan: { userId, status: 'ACTIVE' as const } },
+      select: { id: true },
       take: 1,
     },
   };
@@ -118,7 +143,7 @@ function translateDatabaseError(error: unknown): never {
   throw error;
 }
 
-export class SetupRepository {
+export class ResourceRepository {
   constructor(private readonly database: Database) {}
 
   async listColdStorages(userId: bigint) {
@@ -135,6 +160,11 @@ export class SetupRepository {
 
   async updateColdStorage(userId: bigint, id: bigint, input: ColdStorageInput) {
     try {
+      const existing = await this.database.coldStorage.findFirst({ where: { id, userId } });
+      if (!existing) throw new NotFoundError('Resource');
+      if (existing.availableCapacityKg === 0 && existing.operationalStatus !== input.operationalStatus) {
+        throw new ConflictError('Operational status cannot be changed while cold storage is full');
+      }
       return coldStorageResponse(await this.database.coldStorage.update({ where: { id, userId }, data: input }));
     } catch (error) {
       translateDatabaseError(error);
@@ -150,14 +180,12 @@ export class SetupRepository {
   }
 
   async listVehicles(userId: bigint) {
-    return (await this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } })).map(vehicleResponse);
+    return (await this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' }, include: vehicleInclude(userId) })).map(vehicleResponse);
   }
 
   async createVehicle(userId: bigint, input: VehicleInput) {
     try {
-      return vehicleResponse(await this.database.vehicle.create({
-        data: { ...input, userId, availableFrom: input.availableFrom ? new Date(input.availableFrom) : null },
-      }));
+      return vehicleResponse(await this.database.vehicle.create({ data: { ...vehicleData(input), userId }, include: vehicleInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -165,10 +193,7 @@ export class SetupRepository {
 
   async updateVehicle(userId: bigint, id: bigint, input: VehicleInput) {
     try {
-      return vehicleResponse(await this.database.vehicle.update({
-        where: { id, userId },
-        data: { ...input, availableFrom: input.availableFrom ? new Date(input.availableFrom) : null },
-      }));
+      return vehicleResponse(await this.database.vehicle.update({ where: { id, userId }, data: vehicleData(input), include: vehicleInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -240,7 +265,7 @@ export class SetupRepository {
 
   async listSensorAssignmentOptions(userId: bigint) {
     return this.database.batch.findMany({
-      where: { userId, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
+      where: { userId, deletedAt: null, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
       orderBy: { code: 'asc' },
       select: { id: true, code: true, weightKg: true, grade: true },
     }).then((batches) => batches.map((batch) => ({ ...batch, id: batch.id.toString() })));
@@ -253,7 +278,7 @@ export class SetupRepository {
       if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provision the sensor before assigning it');
       if (sensor.sessions.length) throw new ConflictError('Sensor is already assigned');
       const batch = await this.database.batch.findFirst({
-        where: { userId, code: input.batchCode, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
+        where: { userId, code: input.batchCode, deletedAt: null, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
       });
       if (!batch) throw new NotFoundError('Assignable batch');
       await this.database.$transaction([
@@ -270,7 +295,7 @@ export class SetupRepository {
     try {
       const sensor = await this.database.sensor.findFirst({ where: { id, userId }, include: sensorInclude(userId) });
       if (!sensor) throw new NotFoundError('Sensor');
-      const session = await this.database.sensorSession.findFirst({ where: { sensorId: id, status: 'ACTIVE', batch: { userId } } });
+      const session = await this.database.sensorSession.findFirst({ where: { sensorId: id, status: 'ACTIVE', batch: { userId, deletedAt: null } } });
       if (!session) throw new ConflictError('Sensor is not assigned');
       await this.database.$transaction([
         this.database.sensorSession.update({ where: { id: session.id }, data: { status: 'COMPLETED', endedAt: new Date() } }),
@@ -301,7 +326,7 @@ export class SetupRepository {
       where: { id, userId },
       include: {
         sessions: {
-          where: { batch: { userId } },
+          where: { batch: { userId, deletedAt: null } },
           orderBy: { startedAt: 'desc' },
           take: 1,
           include: { batch: { select: { code: true } }, readings: { orderBy: { measuredAt: 'desc' }, take: 1 } },

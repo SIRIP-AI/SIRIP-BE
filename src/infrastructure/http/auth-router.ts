@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 import { Router } from 'express';
 
 import type { AuthUser, LoginCredentials, RegistrationInput } from '../../domain/auth/auth';
-import { RequestError } from '../../domain/setup/errors';
+import { RequestError } from '../../domain/errors';
 import type { AuthService } from '../auth/auth-service';
 
 const cookieName = 'sirip_session';
