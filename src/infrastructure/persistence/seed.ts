@@ -28,11 +28,11 @@ async function seed() {
       await transaction.sensorSession.deleteMany({ where: { batch: { userId: user.id } } });
       await transaction.batch.deleteMany({ where: { userId: user.id } });
 
-      const fishingTrip = await transaction.fishingTrip.upsert({
-        where: { userId_code: { userId: user.id, code: 'FT-001' } },
-        update: { vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED', deletedAt: null },
-        create: { userId: user.id, code: 'FT-001', vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' },
-      });
+      const fishingTripData = { vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' as const, deletedAt: null };
+      const existingFishingTrip = await transaction.fishingTrip.findFirst({ where: { userId: user.id, code: 'FT-001' } });
+      const fishingTrip = existingFishingTrip
+        ? await transaction.fishingTrip.update({ where: { id: existingFishingTrip.id }, data: fishingTripData })
+        : await transaction.fishingTrip.create({ data: { ...fishingTripData, userId: user.id, code: 'FT-001' } });
       const coldStorage = await transaction.coldStorage.upsert({
         where: { userId_name: { userId: user.id, name: 'Cold Room 1' } },
         update: { capacityKg: 500, availableCapacityKg: 220, operationalStatus: 'AVAILABLE' },
