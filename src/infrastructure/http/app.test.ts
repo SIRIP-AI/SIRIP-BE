@@ -73,9 +73,9 @@ test('manages setup resources', { skip: !connectionString }, async () => {
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
   let cookie = '';
-  const request = (path: string, method = 'GET', body?: object) => fetch(`${baseUrl}${path}`, {
+  const request = (path: string, method = 'GET', body?: object, sessionCookie = cookie) => fetch(`${baseUrl}${path}`, {
     method,
-    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -120,6 +120,36 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     assert.deepEqual(overview.priorityBatches.map((item) => [item.code, item.qualityStatus]), [['B-017', 'WARNING']]);
     assert.equal(overview.activePlan?.steps[0]?.batchCode, 'B-017');
     assert.deepEqual(overview.alerts.map((alert) => alert.title), ['B-017 temperature excursion']);
+
+    const otherLoginResponse = await request('/auth/login', 'POST', { email: 'other.operator@sirip.local', password: 'demo-password' });
+    const otherCookie = otherLoginResponse.headers.getSetCookie()[0]?.split(';', 1)[0] ?? '';
+    assert.ok(otherCookie);
+    const otherInitialReadiness = await request('/setup-readiness', 'GET', undefined, otherCookie).then((response) => response.json()) as { ready: boolean; completedSteps: number };
+    assert.deepEqual(otherInitialReadiness, { ready: false, completedSteps: 0, totalSteps: 3, steps: [
+      { key: 'coldStorages', label: 'Configure cold storage', complete: false, count: 0 },
+      { key: 'vehicles', label: 'Configure trucks', complete: false, count: 0 },
+      { key: 'destinations', label: 'Configure destinations', complete: false, count: 0 },
+    ] });
+    const otherColdStorageResponse = await request('/cold-storages', 'POST', {
+      name: 'Cold Room 1', capacityKg: 300, availableCapacityKg: 300, status: 'AVAILABLE',
+    }, otherCookie);
+    const otherColdStorage = await otherColdStorageResponse.json() as { id: string };
+    assert.equal(otherColdStorageResponse.status, 201);
+    const otherVehicleResponse = await request('/vehicles', 'POST', {
+      code: 'TR-02', capacityKg: 600, status: 'AVAILABLE', delayMinutes: 0, restriction: null, availableFrom: null,
+    }, otherCookie);
+    const otherVehicle = await otherVehicleResponse.json() as { id: string };
+    assert.equal(otherVehicleResponse.status, 201);
+    const otherDestinationResponse = await request('/destinations', 'POST', {
+      name: 'Processor A', address: 'Other port', travelMinutes: 30, receivingStart: '08:00', receivingEnd: '16:00', status: 'AVAILABLE', notes: null,
+    }, otherCookie);
+    const otherDestination = await otherDestinationResponse.json() as { id: string };
+    assert.equal(otherDestinationResponse.status, 201);
+    const otherSensorResponse = await request('/sensors', 'POST', {
+      code: 'S-003', deviceUid: 'other-esp32-s-003', provisioningStatus: 'PROVISIONED',
+    }, otherCookie);
+    const otherSensor = await otherSensorResponse.json() as { id: string };
+    assert.equal(otherSensorResponse.status, 201);
 
     const coldStorageResponse = await request('/cold-storages', 'POST', {
       name: 'Cold Room 1',
@@ -193,6 +223,27 @@ test('manages setup resources', { skip: !connectionString }, async () => {
     });
     assert.equal(sensorResponse.status, 201);
     const sensor = await sensorResponse.json() as { id: string };
+
+    assert.deepEqual((await request('/cold-storages').then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [coldStorage.id]);
+    assert.deepEqual((await request('/cold-storages', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [otherColdStorage.id]);
+    assert.deepEqual((await request('/vehicles').then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [vehicle.id]);
+    assert.deepEqual((await request('/vehicles', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [otherVehicle.id]);
+    assert.deepEqual((await request('/destinations').then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [destination.id]);
+    assert.deepEqual((await request('/destinations', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [otherDestination.id]);
+    assert.deepEqual((await request('/sensors').then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [sensor.id]);
+    assert.deepEqual((await request('/sensors', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ id: string }>).map((item) => item.id), [otherSensor.id]);
+    assert.equal((await request(`/cold-storages/${otherColdStorage.id}`, 'PUT', { name: 'Stolen', capacityKg: 300, availableCapacityKg: 300, status: 'AVAILABLE' })).status, 404);
+    assert.equal((await request(`/vehicles/${otherVehicle.id}`, 'DELETE')).status, 404);
+    assert.equal((await request(`/destinations/${otherDestination.id}`, 'DELETE')).status, 404);
+    assert.equal((await request(`/sensors/${otherSensor.id}/diagnostics`)).status, 404);
+    assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' })).status, 404);
+    assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' })).status, 404);
+    assert.equal((await request('/sensors', 'POST', { code: 'S-OTHER', deviceUid: 'other-esp32-s-003', provisioningStatus: 'PROVISIONED' })).status, 409);
+    assert.deepEqual((await request('/sensor-assignment-options').then((response) => response.json()) as Array<{ code: string }>).map((item) => item.code), ['B-017']);
+    assert.deepEqual((await request('/sensor-assignment-options', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ code: string }>).map((item) => item.code), ['B-OTHER']);
+    assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' }, otherCookie)).status, 200);
+    assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'DELETE')).status, 404);
+    assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'DELETE', undefined, otherCookie)).status, 200);
 
     const assignmentResponse = await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-017' });
     assert.equal(assignmentResponse.status, 200);

@@ -103,6 +103,10 @@ model User {
   approvedPlans     Plan[]             @relation("ApprovedPlans")
   ownedPlans        Plan[]             @relation("OwnedPlans")
   batches           Batch[]
+  coldStorages      ColdStorage[]
+  vehicles          Vehicle[]
+  destinations      Destination[]
+  sensors           Sensor[]
   operationalEvents OperationalEvent[]
   authSessions      AuthSession[]
 
@@ -160,15 +164,18 @@ model Batch {
 }
 
 model Sensor {
-  id         BigInt          @id @default(autoincrement())
-  code       String          @unique
+  id                 BigInt                   @id @default(autoincrement())
+  userId             BigInt?                  @map("user_id")
+  code               String
   deviceUid          String                   @unique @map("device_uid")
   status             SensorStatus
   provisioningStatus SensorProvisioningStatus @default(PENDING) @map("provisioning_status")
   lastSeenAt         DateTime?                @map("last_seen_at") @db.Timestamptz
-  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz
-  sessions   SensorSession[]
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions           SensorSession[]
 
+  @@unique([userId, code])
   @@map("sensors")
 }
 
@@ -202,35 +209,42 @@ model TemperatureReading {
 
 model ColdStorage {
   id                  BigInt             @id @default(autoincrement())
-  name                String             @unique
+  userId              BigInt?            @map("user_id")
+  name                String
   capacityKg          Float              @map("capacity_kg")
   availableCapacityKg Float              @map("available_capacity_kg")
   status              ColdStorageStatus
   updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  user                User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents   OperationalEvent[]
   planSteps           PlanStep[]
 
+  @@unique([userId, name])
   @@map("cold_storages")
 }
 
 model Vehicle {
   id                BigInt             @id @default(autoincrement())
-  code              String             @unique
+  userId            BigInt?            @map("user_id")
+  code              String
   capacityKg        Float              @map("capacity_kg")
   status            VehicleStatus
   delayMinutes      Int                @default(0) @map("delay_minutes")
   restriction       String?
   availableFrom     DateTime?          @map("available_from") @db.Timestamptz
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
 
+  @@unique([userId, code])
   @@map("vehicles")
 }
 
 model Destination {
   id                BigInt             @id @default(autoincrement())
-  name              String             @unique
+  userId            BigInt?            @map("user_id")
+  name              String
   address           String
   travelMinutes     Int                @map("travel_minutes")
   receivingStart    DateTime           @map("receiving_start") @db.Time
@@ -238,9 +252,11 @@ model Destination {
   status            DestinationStatus
   notes             String?
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
 
+  @@unique([userId, name])
   @@map("destinations")
 }
 
@@ -259,9 +275,9 @@ model OperationalEvent {
   createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz
   user           User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   batch          Batch?                 @relation(fields: [batchId], references: [id])
-  vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id])
-  coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id])
-  destination    Destination?           @relation(fields: [destinationId], references: [id])
+  vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
+  destination    Destination?           @relation(fields: [destinationId], references: [id], onDelete: Restrict)
   triggeredPlans Plan[]
 
   @@index([userId, occurredAt])
@@ -305,9 +321,9 @@ model PlanStep {
   notes         String?
   plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
   batch         Batch          @relation(fields: [batchId], references: [id])
-  coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id])
-  vehicle       Vehicle?       @relation(fields: [vehicleId], references: [id])
-  destination   Destination?   @relation(fields: [destinationId], references: [id])
+  coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
+  vehicle       Vehicle?       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  destination   Destination?   @relation(fields: [destinationId], references: [id], onDelete: Restrict)
 
   @@unique([planId, sequence])
   @@map("plan_steps")

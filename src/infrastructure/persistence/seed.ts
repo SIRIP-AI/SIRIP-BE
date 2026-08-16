@@ -34,24 +34,24 @@ async function seed() {
         create: { code: 'FT-001', vesselName: 'KM Mina Jaya', startedAt: minutesFromNow(-3_600), endedAt: minutesFromNow(-720), status: 'COMPLETED' },
       });
       const coldStorage = await transaction.coldStorage.upsert({
-        where: { name: 'Cold Room 1' },
+        where: { userId_name: { userId: user.id, name: 'Cold Room 1' } },
         update: { capacityKg: 500, availableCapacityKg: 220, status: 'AVAILABLE' },
-        create: { name: 'Cold Room 1', capacityKg: 500, availableCapacityKg: 220, status: 'AVAILABLE' },
+        create: { userId: user.id, name: 'Cold Room 1', capacityKg: 500, availableCapacityKg: 220, status: 'AVAILABLE' },
       });
       const vehicle = await transaction.vehicle.upsert({
-        where: { code: 'TR-01' },
+        where: { userId_code: { userId: user.id, code: 'TR-01' } },
         update: { capacityKg: 800, status: 'AVAILABLE', delayMinutes: 0, restriction: null, availableFrom: null },
-        create: { code: 'TR-01', capacityKg: 800, status: 'AVAILABLE', delayMinutes: 0 },
+        create: { userId: user.id, code: 'TR-01', capacityKg: 800, status: 'AVAILABLE', delayMinutes: 0 },
       });
       await transaction.vehicle.upsert({
-        where: { code: 'TR-02' },
+        where: { userId_code: { userId: user.id, code: 'TR-02' } },
         update: { capacityKg: 800, status: 'DELAYED', delayMinutes: 90, restriction: 'Delayed at loading point', availableFrom: minutesFromNow(90) },
-        create: { code: 'TR-02', capacityKg: 800, status: 'DELAYED', delayMinutes: 90, restriction: 'Delayed at loading point', availableFrom: minutesFromNow(90) },
+        create: { userId: user.id, code: 'TR-02', capacityKg: 800, status: 'DELAYED', delayMinutes: 90, restriction: 'Delayed at loading point', availableFrom: minutesFromNow(90) },
       });
       const destination = await transaction.destination.upsert({
-        where: { name: 'Processor B' },
+        where: { userId_name: { userId: user.id, name: 'Processor B' } },
         update: { address: 'Tanjung Perak, Surabaya', travelMinutes: 45, receivingStart: new Date('1970-01-01T08:00:00.000Z'), receivingEnd: new Date('1970-01-01T16:00:00.000Z'), status: 'AVAILABLE', notes: 'Call before dispatch' },
-        create: { name: 'Processor B', address: 'Tanjung Perak, Surabaya', travelMinutes: 45, receivingStart: new Date('1970-01-01T08:00:00.000Z'), receivingEnd: new Date('1970-01-01T16:00:00.000Z'), status: 'AVAILABLE', notes: 'Call before dispatch' },
+        create: { userId: user.id, name: 'Processor B', address: 'Tanjung Perak, Surabaya', travelMinutes: 45, receivingStart: new Date('1970-01-01T08:00:00.000Z'), receivingEnd: new Date('1970-01-01T16:00:00.000Z'), status: 'AVAILABLE', notes: 'Call before dispatch' },
       });
 
       const batchInputs = [
@@ -74,9 +74,9 @@ async function seed() {
       ];
       for (const input of sensorInputs) {
         const sensor = await transaction.sensor.upsert({
-          where: { code: input.code },
+          where: { userId_code: { userId: user.id, code: input.code } },
           update: { deviceUid: input.deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED', lastSeenAt: minutesFromNow(-1) },
-          create: { code: input.code, deviceUid: input.deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED', lastSeenAt: minutesFromNow(-1) },
+          create: { userId: user.id, code: input.code, deviceUid: input.deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED', lastSeenAt: minutesFromNow(-1) },
         });
         const batch = batches.get(input.batchCode);
         if (!batch) throw new Error(`Missing seeded batch ${input.batchCode}`);
@@ -109,7 +109,7 @@ async function seed() {
       await transaction.operationalEvent.create({
         data: {
           userId: user.id,
-          vehicleId: (await transaction.vehicle.findUniqueOrThrow({ where: { code: 'TR-02' } })).id,
+          vehicleId: (await transaction.vehicle.findUniqueOrThrow({ where: { userId_code: { userId: user.id, code: 'TR-02' } } })).id,
           type: 'TRUCK_DELAY',
           source: 'WHATSAPP',
           rawMessage: 'TR-02 is delayed by 90 minutes.',
