@@ -9,3 +9,8 @@ export type LoginCredentials = {
   email: string;
   password: string;
 };
+
+export type RegistrationInput = LoginCredentials & {
+  name: string;
+  phone: string;
+};

@@ -19,6 +19,7 @@ test('manages setup resources', { skip: !connectionString }, async () => {
   await database.vehicle.deleteMany();
   await database.destination.deleteMany();
   await database.authSession.deleteMany();
+  await database.user.deleteMany({ where: { email: 'new.operator@sirip.local' } });
   const passwordHash = await hashPassword('demo-password');
   await database.user.upsert({
     where: { email: 'operator@sirip.local' },
@@ -40,6 +41,26 @@ test('manages setup resources', { skip: !connectionString }, async () => {
 
   try {
     assert.equal((await request('/cold-storages')).status, 401);
+    const signupResponse = await request('/auth/signup', 'POST', {
+      name: 'New Operator',
+      email: 'new.operator@sirip.local',
+      phone: '+628111111111',
+      password: 'new-password',
+    });
+    assert.equal(signupResponse.status, 201);
+    assert.ok(signupResponse.headers.getSetCookie()[0]?.startsWith('sirip_session='));
+    assert.equal((await request('/auth/signup', 'POST', {
+      name: 'Duplicate Operator',
+      email: 'new.operator@sirip.local',
+      phone: '+628222222222',
+      password: 'new-password',
+    })).status, 409);
+    assert.equal((await request('/auth/signup', 'POST', {
+      name: 'Invalid Operator',
+      email: 'invalid',
+      phone: '123',
+      password: 'short',
+    })).status, 400);
     assert.equal((await request('/auth/login', 'POST', { email: 'operator@sirip.local', password: 'wrong-password' })).status, 401);
     const loginResponse = await request('/auth/login', 'POST', { email: 'operator@sirip.local', password: 'demo-password' });
     assert.equal(loginResponse.status, 200);
