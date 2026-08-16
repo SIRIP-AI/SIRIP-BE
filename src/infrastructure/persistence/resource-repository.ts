@@ -308,15 +308,17 @@ export class ResourceRepository {
   }
 
   async setupReadiness(userId: bigint) {
-    const [coldStorages, vehicles, destinations] = await Promise.all([
+    const [coldStorages, vehicles, destinations, sensors] = await Promise.all([
       this.database.coldStorage.count({ where: { userId } }),
       this.database.vehicle.count({ where: { userId } }),
       this.database.destination.count({ where: { userId } }),
+      this.database.sensor.count({ where: { userId } }),
     ]);
     const steps = [
       { key: 'coldStorages', label: 'Configure cold storage', complete: coldStorages > 0, count: coldStorages },
       { key: 'vehicles', label: 'Configure trucks', complete: vehicles > 0, count: vehicles },
       { key: 'destinations', label: 'Configure destinations', complete: destinations > 0, count: destinations },
+      { key: 'sensors', label: 'Configure sensors', complete: sensors > 0, count: sensors },
     ];
     return { ready: steps.every((step) => step.complete), completedSteps: steps.filter((step) => step.complete).length, totalSteps: steps.length, steps };
   }

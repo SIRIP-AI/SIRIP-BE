@@ -133,10 +133,11 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     const otherCookie = otherLoginResponse.headers.getSetCookie()[0]?.split(';', 1)[0] ?? '';
     assert.ok(otherCookie);
     const otherInitialReadiness = await request('/setup-readiness', 'GET', undefined, otherCookie).then((response) => response.json());
-    assert.deepEqual(otherInitialReadiness, { ready: false, completedSteps: 0, totalSteps: 3, steps: [
+    assert.deepEqual(otherInitialReadiness, { ready: false, completedSteps: 0, totalSteps: 4, steps: [
       { key: 'coldStorages', label: 'Configure cold storage', complete: false, count: 0 },
       { key: 'vehicles', label: 'Configure trucks', complete: false, count: 0 },
       { key: 'destinations', label: 'Configure destinations', complete: false, count: 0 },
+      { key: 'sensors', label: 'Configure sensors', complete: false, count: 0 },
     ] });
     const otherColdStorageResponse = await request('/cold-storages', 'POST', {
       name: 'Cold Room 1', capacityKg: 300, availableCapacityKg: 300, operationalStatus: 'AVAILABLE',
@@ -300,7 +301,7 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'DELETE')).status, 200);
     const readiness = await request('/setup-readiness').then((response) => response.json()) as { ready: boolean; completedSteps: number };
     assert.equal(readiness.ready, true);
-    assert.equal(readiness.completedSteps, 3);
+    assert.equal(readiness.completedSteps, 4);
     assert.equal((await request('/cold-storages', 'POST', { name: 'Invalid', capacityKg: 100, availableCapacityKg: 101, operationalStatus: 'AVAILABLE' })).status, 400);
     assert.equal((await request(`/cold-storages/${coldStorage.id}`, 'DELETE')).status, 204);
     await database.planStep.deleteMany({ where: { vehicleId: BigInt(vehicle.id) } });
