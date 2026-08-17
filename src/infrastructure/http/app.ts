@@ -7,7 +7,6 @@ import type { Database } from '../persistence/database';
 import { FishingTripRepository } from '../persistence/fishing-trip-repository';
 import { OverviewRepository } from '../persistence/overview-repository';
 import { ResourceRepository } from '../persistence/resource-repository';
-import { TelemetryRepository } from '../persistence/telemetry-repository';
 import { createAuthRouter, requireAuth } from './auth-router';
 import { createBatchesRouter } from './batches-router';
 import { createFishingTripsRouter } from './fishing-trips-router';
@@ -23,7 +22,7 @@ export function createApp(database: Database) {
   app.use((request, response, next) => {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Access-Control-Allow-Credentials', 'true');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     if (request.method === 'OPTIONS') return response.sendStatus(204);
     next();
@@ -31,7 +30,7 @@ export function createApp(database: Database) {
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
   app.use('/api/auth', createAuthRouter(auth));
-  app.use('/api/telemetry', createTelemetryRouter(new TelemetryRepository(database)));
+  app.use('/api/telemetry', createTelemetryRouter());
   app.use('/api', requireAuth(auth));
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
