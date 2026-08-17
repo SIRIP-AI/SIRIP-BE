@@ -1,7 +1,7 @@
-import { calculateQualityState } from '../../domain/quality';
-import type { TelemetryUpload } from '../../domain/telemetry';
 import { ConflictError, RequestError } from '../../domain/errors';
-import type { Database } from './database';
+import { calculateQualityState } from '../../domain/quality/quality';
+import type { TelemetryUpload } from '../../domain/telemetry/telemetry';
+import type { Database } from '../persistence/database';
 
 export class TelemetryRepository {
   constructor(private readonly database: Database) {}

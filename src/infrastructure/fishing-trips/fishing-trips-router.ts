@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { RequestError } from '../../domain/errors';
-import type { FishingTripInput } from '../../domain/fishing-trips';
-import type { FishingTripRepository } from '../persistence/fishing-trip-repository';
-import type { AuthLocals } from './auth-router';
+import type { FishingTripInput } from '../../domain/fishing-trips/fishing-trips';
+import type { AuthLocals } from '../auth/auth-router';
+import type { FishingTripRepository } from './fishing-trip-repository';
 
 function object(body: unknown) { if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400); return body as Record<string, unknown>; }
 function text(body: Record<string, unknown>, field: string) { const value = body[field]; if (typeof value !== 'string' || !value.trim()) throw new RequestError(`${field} is required`, 400); if (value.trim().length > 100) throw new RequestError(`${field} must be at most 100 characters`, 400); return value.trim(); }

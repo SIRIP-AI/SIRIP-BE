@@ -3,8 +3,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 
 import { RequestError } from '../../domain/errors';
-import type { TelemetryReading, TelemetryUpload } from '../../domain/telemetry';
-import type { TelemetryRepository } from '../persistence/telemetry-repository';
+import type { TelemetryReading, TelemetryUpload } from '../../domain/telemetry/telemetry';
+import type { TelemetryRepository } from './telemetry-repository';
 
 function bodyObject(body: unknown) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);

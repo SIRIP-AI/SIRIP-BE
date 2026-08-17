@@ -1,24 +1,24 @@
 import express, { type ErrorRequestHandler } from 'express';
 
-import { PlanService } from '../../application/plan-service';
+import { PlanService } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
-import { validatePlanProposal } from '../../domain/plans';
-import { generateAiPlan } from '../ai/plan-generator';
+import { validatePlanProposal } from '../../domain/plans/plans';
+import { createAuthRouter, requireAuth } from '../auth/auth-router';
 import { AuthService } from '../auth/auth-service';
-import { BatchRepository } from '../persistence/batch-repository';
+import { BatchRepository } from '../batches/batch-repository';
+import { createBatchesRouter } from '../batches/batches-router';
+import { FishingTripRepository } from '../fishing-trips/fishing-trip-repository';
+import { createFishingTripsRouter } from '../fishing-trips/fishing-trips-router';
+import { OverviewRepository } from '../overview/overview-repository';
+import { createOverviewRouter } from '../overview/overview-router';
 import type { Database } from '../persistence/database';
-import { FishingTripRepository } from '../persistence/fishing-trip-repository';
-import { OverviewRepository } from '../persistence/overview-repository';
-import { PlanRepository } from '../persistence/plan-repository';
-import { ResourceRepository } from '../persistence/resource-repository';
-import { TelemetryRepository } from '../persistence/telemetry-repository';
-import { createAuthRouter, requireAuth } from './auth-router';
-import { createBatchesRouter } from './batches-router';
-import { createFishingTripsRouter } from './fishing-trips-router';
-import { createOverviewRouter } from './overview-router';
-import { createPlansRouter } from './plans-router';
-import { createResourcesRouter } from './resources-router';
-import { createTelemetryRouter } from './telemetry-router';
+import { generateAiPlan } from '../plans/plan-generator';
+import { PlanRepository } from '../plans/plan-repository';
+import { createPlansRouter } from '../plans/plans-router';
+import { ResourceRepository } from '../resources/resource-repository';
+import { createResourcesRouter } from '../resources/resources-router';
+import { TelemetryRepository } from '../telemetry/telemetry-repository';
+import { createTelemetryRouter } from '../telemetry/telemetry-router';
 
 export function createApp(database: Database) {
   const app = express();

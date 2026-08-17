@@ -1,5 +1,5 @@
-import { ConflictError, RequestError } from '../domain/errors';
-import { activePlanSnapshot, orderPlanProposal, type AiPlanProposal, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../domain/plans';
+import { ConflictError, RequestError } from '../../domain/errors';
+import { activePlanSnapshot, orderPlanProposal, type AiPlanProposal, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../../domain/plans/plans';
 
 export type PlanGenerationFeedback = { validationErrors: string[] };
 export type PlanGenerator = (context: PlanningContext, feedback?: PlanGenerationFeedback) => Promise<AiPlanProposal>;
