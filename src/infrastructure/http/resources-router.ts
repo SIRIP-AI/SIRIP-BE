@@ -12,6 +12,7 @@ import {
 } from '../../domain/resources';
 import { RequestError } from '../../domain/errors';
 import type { ResourceRepository } from '../persistence/resource-repository';
+import type { AuthLocals } from './auth-router';
 
 function bodyObject(body: unknown) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
@@ -143,44 +144,49 @@ function sensorAssignmentInput(body: unknown): SensorAssignmentInput {
   return { batchCode: text(value, 'batchCode') };
 }
 
+function userId(locals: object) {
+  return BigInt((locals as AuthLocals).user.id);
+}
+
 export function createResourcesRouter(repository: ResourceRepository) {
   const router = Router();
 
-  router.get('/cold-storages', async (_request, response) => response.json(await repository.listColdStorages()));
-  router.post('/cold-storages', async (request, response) => response.status(201).json(await repository.createColdStorage(coldStorageInput(request.body))));
-  router.put('/cold-storages/:id', async (request, response) => response.json(await repository.updateColdStorage(resourceId(request.params.id), coldStorageInput(request.body))));
+  router.get('/setup-readiness', async (_request, response) => response.json(await repository.setupReadiness(userId(response.locals))));
+  router.get('/cold-storages', async (_request, response) => response.json(await repository.listColdStorages(userId(response.locals))));
+  router.post('/cold-storages', async (request, response) => response.status(201).json(await repository.createColdStorage(userId(response.locals), coldStorageInput(request.body))));
+  router.put('/cold-storages/:id', async (request, response) => response.json(await repository.updateColdStorage(userId(response.locals), resourceId(request.params.id), coldStorageInput(request.body))));
   router.delete('/cold-storages/:id', async (request, response) => {
-    await repository.deleteColdStorage(resourceId(request.params.id));
+    await repository.deleteColdStorage(userId(response.locals), resourceId(request.params.id));
     response.sendStatus(204);
   });
 
-  router.get('/vehicles', async (_request, response) => response.json(await repository.listVehicles()));
-  router.post('/vehicles', async (request, response) => response.status(201).json(await repository.createVehicle(vehicleInput(request.body))));
-  router.put('/vehicles/:id', async (request, response) => response.json(await repository.updateVehicle(resourceId(request.params.id), vehicleInput(request.body))));
+  router.get('/vehicles', async (_request, response) => response.json(await repository.listVehicles(userId(response.locals))));
+  router.post('/vehicles', async (request, response) => response.status(201).json(await repository.createVehicle(userId(response.locals), vehicleInput(request.body))));
+  router.put('/vehicles/:id', async (request, response) => response.json(await repository.updateVehicle(userId(response.locals), resourceId(request.params.id), vehicleInput(request.body))));
   router.delete('/vehicles/:id', async (request, response) => {
-    await repository.deleteVehicle(resourceId(request.params.id));
+    await repository.deleteVehicle(userId(response.locals), resourceId(request.params.id));
     response.sendStatus(204);
   });
 
-  router.get('/destinations', async (_request, response) => response.json(await repository.listDestinations()));
-  router.post('/destinations', async (request, response) => response.status(201).json(await repository.createDestination(destinationInput(request.body))));
-  router.put('/destinations/:id', async (request, response) => response.json(await repository.updateDestination(resourceId(request.params.id), destinationInput(request.body))));
+  router.get('/destinations', async (_request, response) => response.json(await repository.listDestinations(userId(response.locals))));
+  router.post('/destinations', async (request, response) => response.status(201).json(await repository.createDestination(userId(response.locals), destinationInput(request.body))));
+  router.put('/destinations/:id', async (request, response) => response.json(await repository.updateDestination(userId(response.locals), resourceId(request.params.id), destinationInput(request.body))));
   router.delete('/destinations/:id', async (request, response) => {
-    await repository.deleteDestination(resourceId(request.params.id));
+    await repository.deleteDestination(userId(response.locals), resourceId(request.params.id));
     response.sendStatus(204);
   });
 
-  router.get('/sensors', async (_request, response) => response.json(await repository.listSensors()));
-  router.post('/sensors', async (request, response) => response.status(201).json(await repository.createSensor(sensorInput(request.body))));
-  router.put('/sensors/:id', async (request, response) => response.json(await repository.updateSensor(resourceId(request.params.id), sensorInput(request.body))));
+  router.get('/sensors', async (_request, response) => response.json(await repository.listSensors(userId(response.locals))));
+  router.post('/sensors', async (request, response) => response.status(201).json(await repository.createSensor(userId(response.locals), sensorInput(request.body))));
+  router.put('/sensors/:id', async (request, response) => response.json(await repository.updateSensor(userId(response.locals), resourceId(request.params.id), sensorInput(request.body))));
   router.delete('/sensors/:id', async (request, response) => {
-    await repository.deleteSensor(resourceId(request.params.id));
+    await repository.deleteSensor(userId(response.locals), resourceId(request.params.id));
     response.sendStatus(204);
   });
-  router.get('/sensor-assignment-options', async (_request, response) => response.json(await repository.listSensorAssignmentOptions()));
-  router.post('/sensors/:id/assignment', async (request, response) => response.json(await repository.assignSensor(resourceId(request.params.id), sensorAssignmentInput(request.body))));
-  router.delete('/sensors/:id/assignment', async (request, response) => response.json(await repository.unassignSensor(resourceId(request.params.id))));
-  router.get('/sensors/:id/diagnostics', async (request, response) => response.json(await repository.sensorDiagnostics(resourceId(request.params.id))));
+  router.get('/sensor-assignment-options', async (_request, response) => response.json(await repository.listSensorAssignmentOptions(userId(response.locals))));
+  router.post('/sensors/:id/assignment', async (request, response) => response.json(await repository.assignSensor(userId(response.locals), resourceId(request.params.id), sensorAssignmentInput(request.body))));
+  router.delete('/sensors/:id/assignment', async (request, response) => response.json(await repository.unassignSensor(userId(response.locals), resourceId(request.params.id))));
+  router.get('/sensors/:id/diagnostics', async (request, response) => response.json(await repository.sensorDiagnostics(userId(response.locals), resourceId(request.params.id))));
 
   return router;
 }

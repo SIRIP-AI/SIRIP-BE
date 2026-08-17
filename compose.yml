@@ -28,6 +28,18 @@ services:
         condition: service_healthy
     restart: "no"
 
+  seed:
+    build:
+      context: .
+      target: build
+    command: ["npm", "run", "seed"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-sirip}?schema=public
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
     build:
       context: .
@@ -36,10 +48,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-sirip}?schema=public
       PORT: 3000
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: "false"
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:
-      migrate:
+      seed:
         condition: service_completed_successfully
     init: true
     restart: unless-stopped

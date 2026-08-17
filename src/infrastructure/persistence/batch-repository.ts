@@ -21,19 +21,27 @@ function translate(error: unknown): never {
 
 export class BatchRepository {
   constructor(private readonly database: Database) {}
-  async list(filter?: BatchFilter) {
-    const where: Prisma.BatchWhereInput = { deletedAt: null };
+  async list(userId: bigint, filter?: BatchFilter) {
+    const where: Prisma.BatchWhereInput = { userId, deletedAt: null };
     if (filter === 'active') where.status = { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] };
     if (filter === 'closed') where.status = { in: ['HANDED_OVER', 'CLOSED'] };
     if (filter === 'at-risk') where.OR = [{ status: 'INSPECTION_HOLD' }, { remainingQualityWindowDays: { lte: 2 } }];
     return (await this.database.batch.findMany({ where, orderBy: { receivedAt: 'desc' }, include })).map(response);
   }
-  async create(input: BatchInput) { try { return response(await this.database.batch.create({ data: { ...input, receivedAt: new Date(input.receivedAt), status: 'MONITORING' }, include })); } catch (error) { translate(error); } }
-  async update(id: bigint, input: BatchInput) { try { return response(await this.database.batch.update({ where: { id, deletedAt: null }, data: { ...input, receivedAt: new Date(input.receivedAt) }, include })); } catch (error) { translate(error); } }
-  async delete(id: bigint) {
-    const batch = await this.database.batch.findFirst({ where: { id, deletedAt: null }, include: { _count: { select: { sensorSessions: true, operationalEvents: true, planSteps: true } } } });
+  async create(userId: bigint, input: BatchInput) {
+    const trip = await this.database.fishingTrip.findFirst({ where: { id: input.fishingTripId, userId, deletedAt: null } });
+    if (!trip) throw new NotFoundError('Fishing trip');
+    try { return response(await this.database.batch.create({ data: { ...input, userId, receivedAt: new Date(input.receivedAt), status: 'MONITORING' }, include })); } catch (error) { translate(error); }
+  }
+  async update(userId: bigint, id: bigint, input: BatchInput) {
+    const trip = await this.database.fishingTrip.findFirst({ where: { id: input.fishingTripId, userId, deletedAt: null } });
+    if (!trip) throw new NotFoundError('Fishing trip');
+    try { return response(await this.database.batch.update({ where: { id, userId, deletedAt: null }, data: { ...input, receivedAt: new Date(input.receivedAt) }, include })); } catch (error) { translate(error); }
+  }
+  async delete(userId: bigint, id: bigint) {
+    const batch = await this.database.batch.findFirst({ where: { id, userId, deletedAt: null }, include: { _count: { select: { sensorSessions: true, operationalEvents: true, planSteps: true } } } });
     if (!batch) throw new NotFoundError('Batch');
     if (batch._count.sensorSessions || batch._count.operationalEvents || batch._count.planSteps) throw new ConflictError('Batches with sensor, event, or plan history cannot be deleted');
-    await this.database.batch.update({ where: { id }, data: { deletedAt: new Date() } });
+    await this.database.batch.update({ where: { id, userId }, data: { deletedAt: new Date() } });
   }
 }

@@ -5,7 +5,9 @@ import type { Database } from './database';
 
 const include = { _count: { select: { batches: true } } } as const;
 
-function response(trip: Awaited<ReturnType<Database['fishingTrip']['findFirstOrThrow']>> & { _count: { batches: number } }) {
+type FishingTripResponse = Prisma.FishingTripGetPayload<{ include: typeof include }>;
+
+function response(trip: FishingTripResponse) {
   return { id: trip.id.toString(), code: trip.code, vesselName: trip.vesselName, startedAt: trip.startedAt.toISOString(), endedAt: trip.endedAt?.toISOString() ?? null, status: trip.status, createdAt: trip.createdAt.toISOString(), batchCount: trip._count.batches };
 }
 
@@ -20,32 +22,32 @@ function translate(error: unknown): never {
 export class FishingTripRepository {
   constructor(private readonly database: Database) {}
 
-  async list() {
-    return (await this.database.fishingTrip.findMany({ where: { deletedAt: null }, orderBy: { startedAt: 'desc' }, include })).map(response);
+  async list(userId: bigint) {
+    return (await this.database.fishingTrip.findMany({ where: { userId, deletedAt: null }, orderBy: { startedAt: 'desc' }, include })).map(response);
   }
 
-  async create(input: FishingTripInput) {
-    try { return response(await this.database.fishingTrip.create({ data: { ...input, startedAt: new Date(), status: 'ACTIVE' }, include })); } catch (error) { translate(error); }
+  async create(userId: bigint, input: FishingTripInput) {
+    try { return response(await this.database.fishingTrip.create({ data: { ...input, userId, startedAt: new Date(), status: 'ACTIVE' }, include })); } catch (error) { translate(error); }
   }
 
-  async update(id: bigint, input: FishingTripInput) {
-    try { return response(await this.database.fishingTrip.update({ where: { id, deletedAt: null }, data: input, include })); } catch (error) { translate(error); }
+  async update(userId: bigint, id: bigint, input: FishingTripInput) {
+    try { return response(await this.database.fishingTrip.update({ where: { id, userId, deletedAt: null }, data: input, include })); } catch (error) { translate(error); }
   }
 
-  async complete(id: bigint) {
-    const result = await this.database.fishingTrip.updateMany({ where: { id, deletedAt: null, status: 'ACTIVE' }, data: { status: 'COMPLETED', endedAt: new Date() } });
+  async complete(userId: bigint, id: bigint) {
+    const result = await this.database.fishingTrip.updateMany({ where: { id, userId, deletedAt: null, status: 'ACTIVE' }, data: { status: 'COMPLETED', endedAt: new Date() } });
     if (!result.count) {
-      const trip = await this.database.fishingTrip.findFirst({ where: { id, deletedAt: null } });
+      const trip = await this.database.fishingTrip.findFirst({ where: { id, userId, deletedAt: null } });
       if (!trip) throw new NotFoundError('Fishing trip');
       throw new ConflictError('Fishing trip is already completed');
     }
-    return response(await this.database.fishingTrip.findFirstOrThrow({ where: { id, deletedAt: null }, include }));
+    return response(await this.database.fishingTrip.findFirstOrThrow({ where: { id, userId, deletedAt: null }, include }));
   }
 
-  async delete(id: bigint) {
-    const trip = await this.database.fishingTrip.findFirst({ where: { id, deletedAt: null }, include: { _count: { select: { batches: true } } } });
+  async delete(userId: bigint, id: bigint) {
+    const trip = await this.database.fishingTrip.findFirst({ where: { id, userId, deletedAt: null }, include });
     if (!trip) throw new NotFoundError('Fishing trip');
     if (trip._count.batches) throw new ConflictError('Fishing trips with batches cannot be deleted');
-    await this.database.fishingTrip.update({ where: { id }, data: { deletedAt: new Date() } });
+    await this.database.fishingTrip.update({ where: { id, userId }, data: { deletedAt: new Date() } });
   }
 }
