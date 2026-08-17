@@ -68,7 +68,9 @@ test('manages authenticated account operations', { skip: !connectionString }, as
       approvedAt: new Date(),
       steps: { create: { sequence: 1, actionType: 'INSPECT', batchId: batch.id, scheduledAt: new Date(Date.now() + 60_000), status: 'UPCOMING' } },
     },
+    include: { steps: true },
   });
+  const activeStep = plan.steps[0]!;
   await database.plan.create({
     data: { userId: otherOperator.id, version: 3, status: 'ACTIVE', reason: 'Other plan' },
   });
@@ -136,6 +138,19 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.deepEqual(overview.priorityBatches.map((item) => [item.code, item.qualityStatus]), [['B-017', 'WARNING']]);
     assert.equal(overview.activePlan?.steps[0]?.batchCode, 'B-017');
     assert.deepEqual(overview.alerts.map((alert) => alert.title), ['B-017 temperature excursion']);
+    const plansResponse = await request('/plans');
+    assert.equal(plansResponse.status, 200);
+    const plans = await plansResponse.json() as { activePlan: { id: string; steps: Array<{ id: string; status: string; completedAt: string | null }> } | null; proposedPlans: unknown[]; history: unknown[] };
+    assert.equal(plans.activePlan?.id, plan.id.toString());
+    assert.deepEqual(plans.proposedPlans, []);
+    assert.deepEqual(plans.history, []);
+    const completionResponse = await request(`/plans/${plan.id}/steps/${activeStep.id}/complete`, 'POST');
+    assert.equal(completionResponse.status, 200);
+    const completedPlan = await completionResponse.json() as { steps: Array<{ id: string; status: string; completedAt: string | null }> };
+    assert.deepEqual(completedPlan.steps.map((step) => step.status), ['COMPLETED']);
+    assert.ok(completedPlan.steps[0]?.completedAt);
+    assert.equal((await request(`/plans/${plan.id}/steps/${activeStep.id}/complete`, 'POST')).status, 409);
+    assert.equal((await request(`/plans/0/steps/${activeStep.id}/complete`, 'POST')).status, 400);
 
     const otherLoginResponse = await request('/auth/login', 'POST', { email: 'other.operator@sirip.local', password: 'demo-password' });
     assert.equal(otherLoginResponse.status, 200);

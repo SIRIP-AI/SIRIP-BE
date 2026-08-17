@@ -1,17 +1,22 @@
 import express, { type ErrorRequestHandler } from 'express';
 
+import { PlanService } from '../../application/plan-service';
 import { RequestError } from '../../domain/errors';
+import { validatePlanProposal } from '../../domain/plans';
+import { generateAiPlan } from '../ai/plan-generator';
 import { AuthService } from '../auth/auth-service';
 import { BatchRepository } from '../persistence/batch-repository';
 import type { Database } from '../persistence/database';
 import { FishingTripRepository } from '../persistence/fishing-trip-repository';
 import { OverviewRepository } from '../persistence/overview-repository';
+import { PlanRepository } from '../persistence/plan-repository';
 import { ResourceRepository } from '../persistence/resource-repository';
 import { TelemetryRepository } from '../persistence/telemetry-repository';
 import { createAuthRouter, requireAuth } from './auth-router';
 import { createBatchesRouter } from './batches-router';
 import { createFishingTripsRouter } from './fishing-trips-router';
 import { createOverviewRouter } from './overview-router';
+import { createPlansRouter } from './plans-router';
 import { createResourcesRouter } from './resources-router';
 import { createTelemetryRouter } from './telemetry-router';
 
@@ -36,6 +41,7 @@ export function createApp(database: Database) {
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));
+  app.use('/api/plans', createPlansRouter(new PlanService(new PlanRepository(database), generateAiPlan, validatePlanProposal)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {
