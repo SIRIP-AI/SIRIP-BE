@@ -252,6 +252,14 @@ function resourceCombination(step: AiPlanStep) {
   return !present[0] && !present[1] && !present[2];
 }
 
+export function orderPlanProposal(proposal: AiPlanProposal): AiPlanProposal {
+  return { ...proposal, steps: [...proposal.steps].sort((left, right) => {
+    const leftTime = Date.parse(left.scheduledAt);
+    const rightTime = Date.parse(right.scheduledAt);
+    return (Number.isFinite(leftTime) ? leftTime : Number.POSITIVE_INFINITY) - (Number.isFinite(rightTime) ? rightTime : Number.POSITIVE_INFINITY);
+  }) };
+}
+
 export function validatePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {
   const errors: string[] = [];
   const now = new Date(context.now);

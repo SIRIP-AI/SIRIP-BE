@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { InvalidPlanProposalError, parseAiPlanProposal, type PlanningContext, validatePlanProposal } from './plans';
+import { InvalidPlanProposalError, orderPlanProposal, parseAiPlanProposal, type PlanningContext, validatePlanProposal } from './plans';
 
 function context(): PlanningContext {
   return {
@@ -40,6 +40,11 @@ test('parses strict structured AI proposals', () => {
   assert.deepEqual(parseAiPlanProposal(JSON.stringify(validProposal)), validProposal);
   assert.throws(() => parseAiPlanProposal('{"reason":"x","steps":[],"extra":true}'), InvalidPlanProposalError);
   assert.throws(() => parseAiPlanProposal('{"reason":"x","steps":[{"actionType":"STORE","batchId":"0","scheduledAt":"soon"}]}'), InvalidPlanProposalError);
+});
+
+test('orders generated steps chronologically without changing equal-time order', () => {
+  const ordered = orderPlanProposal({ ...validProposal, steps: [validProposal.steps[2]!, validProposal.steps[0]!, validProposal.steps[1]!] });
+  assert.deepEqual(ordered.steps.map((step) => step.actionType), ['STORE', 'LOAD', 'DISPATCH']);
 });
 
 test('accepts a feasible proposal', () => {

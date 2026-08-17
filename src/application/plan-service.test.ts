@@ -68,7 +68,7 @@ test('repairs one deterministically invalid proposal and persists only the valid
     }
     assert.deepEqual(feedback, { validationErrors: ['capacity exceeded'] });
     return repaired;
-  }, (value) => value === proposal ? ['capacity exceeded'] : []);
+  }, (value) => value.reason === proposal.reason ? ['capacity exceeded'] : []);
   const saved = await service.generateProposal(1n);
   assert.equal(saved, view);
   assert.equal(generatorCalls, 2);

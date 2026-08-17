@@ -78,6 +78,7 @@ async function requestPlan(configurationValue: ReturnType<typeof configuration>,
       headers: { Authorization: `Bearer ${configurationValue.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: configurationValue.model,
+        stream: false,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },

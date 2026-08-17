@@ -28,14 +28,15 @@ test('retries one structural failure without retrying HTTP failures', async () =
   process.env.AI_API_KEY = 'test-key';
   process.env.AI_MODEL = 'test-model';
   try {
-    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const requests: Array<{ stream: boolean; messages: Array<{ role: string; content: string }> }> = [];
     const outputs = ['PRIVATE_PROVIDER_OUTPUT', JSON.stringify(proposal)];
     globalThis.fetch = async (_input, init) => {
-      requests.push(JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> });
+      requests.push(JSON.parse(String(init?.body)) as { stream: boolean; messages: Array<{ role: string; content: string }> });
       return new Response(JSON.stringify({ choices: [{ message: { content: outputs.shift() } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
     assert.deepEqual(await generateAiPlan(context), proposal);
     assert.equal(requests.length, 2);
+    assert.equal(requests.every((request) => request.stream === false), true);
     const repairPrompt = requests[1]?.messages[1]?.content ?? '';
     assert.match(repairPrompt, /corrected strict JSON/);
     assert.doesNotMatch(repairPrompt, /PRIVATE_PROVIDER_OUTPUT/);

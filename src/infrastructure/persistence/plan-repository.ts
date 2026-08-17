@@ -98,7 +98,7 @@ function planningStep(step: {
 }
 
 async function lockUser(transaction: Prisma.TransactionClient, userId: bigint) {
-  await transaction.$queryRaw`SELECT pg_advisory_xact_lock(${userId})`;
+  await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
 }
 
 function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {

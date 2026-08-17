@@ -1,5 +1,5 @@
 import { ConflictError, RequestError } from '../domain/errors';
-import { activePlanSnapshot, type AiPlanProposal, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../domain/plans';
+import { activePlanSnapshot, orderPlanProposal, type AiPlanProposal, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../domain/plans';
 
 export type PlanGenerationFeedback = { validationErrors: string[] };
 export type PlanGenerator = (context: PlanningContext, feedback?: PlanGenerationFeedback) => Promise<AiPlanProposal>;
@@ -41,14 +41,14 @@ export class PlanService {
   async generateProposal(userId: bigint) {
     let generationContext = await this.repository.loadContext(userId);
     requireGenerationContext(generationContext);
-    let proposal = await this.generate(generationContext);
+    let proposal = orderPlanProposal(await this.generate(generationContext));
     let freshContext = await this.repository.loadContext(userId);
     requireGenerationContext(freshContext);
     const activePlanChanged = activePlanSnapshot(generationContext.activePlan) !== activePlanSnapshot(freshContext.activePlan);
     let errors = activePlanChanged ? ['Active plan changed during generation'] : this.validate(proposal, freshContext);
     if (errors.length) {
       generationContext = freshContext;
-      proposal = await this.generate(generationContext, feedback(errors));
+      proposal = orderPlanProposal(await this.generate(generationContext, feedback(errors)));
       freshContext = await this.repository.loadContext(userId);
       requireGenerationContext(freshContext);
       if (activePlanSnapshot(generationContext.activePlan) !== activePlanSnapshot(freshContext.activePlan)) throw new ConflictError('Active plan changed during generation');
