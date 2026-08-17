@@ -273,7 +273,10 @@ test('manages authenticated account operations', { skip: !connectionString }, as
       provisioningStatus: 'PROVISIONED',
     });
     assert.equal(sensorResponse.status, 201);
-    const sensor = await sensorResponse.json() as { id: string };
+    const sensor = await sensorResponse.json() as { id: string; provisioningStatus: string; connectivityStatus: string; lastSeenAt: string | null };
+    assert.equal(sensor.provisioningStatus, 'PROVISIONED');
+    assert.equal(sensor.connectivityStatus, 'ONLINE');
+    assert.ok(sensor.lastSeenAt && !Number.isNaN(Date.parse(sensor.lastSeenAt)));
     assert.deepEqual((await request('/cold-storages').then((response) => response.json()) as Array<{ id: string }>).map(({ id }) => id), [coldStorage.id]);
     assert.deepEqual((await request('/cold-storages', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ id: string }>).map(({ id }) => id), [otherColdStorage.id]);
     assert.deepEqual((await request('/vehicles').then((response) => response.json()) as Array<{ id: string }>).map(({ id }) => id), [vehicle.id]);

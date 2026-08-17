@@ -101,13 +101,14 @@ function sensorResponse(resource: {
   sessions: Array<{ batch: { code: string }; lastSyncedAt: Date | null }>;
 }) {
   const session = resource.sessions[0];
+  const recentlySeen = resource.lastSeenAt && Date.now() - resource.lastSeenAt.getTime() <= 20 * 60 * 1000;
   return {
     id: resource.id.toString(),
     code: resource.code,
     deviceUid: resource.deviceUid,
     status: resource.status,
     provisioningStatus: resource.provisioningStatus,
-    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' ? 'OFFLINE' : resource.lastSeenAt ? 'ONLINE' : 'NEVER_CONNECTED',
+    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' || (resource.lastSeenAt && !recentlySeen) ? 'OFFLINE' : recentlySeen ? 'ONLINE' : 'NEVER_CONNECTED',
     lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
     createdAt: resource.createdAt.toISOString(),
     assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
@@ -241,8 +242,20 @@ export class ResourceRepository {
 
   async createSensor(userId: bigint, input: SensorInput) {
     try {
-      return sensorResponse(await this.database.sensor.create({ data: { ...input, userId, status: 'AVAILABLE' }, include: sensorInclude(userId) }));
+      const existing = await this.database.sensor.findUnique({ where: { deviceUid: input.deviceUid }, include: sensorInclude(userId) });
+      if (existing) {
+        if (existing.userId === userId && existing.code === input.code && input.provisioningStatus === 'PROVISIONED') return sensorResponse(existing);
+        throw new ConflictError('A resource with that name or code already exists');
+      }
+      return sensorResponse(await this.database.sensor.create({
+        data: { ...input, userId, status: 'AVAILABLE', lastSeenAt: input.provisioningStatus === 'PROVISIONED' ? new Date() : null },
+        include: sensorInclude(userId),
+      }));
     } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' && input.provisioningStatus === 'PROVISIONED') {
+        const existing = await this.database.sensor.findUnique({ where: { deviceUid: input.deviceUid }, include: sensorInclude(userId) });
+        if (existing?.userId === userId && existing.code === input.code) return sensorResponse(existing);
+      }
       translateDatabaseError(error);
     }
   }
