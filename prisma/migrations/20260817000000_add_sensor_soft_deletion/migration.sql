@@ -1,0 +1,1 @@
+ALTER TABLE "sensors" ADD COLUMN "deleted_at" TIMESTAMPTZ;
