@@ -11,7 +11,12 @@ export type QualityState = {
 };
 
 const millisecondsPerDay = 86_400_000;
-const initialQualityWindowDays = 12;
+export const initialQualityWindowDays = 12;
+
+export function calculateQualityAgeIncrement(previous: QualityReading, current: QualityReading) {
+  const intervalDays = Math.max(0, current.measuredAt.getTime() - previous.measuredAt.getTime()) / millisecondsPerDay;
+  return intervalDays * Math.exp(0.12 * previous.temperatureC);
+}
 
 export function calculateQualityState(readings: QualityReading[]): QualityState | null {
   if (!readings.length) return null;
@@ -21,8 +26,7 @@ export function calculateQualityState(readings: QualityReading[]): QualityState 
     const previous = ordered[index - 1];
     const current = ordered[index];
     if (!previous || !current) continue;
-    const intervalDays = (current.measuredAt.getTime() - previous.measuredAt.getTime()) / millisecondsPerDay;
-    equivalentQualityAgeDays += intervalDays * Math.exp(0.12 * previous.temperatureC);
+    equivalentQualityAgeDays += calculateQualityAgeIncrement(previous, current);
   }
   const latest = ordered[ordered.length - 1];
   if (!latest) return null;

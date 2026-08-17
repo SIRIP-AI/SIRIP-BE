@@ -197,6 +197,7 @@ model SensorSession {
   batch        Batch               @relation(fields: [batchId], references: [id])
   readings     TemperatureReading[]
 
+  @@index([sensorId, status])
   @@map("sensor_sessions")
 }
 
@@ -210,6 +211,7 @@ model TemperatureReading {
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
   sensorSession   SensorSession @relation(fields: [sensorSessionId], references: [id])
 
+  @@index([sensorSessionId, measuredAt])
   @@map("temperature_readings")
 }
 

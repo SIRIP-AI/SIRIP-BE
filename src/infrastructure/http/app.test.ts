@@ -290,9 +290,11 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.equal((await request(`/vehicles/${otherVehicle.id}`, 'DELETE')).status, 404);
     assert.equal((await request(`/destinations/${otherDestination.id}`, 'DELETE')).status, 404);
     assert.equal((await request(`/sensors/${otherSensor.id}/diagnostics`)).status, 404);
+    assert.equal((await request(`/sensors/${otherSensor.id}/readings`)).status, 404);
     assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' })).status, 404);
     assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' })).status, 404);
     assert.equal((await request('/sensors', 'POST', { code: 'S-OTHER', deviceUid: 'other-esp32-s-003', provisioningStatus: 'PROVISIONED' })).status, 409);
+    assert.equal((await request('/telemetry', 'POST', { sensorId: 'S-003', deviceUid: 'other-esp32-s-003', temperature: 3.2, sequenceNumber: 1 }, '')).status, 409);
     assert.deepEqual((await request('/sensor-assignment-options').then((response) => response.json()) as Array<{ code: string }>).map(({ code }) => code), ['B-017']);
     assert.deepEqual((await request('/sensor-assignment-options', 'GET', undefined, otherCookie).then((response) => response.json()) as Array<{ code: string }>).map(({ code }) => code), ['B-DELETE', 'B-OTHER']);
     assert.equal((await request(`/sensors/${otherSensor.id}/assignment`, 'POST', { batchCode: 'B-OTHER' }, otherCookie)).status, 200);
@@ -301,11 +303,29 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     const assignmentResponse = await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-017' });
     assert.equal(assignmentResponse.status, 200);
     assert.equal((await assignmentResponse.json() as { assignment: { batchCode: string } }).assignment.batchCode, 'B-017');
+    for (let sequenceNumber = 1; sequenceNumber <= 101; sequenceNumber += 1) {
+      const telemetryResponse = await request('/telemetry', 'POST', {
+        sensorId: 'S-003', deviceUid: 'esp32-s-003', temperature: 2 + sequenceNumber / 100, sequenceNumber,
+      }, '');
+      assert.equal(telemetryResponse.status, 200);
+    }
+    const qualityBeforeDuplicate = (await database.batch.findUniqueOrThrow({ where: { id: batch.id } })).equivalentQualityAgeDays;
+    assert.equal((await request('/telemetry', 'POST', { sensorId: 'S-003', deviceUid: 'esp32-s-003', temperature: 99, sequenceNumber: 101 }, '')).status, 200);
+    const readings = await request(`/sensors/${sensor.id}/readings`).then((response) => response.json()) as Array<{ temperatureC: number; measuredAt: string }>;
+    assert.equal(readings.length, 100);
+    assert.equal(readings[0]?.temperatureC, 2.02);
+    assert.equal(readings[99]?.temperatureC, 3.01);
+    const updatedBatchQuality = await database.batch.findUniqueOrThrow({ where: { id: batch.id } });
+    assert.equal(updatedBatchQuality.currentTemperatureC, 3.01);
+    assert.equal(updatedBatchQuality.equivalentQualityAgeDays, qualityBeforeDuplicate);
+    assert.ok(updatedBatchQuality.equivalentQualityAgeDays !== null && updatedBatchQuality.equivalentQualityAgeDays > 7.8);
+    assert.ok(updatedBatchQuality.remainingQualityWindowDays !== null && updatedBatchQuality.remainingQualityWindowDays < 4.2);
+    assert.ok(updatedBatchQuality.qualityEstimateStartedAt);
     assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
     assert.equal((await request(`/sensors/${sensor.id}`, 'DELETE')).status, 409);
     assert.equal((await request(`/batches/${batch.id}`, 'DELETE')).status, 204);
     const availableSensor = (await request('/sensors').then((response) => response.json()) as Array<{ id: string; status: string; assignment: unknown }>).find(({ id }) => id === sensor.id);
-    assert.deepEqual(availableSensor, { id: sensor.id, status: 'AVAILABLE', assignment: null });
+    assert.deepEqual(availableSensor && { id: availableSensor.id, status: availableSensor.status, assignment: availableSensor.assignment }, { id: sensor.id, status: 'AVAILABLE', assignment: null });
     assert.equal(await database.sensorSession.count({ where: { batchId: batch.id, status: 'COMPLETED' } }), 1);
     assert.equal(await database.operationalEvent.count({ where: { batchId: batch.id } }), 1);
     assert.equal(await database.planStep.count({ where: { batchId: batch.id } }), 2);

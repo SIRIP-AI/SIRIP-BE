@@ -240,6 +240,21 @@ export class ResourceRepository {
     return (await this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, include: sensorInclude(userId) })).map(sensorResponse);
   }
 
+  async sensorReadings(userId: bigint, id: bigint) {
+    const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, select: { id: true } });
+    if (!sensor) throw new NotFoundError('Sensor');
+    return this.database.temperatureReading.findMany({
+      where: { sensorSession: { sensorId: id } },
+      orderBy: [{ measuredAt: 'desc' }, { id: 'desc' }],
+      take: 100,
+      select: { temperatureC: true, measuredAt: true, receivedAt: true },
+    }).then((readings) => readings.reverse().map((reading) => ({
+      temperatureC: reading.temperatureC,
+      measuredAt: reading.measuredAt.toISOString(),
+      receivedAt: reading.receivedAt.toISOString(),
+    })));
+  }
+
   async createSensor(userId: bigint, input: SensorInput) {
     try {
       const existing = await this.database.sensor.findUnique({ where: { deviceUid: input.deviceUid }, include: sensorInclude(userId) });
