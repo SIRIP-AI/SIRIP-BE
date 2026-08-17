@@ -49,6 +49,7 @@ services:
       PORT: 3000
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: "false"
+      SENSOR_API_KEY: ${SENSOR_API_KEY}
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:

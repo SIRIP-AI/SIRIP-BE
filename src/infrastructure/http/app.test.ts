@@ -72,7 +72,11 @@ test('manages authenticated account operations', { skip: !connectionString }, as
   await database.plan.create({
     data: { userId: otherOperator.id, version: 3, status: 'ACTIVE', reason: 'Other plan' },
   });
+  const previousSensorApiKey = process.env.SENSOR_API_KEY;
+  process.env.SENSOR_API_KEY = 'test-sensor-api-key';
   const server = createApp(database).listen(0);
+  if (previousSensorApiKey === undefined) delete process.env.SENSOR_API_KEY;
+  else process.env.SENSOR_API_KEY = previousSensorApiKey;
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
   let cookie = '';
@@ -80,6 +84,11 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     method,
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+  });
+  const telemetryRequest = (body: object, apiKey = 'test-sensor-api-key') => fetch(`${baseUrl}/telemetry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
   });
 
   try {
@@ -297,6 +306,26 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     const assignmentResponse = await request(`/sensors/${sensor.id}/assignment`, 'POST', { batchCode: 'B-017' });
     assert.equal(assignmentResponse.status, 200);
     assert.equal((await assignmentResponse.json() as { assignment: { batchCode: string } }).assignment.batchCode, 'B-017');
+    const dummyReadings = [
+      { sequenceNumber: 1, measuredAt: '2026-08-15T00:00:00.000Z', temperatureC: 0 },
+      { sequenceNumber: 2, measuredAt: '2026-08-16T00:00:00.000Z', temperatureC: 2 },
+    ];
+    assert.equal((await telemetryRequest({ sensorId: 'esp32-s-003', readings: dummyReadings }, 'wrong-key')).status, 401);
+    const telemetryResponse = await telemetryRequest({ sensorId: 'esp32-s-003', readings: dummyReadings });
+    assert.equal(telemetryResponse.status, 200);
+    const acknowledgement = await telemetryResponse.json() as { acknowledgedSequenceNumbers: number[]; insertedCount: number; duplicateCount: number; receivedAt: string };
+    assert.deepEqual({ acknowledgedSequenceNumbers: acknowledgement.acknowledgedSequenceNumbers, insertedCount: acknowledgement.insertedCount, duplicateCount: acknowledgement.duplicateCount }, { acknowledgedSequenceNumbers: [1, 2], insertedCount: 2, duplicateCount: 0 });
+    assert.ok(!Number.isNaN(Date.parse(acknowledgement.receivedAt)));
+    const retryResponse = await telemetryRequest({ sensorId: 'esp32-s-003', readings: dummyReadings });
+    assert.equal(retryResponse.status, 200);
+    assert.deepEqual(await retryResponse.json().then(({ receivedAt: _, ...value }) => value), { acknowledgedSequenceNumbers: [1, 2], insertedCount: 0, duplicateCount: 2 });
+    const storedReadings = await database.temperatureReading.findMany({ orderBy: { measuredAt: 'asc' } });
+    assert.deepEqual(storedReadings.map(({ temperatureC, measuredAt }) => ({ temperatureC, measuredAt: measuredAt.toISOString() })), dummyReadings.map(({ temperatureC, measuredAt }) => ({ temperatureC, measuredAt })));
+    const monitoredBatch = await database.batch.findUniqueOrThrow({ where: { id: batch.id } });
+    assert.equal(monitoredBatch.equivalentQualityAgeDays, 1);
+    assert.equal(monitoredBatch.remainingQualityWindowDays, 11);
+    assert.equal(monitoredBatch.qualityEstimateStartedAt?.toISOString(), dummyReadings[0]?.measuredAt);
+    assert.equal(monitoredBatch.currentTemperatureC, 2);
     assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
     assert.equal((await request(`/sensors/${sensor.id}/assignment`, 'DELETE')).status, 200);
     const readiness = await request('/setup-readiness').then((response) => response.json()) as { ready: boolean; completedSteps: number };
