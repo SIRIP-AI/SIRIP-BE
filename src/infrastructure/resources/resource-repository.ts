@@ -245,10 +245,14 @@ export class ResourceRepository {
     if (!sensor) throw new NotFoundError('Sensor');
     return this.database.temperatureReading.findMany({
       where: { sensorSession: { sensorId: id } },
-      orderBy: [{ measuredAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ measuredAt: 'desc' }, { sequenceNumber: 'desc' }, { id: 'desc' }],
       take: 100,
-      select: { temperatureC: true, measuredAt: true, receivedAt: true },
+      select: { id: true, readingUid: true, sensorSessionId: true, sequenceNumber: true, temperatureC: true, measuredAt: true, receivedAt: true },
     }).then((readings) => readings.reverse().map((reading) => ({
+      id: reading.id.toString(),
+      readingUid: reading.readingUid,
+      sensorSessionId: reading.sensorSessionId.toString(),
+      sequenceNumber: Number(reading.sequenceNumber),
       temperatureC: reading.temperatureC,
       measuredAt: reading.measuredAt.toISOString(),
       receivedAt: reading.receivedAt.toISOString(),

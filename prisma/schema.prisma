@@ -204,6 +204,7 @@ model SensorSession {
 model TemperatureReading {
   id              BigInt        @id @default(autoincrement())
   sensorSessionId BigInt        @map("sensor_session_id")
+  sequenceNumber  BigInt        @map("sequence_number")
   temperatureC    Float         @map("temperature_c")
   measuredAt      DateTime      @map("measured_at") @db.Timestamptz
   receivedAt      DateTime      @map("received_at") @db.Timestamptz
@@ -211,6 +212,7 @@ model TemperatureReading {
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
   sensorSession   SensorSession @relation(fields: [sensorSessionId], references: [id])
 
+  @@unique([sensorSessionId, sequenceNumber])
   @@index([sensorSessionId, measuredAt])
   @@map("temperature_readings")
 }

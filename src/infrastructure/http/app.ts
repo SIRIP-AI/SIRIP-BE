@@ -28,7 +28,7 @@ export function createApp(database: Database) {
   app.use((request, response, next) => {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Access-Control-Allow-Credentials', 'true');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-sensor-api-key');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     if (request.method === 'OPTIONS') return response.sendStatus(204);
     next();

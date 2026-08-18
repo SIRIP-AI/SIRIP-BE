@@ -18,6 +18,7 @@ const demoAccount = {
   password: 'SiripPlanDemo2026!',
 };
 const mockApiKey = 'sirip-demo-key';
+const mockSensorApiKey = 'sirip-demo-sensor-key';
 const mockModel = 'sirip-demo-model';
 
 async function removeDemoAccount(database: Database) {
@@ -108,7 +109,7 @@ async function close(server: Server | null) {
 async function request<T>(baseUrl: string, path: string, method = 'GET', body?: object, cookie = '', expectedStatus = 200) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { ...(path === '/telemetry' ? { 'x-sensor-api-key': mockSensorApiKey } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
@@ -123,7 +124,7 @@ async function run() {
   let apiServer: Server | null = null;
   let completed = false;
   let databaseReady = false;
-  const environment = new Map(['AI_API_URL', 'AI_API_KEY', 'AI_MODEL', 'COOKIE_SECURE'].map((key) => [key, process.env[key]]));
+  const environment = new Map(['AI_API_URL', 'AI_API_KEY', 'AI_MODEL', 'COOKIE_SECURE', 'SENSOR_API_KEY'].map((key) => [key, process.env[key]]));
 
   try {
     await removeDemoAccount(database);
@@ -133,6 +134,7 @@ async function run() {
     process.env.AI_API_KEY = mockApiKey;
     process.env.AI_MODEL = mockModel;
     process.env.COOKIE_SECURE = 'false';
+    process.env.SENSOR_API_KEY = mockSensorApiKey;
     apiServer = createApp(database).listen(0, '127.0.0.1');
     await once(apiServer, 'listening');
     const baseUrl = `http://127.0.0.1:${(apiServer.address() as AddressInfo).port}/api`;
@@ -161,7 +163,7 @@ async function run() {
       code: 'DEMO-SENSOR', deviceUid: 'sirip-plan-proposal-demo-device', provisioningStatus: 'PROVISIONED',
     }, cookie, 201)).data;
     await request(baseUrl, `/sensors/${sensor.id}/assignment`, 'POST', { batchCode: batch.code }, cookie);
-    const telemetry = { sensorId: 'DEMO-SENSOR', deviceUid: 'sirip-plan-proposal-demo-device', temperature: 2.5, sequenceNumber: 0 };
+    const telemetry = { sensorId: 'DEMO-SENSOR', deviceUid: 'sirip-plan-proposal-demo-device', temperature: 2.5, sequenceNumber: 0, measuredAt: new Date().toISOString() };
     await request(baseUrl, '/telemetry', 'POST', telemetry);
     await request(baseUrl, '/telemetry', 'POST', telemetry);
     const readings = (await request<Array<{ temperatureC: number }>>(baseUrl, `/sensors/${sensor.id}/readings`, 'GET', undefined, cookie)).data;

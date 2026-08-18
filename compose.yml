@@ -49,6 +49,7 @@ services:
       PORT: 3000
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: "false"
+      SENSOR_API_KEY: ${SENSOR_API_KEY:-}
       AI_API_URL: ${AI_API_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}

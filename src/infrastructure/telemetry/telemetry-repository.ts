@@ -1,6 +1,5 @@
-import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { calculateQualityAgeIncrement, initialQualityWindowDays } from '../../domain/quality/quality';
+import { calculateQualityState } from '../../domain/quality/quality';
 import type { Database } from '../persistence/database';
 
 export type TelemetryInput = {
@@ -8,85 +7,78 @@ export type TelemetryInput = {
   deviceUid: string;
   temperature: number;
   sequenceNumber: number;
+  measuredAt: Date;
 };
 
 export class TelemetryRepository {
   constructor(private readonly database: Database) {}
 
   async ingest(input: TelemetryInput) {
-    const receivedAt = new Date();
-    const readingUid = `${input.deviceUid}:${input.sequenceNumber}`;
+    await this.ingestMany([input]);
+  }
+
+  async ingestMany(inputs: TelemetryInput[]) {
+    const first = inputs[0];
+    if (!first) return;
+    if (inputs.some((input) => input.sensorId !== first.sensorId || input.deviceUid !== first.deviceUid)) throw new ConflictError('All readings must target the same sensor');
     const sensor = await this.database.sensor.findUnique({
-      where: { deviceUid: input.deviceUid },
+      where: { deviceUid: first.deviceUid },
       include: { sessions: { where: { status: 'ACTIVE' }, orderBy: { startedAt: 'desc' }, take: 1 } },
     });
-    if (!sensor || sensor.deletedAt || sensor.provisioningStatus !== 'PROVISIONED' || sensor.code !== input.sensorId) {
-      throw new NotFoundError('Provisioned sensor');
+    if (!sensor || sensor.deletedAt || sensor.provisioningStatus !== 'PROVISIONED' || sensor.code !== first.sensorId) throw new NotFoundError('Provisioned sensor');
+    const resolvedSession = sensor.sessions[0];
+    if (!resolvedSession) throw new ConflictError('Sensor must be assigned before telemetry can be stored');
+
+    const readingsBySequence = new Map<number, TelemetryInput>();
+    for (const input of inputs) {
+      const duplicate = readingsBySequence.get(input.sequenceNumber);
+      if (duplicate && (duplicate.temperature !== input.temperature || duplicate.measuredAt.getTime() !== input.measuredAt.getTime())) throw new ConflictError('Reading identity has conflicting values');
+      readingsBySequence.set(input.sequenceNumber, input);
     }
+    const readings = [...readingsBySequence.values()];
 
-    const existing = await this.database.temperatureReading.findUnique({
-      where: { readingUid },
-      select: { sensorSession: { select: { sensorId: true } } },
-    });
-    if (existing) {
-      if (existing.sensorSession.sensorId !== sensor.id) throw new ConflictError('Reading identity is already in use');
-      await this.database.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: receivedAt } });
-      return;
-    }
+    await this.database.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${resolvedSession.id})`;
+      const currentSensor = await transaction.sensor.findUnique({ where: { deviceUid: first.deviceUid } });
+      if (!currentSensor || currentSensor.id !== sensor.id || currentSensor.deletedAt || currentSensor.provisioningStatus !== 'PROVISIONED' || currentSensor.code !== first.sensorId) throw new NotFoundError('Provisioned sensor');
+      const session = await transaction.sensorSession.findFirst({ where: { id: resolvedSession.id, sensorId: sensor.id, status: 'ACTIVE' } });
+      if (!session) throw new ConflictError('Sensor assignment changed before telemetry could be stored');
 
-    const session = sensor.sessions[0];
-    if (!session) {
-      await this.database.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: receivedAt } });
-      throw new ConflictError('Sensor must be assigned before telemetry can be stored');
-    }
-
-    try {
-      await this.database.$transaction(async (transaction) => {
-        const [previousReading, batch] = await Promise.all([
-          transaction.temperatureReading.findFirst({ where: { sensorSessionId: session.id }, orderBy: [{ measuredAt: 'desc' }, { id: 'desc' }] }),
-          transaction.batch.findUniqueOrThrow({
-            where: { id: session.batchId },
-            select: { equivalentQualityAgeDays: true, remainingQualityWindowDays: true, qualityEstimateStartedAt: true },
-          }),
-        ]);
-        const currentReading = { temperatureC: input.temperature, measuredAt: receivedAt };
-        const previousQualityAge = batch.equivalentQualityAgeDays ?? (batch.remainingQualityWindowDays === null ? 0 : initialQualityWindowDays - batch.remainingQualityWindowDays);
-        const equivalentQualityAgeDays = previousQualityAge + (previousReading ? calculateQualityAgeIncrement(previousReading, currentReading) : 0);
-
+      const existing = await transaction.temperatureReading.findMany({
+        where: { sensorSessionId: session.id, sequenceNumber: { in: readings.map(({ sequenceNumber }) => BigInt(sequenceNumber)) } },
+      });
+      const existingBySequence = new Map(existing.map((reading) => [reading.sequenceNumber.toString(), reading]));
+      const pending = readings.filter((input) => {
+        const replay = existingBySequence.get(input.sequenceNumber.toString());
+        if (!replay) return true;
+        if (replay.temperatureC !== input.temperature || replay.measuredAt.getTime() !== input.measuredAt.getTime()) throw new ConflictError('Reading identity has conflicting values');
+        return false;
+      });
+      const syncedAt = new Date();
+      const receivedAtStart = syncedAt.getTime() - pending.length;
+      for (const [index, input] of pending.entries()) {
         await transaction.temperatureReading.create({
           data: {
             sensorSessionId: session.id,
+            sequenceNumber: BigInt(input.sequenceNumber),
             temperatureC: input.temperature,
-            measuredAt: receivedAt,
-            receivedAt,
-            readingUid,
+            measuredAt: input.measuredAt,
+            receivedAt: new Date(receivedAtStart + index),
+            readingUid: `session:${session.id}:${input.sequenceNumber}`,
           },
         });
-        await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: receivedAt } });
-        await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: receivedAt } });
-        await transaction.batch.update({
-          where: { id: session.batchId },
-          data: {
-            currentTemperatureC: input.temperature,
-            equivalentQualityAgeDays,
-            remainingQualityWindowDays: initialQualityWindowDays - equivalentQualityAgeDays,
-            qualityEstimateStartedAt: batch.qualityEstimateStartedAt ?? receivedAt,
-          },
-        });
+      }
 
-        const retained = await transaction.temperatureReading.findMany({
-          where: { sensorSession: { sensorId: sensor.id } },
-          orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
-          take: 100,
-          select: { id: true },
-        });
-        await transaction.temperatureReading.deleteMany({
-          where: { sensorSession: { sensorId: sensor.id }, id: { notIn: retained.map(({ id }) => id) } },
-        });
+      const retained = await transaction.temperatureReading.findMany({
+        where: { sensorSession: { batchId: session.batchId } },
+        orderBy: [{ measuredAt: 'asc' }, { sequenceNumber: 'asc' }, { id: 'asc' }],
+        select: { id: true, sequenceNumber: true, temperatureC: true, measuredAt: true },
       });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return;
-      throw error;
-    }
+      const quality = calculateQualityState(retained);
+      if (!quality) throw new ConflictError('Batch has no retained telemetry');
+      await transaction.batch.update({ where: { id: session.batchId }, data: quality });
+      await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt } });
+      await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: syncedAt } });
+    });
   }
 }
