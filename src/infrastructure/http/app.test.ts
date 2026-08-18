@@ -68,7 +68,9 @@ test('manages authenticated account operations', { skip: !connectionString }, as
       approvedAt: new Date(),
       steps: { create: { sequence: 1, actionType: 'INSPECT', batchId: batch.id, scheduledAt: new Date(Date.now() + 60_000), status: 'UPCOMING' } },
     },
+    include: { steps: true },
   });
+  const activeStep = plan.steps[0]!;
   await database.plan.create({
     data: { userId: otherOperator.id, version: 3, status: 'ACTIVE', reason: 'Other plan' },
   });
@@ -87,6 +89,7 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.equal((await request('/overview')).status, 401);
     assert.equal((await request('/fishing-trips')).status, 401);
     assert.equal((await request('/batches')).status, 401);
+    assert.equal((await request('/plans')).status, 401);
     const signupResponse = await request('/auth/signup', 'POST', {
       name: 'New Operator',
       email: 'new.operator@sirip.local',
@@ -127,6 +130,19 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.deepEqual(overview.priorityBatches.map((item) => [item.code, item.qualityStatus]), [['B-017', 'WARNING']]);
     assert.equal(overview.activePlan?.steps[0]?.batchCode, 'B-017');
     assert.deepEqual(overview.alerts.map((alert) => alert.title), ['B-017 temperature excursion']);
+    const plansResponse = await request('/plans');
+    assert.equal(plansResponse.status, 200);
+    const plans = await plansResponse.json() as { activePlan: { id: string; steps: Array<{ id: string; status: string; completedAt: string | null }> } | null; proposedPlans: unknown[]; history: unknown[] };
+    assert.equal(plans.activePlan?.id, plan.id.toString());
+    assert.deepEqual(plans.proposedPlans, []);
+    assert.deepEqual(plans.history, []);
+    const completionResponse = await request(`/plans/${plan.id}/steps/${activeStep.id}/complete`, 'POST');
+    assert.equal(completionResponse.status, 200);
+    const completedPlan = await completionResponse.json() as { steps: Array<{ id: string; status: string; completedAt: string | null }> };
+    assert.deepEqual(completedPlan.steps.map((step) => step.status), ['COMPLETED']);
+    assert.ok(completedPlan.steps[0]?.completedAt);
+    assert.equal((await request(`/plans/${plan.id}/steps/${activeStep.id}/complete`, 'POST')).status, 409);
+    assert.equal((await request(`/plans/0/steps/${activeStep.id}/complete`, 'POST')).status, 400);
 
     const otherLoginResponse = await request('/auth/login', 'POST', { email: 'other.operator@sirip.local', password: 'demo-password' });
     assert.equal(otherLoginResponse.status, 200);
@@ -239,8 +255,8 @@ test('manages authenticated account operations', { skip: !connectionString }, as
       code: 'TR-02', capacityKg: 800, operationalStatus: 'AVAILABLE', delayMinutes: 90, restriction: null, availabilityStart: '09:00', availabilityEnd: '17:00',
     })).status, 400);
     await database.vehicle.update({ where: { id: BigInt(vehicle.id) }, data: { delayMinutes: 90 } });
-    await database.planStep.create({
-      data: { planId: plan.id, sequence: 2, actionType: 'DISPATCH', batchId: batch.id, vehicleId: BigInt(vehicle.id), scheduledAt: new Date(), status: 'UPCOMING' },
+    const assignedPlanStep = await database.planStep.create({
+      data: { planId: plan.id, sequence: 2, actionType: 'LOAD', batchId: batch.id, vehicleId: BigInt(vehicle.id), scheduledAt: new Date(), status: 'UPCOMING' },
     });
     const assignedVehicle = await request('/vehicles').then((response) => response.json()) as Array<{ status: string; delayMinutes: number }>;
     assert.deepEqual(assignedVehicle.map(({ status, delayMinutes }) => ({ status, delayMinutes })), [{ status: 'ASSIGNED', delayMinutes: 90 }]);
@@ -324,6 +340,7 @@ test('manages authenticated account operations', { skip: !connectionString }, as
     assert.equal((await request(`/sensors/${sensor.id}/diagnostics`)).status, 200);
     assert.equal((await request(`/sensors/${sensor.id}`, 'DELETE')).status, 409);
     assert.equal((await request(`/batches/${batch.id}`, 'DELETE')).status, 204);
+    assert.equal((await request(`/plans/${plan.id}/steps/${assignedPlanStep.id}/complete`, 'POST')).status, 409);
     const availableSensor = (await request('/sensors').then((response) => response.json()) as Array<{ id: string; status: string; assignment: unknown }>).find(({ id }) => id === sensor.id);
     assert.deepEqual(availableSensor && { id: availableSensor.id, status: availableSensor.status, assignment: availableSensor.assignment }, { id: sensor.id, status: 'AVAILABLE', assignment: null });
     assert.equal(await database.sensorSession.count({ where: { batchId: batch.id, status: 'COMPLETED' } }), 1);
