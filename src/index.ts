@@ -5,8 +5,8 @@ const database = createDatabase();
 const app = createApp(database);
 const port = Number(process.env.PORT ?? 3000);
 
-const server = app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+const server = app.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${port}`);
 });
 
 async function shutdown() {

@@ -177,6 +177,7 @@ export function createResourcesRouter(repository: ResourceRepository) {
   });
 
   router.get('/sensors', async (_request, response) => response.json(await repository.listSensors(userId(response.locals))));
+  router.get('/sensors/:id/readings', async (request, response) => response.json(await repository.sensorReadings(userId(response.locals), resourceId(request.params.id))));
   router.post('/sensors', async (request, response) => response.status(201).json(await repository.createSensor(userId(response.locals), sensorInput(request.body))));
   router.put('/sensors/:id', async (request, response) => response.json(await repository.updateSensor(userId(response.locals), resourceId(request.params.id), sensorInput(request.body))));
   router.delete('/sensors/:id', async (request, response) => {

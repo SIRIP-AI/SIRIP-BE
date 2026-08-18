@@ -3,7 +3,7 @@ import { ConflictError, NotFoundError } from '../../domain/errors';
 import type { FishingTripInput } from '../../domain/fishing-trips';
 import type { Database } from './database';
 
-const include = { _count: { select: { batches: true } } } as const;
+const include = { _count: { select: { batches: { where: { deletedAt: null } } } } } as const;
 
 type FishingTripResponse = Prisma.FishingTripGetPayload<{ include: typeof include }>;
 

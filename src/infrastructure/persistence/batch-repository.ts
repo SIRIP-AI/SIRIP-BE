@@ -39,9 +39,16 @@ export class BatchRepository {
     try { return response(await this.database.batch.update({ where: { id, userId, deletedAt: null }, data: { ...input, receivedAt: new Date(input.receivedAt) }, include })); } catch (error) { translate(error); }
   }
   async delete(userId: bigint, id: bigint) {
-    const batch = await this.database.batch.findFirst({ where: { id, userId, deletedAt: null }, include: { _count: { select: { sensorSessions: true, operationalEvents: true, planSteps: true } } } });
+    const batch = await this.database.batch.findFirst({
+      where: { id, userId, deletedAt: null },
+      include: { sensorSessions: { where: { status: 'ACTIVE' }, select: { sensorId: true } } },
+    });
     if (!batch) throw new NotFoundError('Batch');
-    if (batch._count.sensorSessions || batch._count.operationalEvents || batch._count.planSteps) throw new ConflictError('Batches with sensor, event, or plan history cannot be deleted');
-    await this.database.batch.update({ where: { id, userId }, data: { deletedAt: new Date() } });
+    const deletedAt = new Date();
+    await this.database.$transaction([
+      this.database.sensorSession.updateMany({ where: { batchId: id, status: 'ACTIVE' }, data: { status: 'COMPLETED', endedAt: deletedAt } }),
+      this.database.sensor.updateMany({ where: { id: { in: batch.sensorSessions.map(({ sensorId }) => sensorId) }, deletedAt: null }, data: { status: 'AVAILABLE' } }),
+      this.database.batch.update({ where: { id, userId }, data: { deletedAt } }),
+    ]);
   }
 }

@@ -7,11 +7,13 @@ import type { Database } from '../persistence/database';
 import { FishingTripRepository } from '../persistence/fishing-trip-repository';
 import { OverviewRepository } from '../persistence/overview-repository';
 import { ResourceRepository } from '../persistence/resource-repository';
+import { TelemetryRepository } from '../persistence/telemetry-repository';
 import { createAuthRouter, requireAuth } from './auth-router';
 import { createBatchesRouter } from './batches-router';
 import { createFishingTripsRouter } from './fishing-trips-router';
 import { createOverviewRouter } from './overview-router';
 import { createResourcesRouter } from './resources-router';
+import { createTelemetryRouter } from './telemetry-router';
 
 export function createApp(database: Database) {
   const app = express();
@@ -29,6 +31,7 @@ export function createApp(database: Database) {
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
   app.use('/api/auth', createAuthRouter(auth));
+  app.use('/api/telemetry', createTelemetryRouter(new TelemetryRepository(database)));
   app.use('/api', requireAuth(auth));
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));

@@ -101,13 +101,14 @@ function sensorResponse(resource: {
   sessions: Array<{ batch: { code: string }; lastSyncedAt: Date | null }>;
 }) {
   const session = resource.sessions[0];
+  const recentlySeen = resource.lastSeenAt && Date.now() - resource.lastSeenAt.getTime() <= 20 * 60 * 1000;
   return {
     id: resource.id.toString(),
     code: resource.code,
     deviceUid: resource.deviceUid,
     status: resource.status,
     provisioningStatus: resource.provisioningStatus,
-    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' ? 'OFFLINE' : resource.lastSeenAt ? 'ONLINE' : 'NEVER_CONNECTED',
+    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' || (resource.lastSeenAt && !recentlySeen) ? 'OFFLINE' : recentlySeen ? 'ONLINE' : 'NEVER_CONNECTED',
     lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
     createdAt: resource.createdAt.toISOString(),
     assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
@@ -127,7 +128,7 @@ function sensorInclude(userId: bigint) {
 function vehicleInclude(userId: bigint) {
   return {
     planSteps: {
-      where: { status: 'UPCOMING' as const, plan: { userId, status: 'ACTIVE' as const } },
+      where: { status: 'UPCOMING' as const, batch: { deletedAt: null }, plan: { userId, status: 'ACTIVE' as const } },
       select: { id: true },
       take: 1,
     },
@@ -236,31 +237,64 @@ export class ResourceRepository {
   }
 
   async listSensors(userId: bigint) {
-    return (await this.database.sensor.findMany({ where: { userId }, orderBy: { code: 'asc' }, include: sensorInclude(userId) })).map(sensorResponse);
+    return (await this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, include: sensorInclude(userId) })).map(sensorResponse);
+  }
+
+  async sensorReadings(userId: bigint, id: bigint) {
+    const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, select: { id: true } });
+    if (!sensor) throw new NotFoundError('Sensor');
+    return this.database.temperatureReading.findMany({
+      where: { sensorSession: { sensorId: id } },
+      orderBy: [{ measuredAt: 'desc' }, { id: 'desc' }],
+      take: 100,
+      select: { temperatureC: true, measuredAt: true, receivedAt: true },
+    }).then((readings) => readings.reverse().map((reading) => ({
+      temperatureC: reading.temperatureC,
+      measuredAt: reading.measuredAt.toISOString(),
+      receivedAt: reading.receivedAt.toISOString(),
+    })));
   }
 
   async createSensor(userId: bigint, input: SensorInput) {
     try {
-      return sensorResponse(await this.database.sensor.create({ data: { ...input, userId, status: 'AVAILABLE' }, include: sensorInclude(userId) }));
+      const existing = await this.database.sensor.findUnique({ where: { deviceUid: input.deviceUid }, include: sensorInclude(userId) });
+      if (existing) {
+        if (existing.userId === userId && existing.code === input.code && input.provisioningStatus === 'PROVISIONED') {
+          if (!existing.deletedAt) return sensorResponse(existing);
+          return sensorResponse(await this.database.sensor.update({
+            where: { id: existing.id },
+            data: { ...input, status: 'AVAILABLE', lastSeenAt: new Date(), deletedAt: null },
+            include: sensorInclude(userId),
+          }));
+        }
+        throw new ConflictError('A resource with that name or code already exists');
+      }
+      return sensorResponse(await this.database.sensor.create({
+        data: { ...input, userId, status: 'AVAILABLE', lastSeenAt: input.provisioningStatus === 'PROVISIONED' ? new Date() : null },
+        include: sensorInclude(userId),
+      }));
     } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' && input.provisioningStatus === 'PROVISIONED') {
+        const existing = await this.database.sensor.findUnique({ where: { deviceUid: input.deviceUid }, include: sensorInclude(userId) });
+        if (existing?.userId === userId && existing.code === input.code) return sensorResponse(existing);
+      }
       translateDatabaseError(error);
     }
   }
 
   async updateSensor(userId: bigint, id: bigint, input: SensorInput) {
     try {
-      return sensorResponse(await this.database.sensor.update({ where: { id, userId }, data: input, include: sensorInclude(userId) }));
+      return sensorResponse(await this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: input, include: sensorInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
   }
 
   async deleteSensor(userId: bigint, id: bigint) {
-    try {
-      await this.database.sensor.delete({ where: { id, userId } });
-    } catch (error) {
-      translateDatabaseError(error);
-    }
+    const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: { sessions: { where: { status: 'ACTIVE' }, select: { id: true }, take: 1 } } });
+    if (!sensor) throw new NotFoundError('Resource');
+    if (sensor.sessions.length) throw new ConflictError('Unassign the sensor before deleting it');
+    await this.database.sensor.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
   async listSensorAssignmentOptions(userId: bigint) {
@@ -273,7 +307,7 @@ export class ResourceRepository {
 
   async assignSensor(userId: bigint, id: bigint, input: SensorAssignmentInput) {
     try {
-      const sensor = await this.database.sensor.findFirst({ where: { id, userId }, include: sensorInclude(userId) });
+      const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) });
       if (!sensor) throw new NotFoundError('Sensor');
       if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provision the sensor before assigning it');
       if (sensor.sessions.length) throw new ConflictError('Sensor is already assigned');
@@ -283,9 +317,9 @@ export class ResourceRepository {
       if (!batch) throw new NotFoundError('Assignable batch');
       await this.database.$transaction([
         this.database.sensorSession.create({ data: { sensorId: id, batchId: batch.id, startedAt: new Date(), status: 'ACTIVE' } }),
-        this.database.sensor.update({ where: { id, userId }, data: { status: 'ASSIGNED' } }),
+        this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: { status: 'ASSIGNED' } }),
       ]);
-      return sensorResponse(await this.database.sensor.findFirstOrThrow({ where: { id, userId }, include: sensorInclude(userId) }));
+      return sensorResponse(await this.database.sensor.findFirstOrThrow({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -293,15 +327,15 @@ export class ResourceRepository {
 
   async unassignSensor(userId: bigint, id: bigint) {
     try {
-      const sensor = await this.database.sensor.findFirst({ where: { id, userId }, include: sensorInclude(userId) });
+      const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) });
       if (!sensor) throw new NotFoundError('Sensor');
       const session = await this.database.sensorSession.findFirst({ where: { sensorId: id, status: 'ACTIVE', batch: { userId, deletedAt: null } } });
       if (!session) throw new ConflictError('Sensor is not assigned');
       await this.database.$transaction([
         this.database.sensorSession.update({ where: { id: session.id }, data: { status: 'COMPLETED', endedAt: new Date() } }),
-        this.database.sensor.update({ where: { id, userId }, data: { status: 'AVAILABLE' } }),
+        this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: { status: 'AVAILABLE' } }),
       ]);
-      return sensorResponse(await this.database.sensor.findFirstOrThrow({ where: { id, userId }, include: sensorInclude(userId) }));
+      return sensorResponse(await this.database.sensor.findFirstOrThrow({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -312,7 +346,7 @@ export class ResourceRepository {
       this.database.coldStorage.count({ where: { userId } }),
       this.database.vehicle.count({ where: { userId } }),
       this.database.destination.count({ where: { userId } }),
-      this.database.sensor.count({ where: { userId } }),
+      this.database.sensor.count({ where: { userId, deletedAt: null } }),
     ]);
     const steps = [
       { key: 'coldStorages', label: 'Configure cold storage', complete: coldStorages > 0, count: coldStorages },
@@ -325,7 +359,7 @@ export class ResourceRepository {
 
   async sensorDiagnostics(userId: bigint, id: bigint) {
     const sensor = await this.database.sensor.findFirst({
-      where: { id, userId },
+      where: { id, userId, deletedAt: null },
       include: {
         sessions: {
           where: { batch: { userId, deletedAt: null } },

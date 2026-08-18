@@ -44,6 +44,8 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 
 - `npm run dev`: run the TypeScript server in watch mode.
 - `npm run build`: compile with strict TypeScript checks.
+- `npm run db:reset`: destructively rebuild the configured local database and seed the provisioning baseline.
+- `npm run seed`: reset the demo account to two cold rooms, three trucks, three destinations, and no operational workflow or sensor data.
 - `npm start`: run the compiled server.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

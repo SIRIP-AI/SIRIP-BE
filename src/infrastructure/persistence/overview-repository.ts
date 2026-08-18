@@ -66,7 +66,7 @@ export class OverviewRepository {
         },
       }),
       this.database.operationalEvent.findMany({
-        where: { userId },
+        where: { userId, OR: [{ batchId: null }, { batch: { deletedAt: null } }] },
         orderBy: { occurredAt: 'desc' },
         take: 50,
         select: { id: true, batchId: true, type: true, structuredData: true, occurredAt: true },
@@ -79,7 +79,7 @@ export class OverviewRepository {
           status: true,
           reason: true,
           steps: {
-            where: { status: { in: ['UPCOMING', 'COMPLETED'] } },
+            where: { status: { in: ['UPCOMING', 'COMPLETED'] }, batch: { deletedAt: null } },
             orderBy: { sequence: 'asc' },
             take: 3,
             select: {

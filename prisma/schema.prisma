@@ -177,6 +177,7 @@ model Sensor {
   provisioningStatus SensorProvisioningStatus @default(PENDING) @map("provisioning_status")
   lastSeenAt         DateTime?                @map("last_seen_at") @db.Timestamptz
   createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  deletedAt          DateTime?                @map("deleted_at") @db.Timestamptz
   user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessions           SensorSession[]
 
@@ -196,6 +197,7 @@ model SensorSession {
   batch        Batch               @relation(fields: [batchId], references: [id])
   readings     TemperatureReading[]
 
+  @@index([sensorId, status])
   @@map("sensor_sessions")
 }
 
@@ -209,6 +211,7 @@ model TemperatureReading {
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
   sensorSession   SensorSession @relation(fields: [sensorSessionId], references: [id])
 
+  @@index([sensorSessionId, measuredAt])
   @@map("temperature_readings")
 }
 
