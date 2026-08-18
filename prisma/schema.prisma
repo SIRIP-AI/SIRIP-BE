@@ -281,6 +281,7 @@ model OperationalEvent {
   coldStorageId  BigInt?                @map("cold_storage_id")
   destinationId  BigInt?                @map("destination_id")
   rawMessage     String?                @map("raw_message")
+  dedupeKey      String?                @unique @map("dedupe_key")
   structuredData Json                   @default("{}") @map("structured_data")
   occurredAt     DateTime               @map("occurred_at") @db.Timestamptz
   createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz

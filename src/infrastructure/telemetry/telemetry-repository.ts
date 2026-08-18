@@ -1,5 +1,7 @@
 import { ConflictError, NotFoundError } from '../../domain/errors';
+import { evaluateMonitoring, monitoringEventPrefix, type MonitoringDecision } from '../../domain/monitoring/monitoring';
 import { calculateQualityState } from '../../domain/quality/quality';
+import type { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
 
 export type TelemetryInput = {
@@ -76,9 +78,45 @@ export class TelemetryRepository {
       });
       const quality = calculateQualityState(retained);
       if (!quality) throw new ConflictError('Batch has no retained telemetry');
-      await transaction.batch.update({ where: { id: session.batchId }, data: quality });
+      const batch = await transaction.batch.update({ where: { id: session.batchId }, data: quality });
+      await this.reconcileMonitoringEvents(transaction, batch.userId, session.batchId, evaluateMonitoring(session.batchId, retained), syncedAt);
       await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt } });
       await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: syncedAt } });
     });
+  }
+
+  private async reconcileMonitoringEvents(transaction: Prisma.TransactionClient, userId: bigint | null, batchId: bigint, decisions: MonitoringDecision[], syncedAt: Date) {
+    const existing = await transaction.operationalEvent.findMany({
+      where: { batchId, dedupeKey: { startsWith: monitoringEventPrefix(batchId) } },
+      select: { id: true, dedupeKey: true, structuredData: true },
+    });
+    const activeKeys = new Set(decisions.map((decision) => decision.dedupeKey));
+    for (const decision of decisions) {
+      await transaction.operationalEvent.upsert({
+        where: { dedupeKey: decision.dedupeKey },
+        create: {
+          dedupeKey: decision.dedupeKey,
+          userId,
+          type: 'TEMPERATURE_EXCURSION',
+          source: 'SYSTEM',
+          batchId,
+          rawMessage: null,
+          structuredData: decision.structuredData,
+          occurredAt: decision.occurredAt,
+        },
+        update: { structuredData: decision.structuredData },
+      });
+    }
+    for (const event of existing) {
+      if (!event.dedupeKey || activeKeys.has(event.dedupeKey)) continue;
+      const data = event.structuredData;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+      const alert = data.alert;
+      if (!alert || typeof alert !== 'object' || Array.isArray(alert) || alert.active !== true) continue;
+      await transaction.operationalEvent.update({
+        where: { id: event.id },
+        data: { structuredData: { ...data, alert: { ...alert, active: false, resolvedAt: syncedAt.toISOString() } } },
+      });
+    }
   }
 }

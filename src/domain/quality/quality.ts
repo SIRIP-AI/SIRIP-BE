@@ -23,9 +23,13 @@ export function calculateQualityAgeIncrement(previous: QualityReading, current: 
   return intervalDays * Math.exp(0.12 * previous.temperatureC);
 }
 
+export function compareCanonicalReadings(left: CanonicalQualityReading, right: CanonicalQualityReading) {
+  return left.measuredAt.getTime() - right.measuredAt.getTime() || Number(left.sequenceNumber - right.sequenceNumber) || Number(left.id - right.id);
+}
+
 export function calculateQualityState(readings: CanonicalQualityReading[]): QualityState | null {
   if (!readings.length) return null;
-  const ordered = [...readings].sort((left, right) => left.measuredAt.getTime() - right.measuredAt.getTime() || Number(left.sequenceNumber - right.sequenceNumber) || Number(left.id - right.id));
+  const ordered = [...readings].sort(compareCanonicalReadings);
   let equivalentQualityAgeDays = 0;
   for (let index = 1; index < ordered.length; index += 1) {
     const previous = ordered[index - 1];

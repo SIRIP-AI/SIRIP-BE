@@ -10,7 +10,7 @@
     "db:reset": "prisma migrate reset --force && npm run seed",
     "seed": "prisma generate && tsx src/infrastructure/persistence/seed.ts",
     "demo:plan-proposal": "prisma generate && tsx src/demo-plan-proposal.ts",
-    "test": "tsx --test src/domain/quality/quality.test.ts",
+    "test": "tsx --test src/domain/quality/quality.test.ts src/domain/monitoring/monitoring.test.ts",
     "start": "node dist/index.js"
   },
   "keywords": [],
