@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { calculateQualityAgeIncrement, initialQualityWindowDays } from '../../domain/quality';
-import type { Database } from './database';
+import { calculateQualityAgeIncrement, initialQualityWindowDays } from '../../domain/quality/quality';
+import type { Database } from '../persistence/database';
 
 export type TelemetryInput = {
   sensorId: string;

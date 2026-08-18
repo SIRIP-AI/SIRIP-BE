@@ -1,5 +1,5 @@
 import type { Prisma } from '../../generated/prisma/client';
-import type { Database } from './database';
+import type { Database } from '../persistence/database';
 
 const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
 const qualityStatuses = ['NORMAL', 'WARNING', 'CRITICAL'] as const;

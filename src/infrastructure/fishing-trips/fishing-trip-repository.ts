@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import type { FishingTripInput } from '../../domain/fishing-trips';
-import type { Database } from './database';
+import type { FishingTripInput } from '../../domain/fishing-trips/fishing-trips';
+import type { Database } from '../persistence/database';
 
 const include = { _count: { select: { batches: { where: { deletedAt: null } } } } } as const;
 

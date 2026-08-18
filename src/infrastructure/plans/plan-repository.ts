@@ -1,8 +1,8 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { activePlanSnapshot, type AiPlanProposal, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans';
-import type { PlanRepositoryPort, PlanValidator } from '../../application/plan-service';
-import type { Database } from './database';
+import { activePlanSnapshot, type AiPlanProposal, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
+import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
+import type { Database } from '../persistence/database';
 
 const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
 const maximumListedPlans = 50;

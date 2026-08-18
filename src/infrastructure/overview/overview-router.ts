@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
-import type { OverviewRepository } from '../persistence/overview-repository';
-import type { AuthLocals } from './auth-router';
+import type { AuthLocals } from '../auth/auth-router';
+import type { OverviewRepository } from './overview-repository';
 
 export function createOverviewRouter(repository: OverviewRepository) {
   const router = Router();

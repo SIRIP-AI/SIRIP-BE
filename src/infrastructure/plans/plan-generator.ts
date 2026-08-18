@@ -1,6 +1,6 @@
-import type { PlanGenerationFeedback } from '../../application/plan-service';
+import type { PlanGenerationFeedback } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
-import { InvalidPlanProposalError, parseAiPlanProposal, type PlanningContext } from '../../domain/plans';
+import { InvalidPlanProposalError, parseAiPlanProposal, type PlanningContext } from '../../domain/plans/plans';
 
 const timeoutMilliseconds = 20_000;
 const maximumResponseBytes = 100_000;

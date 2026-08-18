@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { loadEnvFile } from 'node:process';
 
-import type { PlanList, PlanningContext, PlanView } from './domain/plans';
+import type { PlanList, PlanningContext, PlanView } from './domain/plans/plans';
 import { createApp } from './infrastructure/http/app';
 import { createDatabase, type Database } from './infrastructure/persistence/database';
 

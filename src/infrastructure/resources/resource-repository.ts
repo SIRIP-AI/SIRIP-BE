@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/resources';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import type { Database } from './database';
+import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/resources/resources';
+import type { Database } from '../persistence/database';
 
 function coldStorageResponse(resource: {
   id: bigint;

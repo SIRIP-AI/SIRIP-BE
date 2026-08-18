@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 import { RequestError } from '../../domain/errors';
-import type { TelemetryRepository } from '../persistence/telemetry-repository';
+import type { TelemetryRepository } from './telemetry-repository';
 
 function telemetryReading(body: unknown) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);

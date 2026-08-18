@@ -1,8 +1,8 @@
 import { Router } from 'express';
 
-import type { PlanService } from '../../application/plan-service';
+import type { PlanService } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
-import type { AuthLocals } from './auth-router';
+import type { AuthLocals } from '../auth/auth-router';
 
 function userId(locals: object) {
   return BigInt((locals as AuthLocals).user.id);

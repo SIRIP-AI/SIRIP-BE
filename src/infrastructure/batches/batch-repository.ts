@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
-import type { BatchFilter, BatchInput } from '../../domain/batches';
+import type { BatchFilter, BatchInput } from '../../domain/batches/batches';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import type { Database } from './database';
+import type { Database } from '../persistence/database';
 
 const include = { fishingTrip: { select: { id: true, code: true, vesselName: true } }, sensorSessions: { where: { status: 'ACTIVE' as const }, select: { sensor: { select: { code: true, status: true } } }, take: 1 } } as const;
 

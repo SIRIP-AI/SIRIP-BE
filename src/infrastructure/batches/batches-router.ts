@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { batchFilters, type BatchFilter, type BatchInput } from '../../domain/batches';
+import { batchFilters, type BatchFilter, type BatchInput } from '../../domain/batches/batches';
 import { RequestError } from '../../domain/errors';
-import type { BatchRepository } from '../persistence/batch-repository';
-import type { AuthLocals } from './auth-router';
+import type { AuthLocals } from '../auth/auth-router';
+import type { BatchRepository } from './batch-repository';
 
 const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 function object(body: unknown) { if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400); return body as Record<string, unknown>; }

@@ -9,10 +9,10 @@ import {
   type SensorAssignmentInput,
   type SensorInput,
   type VehicleInput,
-} from '../../domain/resources';
+} from '../../domain/resources/resources';
 import { RequestError } from '../../domain/errors';
-import type { ResourceRepository } from '../persistence/resource-repository';
-import type { AuthLocals } from './auth-router';
+import type { AuthLocals } from '../auth/auth-router';
+import type { ResourceRepository } from './resource-repository';
 
 function bodyObject(body: unknown) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
