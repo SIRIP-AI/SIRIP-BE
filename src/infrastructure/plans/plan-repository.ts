@@ -9,7 +9,7 @@ const maximumListedPlans = 50;
 const recentReadingsPerBatch = 24;
 
 const planInclude = {
-  triggerEvent: { select: { type: true, rawMessage: true, structuredData: true, occurredAt: true } },
+  triggerEvent: { select: { id: true, type: true, source: true, rawMessage: true, structuredData: true, occurredAt: true } },
   steps: {
     orderBy: { sequence: 'asc' as const },
     include: {
@@ -44,7 +44,9 @@ function serializePlan(plan: StoredPlan): PlanView {
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
     trigger: plan.triggerEvent ? {
+      id: plan.triggerEvent.id.toString(),
       type: plan.triggerEvent.type,
+      source: plan.triggerEvent.source,
       message: eventMessage(plan.triggerEvent),
       occurredAt: plan.triggerEvent.occurredAt.toISOString(),
     } : null,
@@ -299,9 +301,13 @@ export class PlanRepository implements PlanRepositoryPort {
     return loadPlanningContext(this.database, userId);
   }
 
-  async saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null) {
+  async saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null, triggerEventId?: bigint) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
+      if (triggerEventId !== undefined) {
+        const triggerEvent = await transaction.operationalEvent.findFirst({ where: { id: triggerEventId, userId }, select: { id: true } });
+        if (!triggerEvent) throw new NotFoundError('Operational event');
+      }
       const activePlan = await transaction.plan.findFirst({
         where: { userId, status: 'ACTIVE' },
         select: {
@@ -330,6 +336,7 @@ export class PlanRepository implements PlanRepositoryPort {
           version: (latest._max.version ?? 0) + 1,
           status: 'PROPOSED',
           previousPlanId: activePlan?.id ?? null,
+          triggerEventId: triggerEventId ?? null,
           reason: proposal.reason,
           steps: {
             create: [

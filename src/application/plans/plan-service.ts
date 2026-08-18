@@ -8,7 +8,7 @@ export type PlanValidator = (proposal: AiPlanProposal, context: PlanningContext)
 export type PlanRepositoryPort = {
   list(userId: bigint): Promise<PlanList>;
   loadContext(userId: bigint): Promise<PlanningContext>;
-  saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null): Promise<PlanView>;
+  saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null, triggerEventId?: bigint): Promise<PlanView>;
   activateProposal(userId: bigint, planId: bigint, validate: PlanValidator): Promise<PlanView>;
   dismissProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   completeStep(userId: bigint, planId: bigint, stepId: bigint): Promise<PlanView>;
@@ -38,7 +38,7 @@ export class PlanService {
     return this.repository.list(userId);
   }
 
-  async generateProposal(userId: bigint) {
+  async generateProposal(userId: bigint, triggerEventId?: bigint) {
     let generationContext = await this.repository.loadContext(userId);
     requireGenerationContext(generationContext);
     let proposal = orderPlanProposal(await this.generate(generationContext));
@@ -55,7 +55,7 @@ export class PlanService {
       errors = this.validate(proposal, freshContext);
     }
     if (errors.length) throw new RequestError('AI generated an infeasible plan', 502);
-    return this.repository.saveProposal(userId, proposal, freshContext.activePlan);
+    return this.repository.saveProposal(userId, proposal, freshContext.activePlan, triggerEventId);
   }
 
   approve(userId: bigint, planId: bigint) {

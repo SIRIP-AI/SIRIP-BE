@@ -69,7 +69,7 @@ export class OverviewRepository {
         where: { userId, OR: [{ batchId: null }, { batch: { deletedAt: null } }] },
         orderBy: { occurredAt: 'desc' },
         take: 50,
-        select: { id: true, batchId: true, type: true, structuredData: true, occurredAt: true },
+        select: { id: true, batchId: true, type: true, source: true, structuredData: true, occurredAt: true },
       }),
       this.database.plan.findFirst({
         where: { userId, status: 'ACTIVE' },
@@ -104,6 +104,7 @@ export class OverviewRepository {
         id: event.id.toString(),
         batchId: event.batchId?.toString() ?? null,
         type: event.type,
+        source: event.source,
         severity: metadata.severity,
         title: metadata.title,
         description: metadata.description,

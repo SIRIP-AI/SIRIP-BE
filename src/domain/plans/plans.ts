@@ -134,7 +134,9 @@ export type PlanView = {
   createdAt: string;
   approvedAt: string | null;
   trigger: {
+    id: string;
     type: string;
+    source: string;
     message: string;
     occurredAt: string;
   } | null;
