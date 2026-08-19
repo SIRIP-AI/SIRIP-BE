@@ -97,7 +97,7 @@ export class TelemetryRepository {
         create: {
           dedupeKey: decision.dedupeKey,
           userId,
-          type: 'TEMPERATURE_EXCURSION',
+          type: decision.type,
           source: 'SYSTEM',
           batchId,
           rawMessage: null,

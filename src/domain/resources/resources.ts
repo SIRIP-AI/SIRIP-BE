@@ -52,6 +52,19 @@ export type DestinationInput = Omit<Destination, 'id' | 'updatedAt'>;
 export const sensorProvisioningStatuses = ['PENDING', 'PROVISIONED'] as const;
 export type SensorProvisioningStatus = typeof sensorProvisioningStatuses[number];
 
+export const sensorOfflineThresholdMs = 20 * 60 * 1000;
+
+export const connectivityStatuses = ['ONLINE', 'OFFLINE', 'ERROR', 'NEVER_CONNECTED', 'UNASSIGNED'] as const;
+export type ConnectivityStatus = typeof connectivityStatuses[number];
+
+export function connectivityStatus(sensor: { status: string; lastSeenAt: Date | null } | null | undefined, now: Date, lastSignalAt = sensor?.lastSeenAt ?? null): ConnectivityStatus {
+  if (!sensor) return 'UNASSIGNED';
+  if (sensor.status === 'ERROR') return 'ERROR';
+  if (sensor.status === 'OFFLINE') return 'OFFLINE';
+  if (!lastSignalAt) return 'NEVER_CONNECTED';
+  return now.getTime() - lastSignalAt.getTime() > sensorOfflineThresholdMs ? 'OFFLINE' : 'ONLINE';
+}
+
 export type SensorInput = {
   code: string;
   deviceUid: string;

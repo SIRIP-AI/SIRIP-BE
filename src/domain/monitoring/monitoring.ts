@@ -1,15 +1,19 @@
 import { calculateQualityState, compareCanonicalReadings } from '../quality/quality';
 import type { CanonicalQualityReading } from '../quality/quality';
+import { sensorOfflineThresholdMs } from '../resources/resources';
 
 export const monitoringRuleVersion = 'v1';
 export const temperatureExcursionThresholdC = 8;
 export const qualityWarningWindowDays = 4;
 export const qualityCriticalWindowDays = 2;
+export const sensorOfflineRule = 'sensor-offline';
 
 type MonitoringSeverity = 'WARNING' | 'CRITICAL';
+type MonitoringEventType = 'TEMPERATURE_EXCURSION' | 'OTHER';
 
 export type MonitoringDecision = {
   dedupeKey: string;
+  type: MonitoringEventType;
   occurredAt: Date;
   structuredData: {
     rule: Record<string, string | number>;
@@ -30,6 +34,7 @@ type DecisionInput = {
   title: string;
   description: string;
   occurredAt: Date;
+  type?: MonitoringEventType;
   qualityStatus?: MonitoringSeverity;
   ruleMetadata?: Record<string, string | number>;
 };
@@ -41,6 +46,7 @@ export function monitoringEventPrefix(batchId: bigint) {
 function decision(batchId: bigint, input: DecisionInput): MonitoringDecision {
   return {
     dedupeKey: `${monitoringEventPrefix(batchId)}${input.rule}:${input.qualifier}`,
+    type: input.type ?? 'TEMPERATURE_EXCURSION',
     occurredAt: input.occurredAt,
     structuredData: {
       rule: { version: monitoringRuleVersion, name: input.rule, ...input.ruleMetadata },
@@ -105,4 +111,19 @@ export function evaluateMonitoring(batchId: bigint, readings: CanonicalQualityRe
   }
 
   return decisions;
+}
+
+export function evaluateStaleSensor(session: { id: bigint; batchId: bigint; startedAt: Date; lastSyncedAt: Date | null }, now: Date): MonitoringDecision | null {
+  const basis = session.lastSyncedAt ?? session.startedAt;
+  if (now.getTime() - basis.getTime() <= sensorOfflineThresholdMs) return null;
+  return decision(session.batchId, {
+    rule: sensorOfflineRule,
+    qualifier: session.id.toString(),
+    type: 'OTHER',
+    severity: 'WARNING',
+    title: 'Sensor offline',
+    description: `No telemetry has been received for over ${sensorOfflineThresholdMs / 60000} minutes; local recording may continue and readings will sync when connectivity returns.`,
+    occurredAt: new Date(basis.getTime() + sensorOfflineThresholdMs),
+    ruleMetadata: { offlineThresholdMs: sensorOfflineThresholdMs, sessionId: session.id.toString() },
+  });
 }

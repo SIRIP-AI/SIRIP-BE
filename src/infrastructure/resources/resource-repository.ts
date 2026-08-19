@@ -1,5 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
+import { connectivityStatus } from '../../domain/resources/resources';
 import type { ColdStorageInput, DestinationInput, SensorAssignmentInput, SensorInput, VehicleInput } from '../../domain/resources/resources';
 import type { Database } from '../persistence/database';
 
@@ -98,17 +99,16 @@ function sensorResponse(resource: {
   provisioningStatus: string;
   lastSeenAt: Date | null;
   createdAt: Date;
-  sessions: Array<{ batch: { code: string }; lastSyncedAt: Date | null }>;
+  sessions: Array<{ batch: { code: string }; startedAt: Date; lastSyncedAt: Date | null }>;
 }) {
   const session = resource.sessions[0];
-  const recentlySeen = resource.lastSeenAt && Date.now() - resource.lastSeenAt.getTime() <= 20 * 60 * 1000;
   return {
     id: resource.id.toString(),
     code: resource.code,
     deviceUid: resource.deviceUid,
     status: resource.status,
     provisioningStatus: resource.provisioningStatus,
-    connectivityStatus: resource.status === 'ERROR' ? 'ERROR' : resource.status === 'OFFLINE' || (resource.lastSeenAt && !recentlySeen) ? 'OFFLINE' : recentlySeen ? 'ONLINE' : 'NEVER_CONNECTED',
+    connectivityStatus: connectivityStatus(resource, new Date(), session ? session.lastSyncedAt ?? session.startedAt : resource.lastSeenAt),
     lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
     createdAt: resource.createdAt.toISOString(),
     assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
@@ -119,7 +119,7 @@ function sensorInclude(userId: bigint) {
   return {
     sessions: {
       where: { status: 'ACTIVE' as const, batch: { userId, deletedAt: null } },
-      select: { batch: { select: { code: true } }, lastSyncedAt: true },
+      select: { batch: { select: { code: true } }, startedAt: true, lastSyncedAt: true },
       take: 1,
     },
   };
@@ -267,14 +267,14 @@ export class ResourceRepository {
           if (!existing.deletedAt) return sensorResponse(existing);
           return sensorResponse(await this.database.sensor.update({
             where: { id: existing.id },
-            data: { ...input, status: 'AVAILABLE', lastSeenAt: new Date(), deletedAt: null },
+            data: { ...input, status: 'AVAILABLE', deletedAt: null },
             include: sensorInclude(userId),
           }));
         }
         throw new ConflictError('A resource with that name or code already exists');
       }
       return sensorResponse(await this.database.sensor.create({
-        data: { ...input, userId, status: 'AVAILABLE', lastSeenAt: input.provisioningStatus === 'PROVISIONED' ? new Date() : null },
+        data: { ...input, userId, status: 'AVAILABLE' },
         include: sensorInclude(userId),
       }));
     } catch (error) {
