@@ -26,6 +26,8 @@ export async function resetSeedBaseline(transaction: Prisma.TransactionClient, u
   const sessionIds = sessions.map(({ id }) => id);
   const plans = await transaction.plan.deleteMany({ where: { userId } });
   const alerts = await transaction.operationalEvent.deleteMany({ where: { userId } });
+  const messagingLinkTokens = await transaction.messagingLinkToken.deleteMany({ where: { userId } });
+  const messagingConnections = await transaction.messagingConnection.deleteMany({ where: { userId } });
   const telemetry = await transaction.temperatureReading.deleteMany({ where: { sensorSessionId: { in: sessionIds } } });
   await transaction.sensorSession.deleteMany({ where: { id: { in: sessionIds } } });
   const sensors = await transaction.sensor.deleteMany({ where: { userId } });
@@ -50,7 +52,7 @@ export async function resetSeedBaseline(transaction: Prisma.TransactionClient, u
     { userId, name: 'Processor C', address: 'Gresik', travelMinutes: 90, receivingStart: time('09:00'), receivingEnd: time('17:00'), status: 'AVAILABLE', notes: 'Use the cold-chain receiving dock' },
   ] });
   return {
-    deleted: { fishingTrips: fishingTrips.count, batches: batches.count, plans: plans.count, sensors: sensors.count, telemetry: telemetry.count, alerts: alerts.count },
+    deleted: { fishingTrips: fishingTrips.count, batches: batches.count, plans: plans.count, sensors: sensors.count, telemetry: telemetry.count, alerts: alerts.count, messagingConnections: messagingConnections.count, messagingLinkTokens: messagingLinkTokens.count },
     restored: { resources: 8 },
   };
 }

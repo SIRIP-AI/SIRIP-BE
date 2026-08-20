@@ -57,10 +57,14 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 - `npm run langgraph:dev`: run the local LangGraph Agent Server and open the plan workflow in Studio.
 - `npm start`: run the compiled server.
 
+Telegram development uses an HTTPS webhook at `${PUBLIC_BASE_URL}/api/integrations/telegram/webhook`. Point ngrok at backend port `3000`, configure `TELEGRAM_BOT_TOKEN` and a random `TELEGRAM_WEBHOOK_SECRET`, then restart the backend to register the current URL. Operators permanently link their chat from the Overview page using a single-use token that expires after 10 minutes.
+
 Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse feasible or infeasible output, refresh context, and route up to two deterministic validation repairs. Prisma remains authoritative for feasible proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
+
+The separate `chat_workflow` normalizes channel-independent chatbot behavior. Telegram is the current transport; deterministic outbound monitoring alerts do not invoke an LLM.
 
 LangGraph Studio reads real development data for the supplied user ID and can make configured model calls. Run the Agent Server on localhost only; Studio graph execution intentionally cannot save or activate plans.
 
-The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed` while preserving the current password and authenticated sessions; the CLI seed also resets credentials and clears sessions.
+The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed`, removes messaging connections and pending link tokens, and preserves the current password and authenticated sessions; the CLI seed also resets credentials and clears sessions.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

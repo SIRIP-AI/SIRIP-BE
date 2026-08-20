@@ -7,6 +7,10 @@ import { loadEnvFile } from 'node:process';
 
 import type { PlanList, PlanningContext, PlanView } from './domain/plans/plans';
 import { createApp } from './infrastructure/http/app';
+import { ChatService } from './application/messaging/chat-service';
+import { createChatGraph, createChatWorkflow } from './infrastructure/messaging/chat-graph';
+import { ChatRepository } from './infrastructure/messaging/chat-repository';
+import { TelegramService } from './infrastructure/messaging/telegram-service';
 import { createDatabase, type Database } from './infrastructure/persistence/database';
 
 if (existsSync('.env')) loadEnvFile('.env');
@@ -137,7 +141,8 @@ async function run() {
     process.env.AI_MODEL = mockModel;
     process.env.COOKIE_SECURE = 'false';
     process.env.SENSOR_API_KEY = mockSensorApiKey;
-    apiServer = createApp(database).listen(0, '127.0.0.1');
+    const chat = new ChatService(createChatWorkflow(createChatGraph(new ChatRepository(database))));
+    apiServer = createApp(database, new TelegramService(database, chat)).listen(0, '127.0.0.1');
     await once(apiServer, 'listening');
     const baseUrl = `http://127.0.0.1:${(apiServer.address() as AddressInfo).port}/api`;
 

@@ -69,6 +69,11 @@ enum OperationalEventSource {
   WHATSAPP
 }
 
+enum MessagingChannel {
+  TELEGRAM
+  WHATSAPP
+}
+
 enum PlanStatus {
   PROPOSED
   ACTIVE
@@ -109,8 +114,36 @@ model User {
   sensors           Sensor[]
   operationalEvents OperationalEvent[]
   authSessions      AuthSession[]
+  messagingConnections MessagingConnection[]
+  messagingLinkTokens  MessagingLinkToken[]
 
   @@map("users")
+}
+
+model MessagingConnection {
+  id             BigInt           @id @default(autoincrement())
+  userId         BigInt           @map("user_id")
+  channel        MessagingChannel
+  externalChatId String           @map("external_chat_id")
+  displayName    String?          @map("display_name")
+  connectedAt    DateTime         @default(now()) @map("connected_at") @db.Timestamptz
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@unique([channel, externalChatId])
+  @@map("messaging_connections")
+}
+
+model MessagingLinkToken {
+  tokenHash String           @id @map("token_hash")
+  userId    BigInt           @map("user_id")
+  channel   MessagingChannel
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("messaging_link_tokens")
 }
 
 model AuthSession {

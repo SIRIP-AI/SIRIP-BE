@@ -4,6 +4,7 @@ import { sensorOfflineThresholdMs } from '../resources/resources';
 
 export const monitoringRuleVersion = 'v1';
 export const temperatureExcursionThresholdC = 8;
+export const temperatureExcursionSampleCount = 5;
 export const qualityWarningWindowDays = 4;
 export const qualityCriticalWindowDays = 2;
 export const sensorOfflineRule = 'sensor-offline';
@@ -67,21 +68,25 @@ export function evaluateMonitoring(batchId: bigint, readings: CanonicalQualityRe
   if (!latest) return [];
   const decisions: MonitoringDecision[] = [];
 
-  if (latest.temperatureC >= temperatureExcursionThresholdC) {
-    let boundary = latest;
-    for (let index = ordered.length - 2; index >= 0; index -= 1) {
-      const reading = ordered[index];
-      if (!reading || reading.temperatureC < temperatureExcursionThresholdC) break;
-      boundary = reading;
+  const latestWindowStart = ordered.length - temperatureExcursionSampleCount;
+  const latestWindow = ordered.slice(latestWindowStart);
+  const latestAverage = latestWindow.reduce((sum, reading) => sum + reading.temperatureC, 0) / temperatureExcursionSampleCount;
+  if (latestWindow.length === temperatureExcursionSampleCount && latestAverage >= temperatureExcursionThresholdC) {
+    let boundaryIndex = latestWindowStart;
+    for (let start = latestWindowStart - 1; start >= 0; start -= 1) {
+      const average = ordered.slice(start, start + temperatureExcursionSampleCount).reduce((sum, reading) => sum + reading.temperatureC, 0) / temperatureExcursionSampleCount;
+      if (average < temperatureExcursionThresholdC) break;
+      boundaryIndex = start;
     }
+    const boundary = ordered[boundaryIndex]!;
     decisions.push(decision(batchId, {
       rule: 'temperature-excursion',
       qualifier: boundary.id.toString(),
       severity: 'CRITICAL',
       title: 'Temperature excursion active',
-      description: `Latest reading ${latest.temperatureC}°C is at or above the ${temperatureExcursionThresholdC}°C threshold; the current excursion started at ${boundary.measuredAt.toISOString()}.`,
+      description: `The latest ${temperatureExcursionSampleCount} readings average ${latestAverage.toFixed(1)}°C, at or above the ${temperatureExcursionThresholdC}°C threshold; the current excursion started at ${boundary.measuredAt.toISOString()}.`,
       occurredAt: boundary.measuredAt,
-      ruleMetadata: { thresholdC: temperatureExcursionThresholdC, boundaryReadingId: boundary.id.toString(), latestTemperatureC: latest.temperatureC },
+      ruleMetadata: { thresholdC: temperatureExcursionThresholdC, sampleCount: temperatureExcursionSampleCount, boundaryReadingId: boundary.id.toString(), averageTemperatureC: latestAverage, latestTemperatureC: latest.temperatureC },
     }));
   }
 

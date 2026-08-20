@@ -1,4 +1,4 @@
-import { ConflictError, RequestError } from '../../domain/errors';
+import { ConflictError, NotFoundError, RequestError } from '../../domain/errors';
 import type { AuthUser } from '../../domain/auth/auth';
 import type { Database } from '../persistence/database';
 import { resetSeedBaseline, seededUser } from '../persistence/seed-baseline';
@@ -84,5 +84,27 @@ export class DemoService {
       currentTemperatureC: result.currentTemperatureC,
       remainingQualityWindowDays: result.remainingQualityWindowDays,
     };
+  }
+
+  async simulateExcursion(userId: bigint, sensorId: bigint, now = new Date()) {
+    const sensor = await this.database.sensor.findFirst({
+      where: { id: sensorId, userId, deletedAt: null },
+      include: { sessions: { where: { status: 'ACTIVE' }, take: 1 } },
+    });
+    if (!sensor) throw new NotFoundError('Sensor');
+    if (sensor.provisioningStatus !== 'PROVISIONED' || !sensor.sessions[0]) throw new ConflictError('Sensor must be provisioned and assigned before simulating an excursion');
+    const maximum = await this.database.temperatureReading.aggregate({ where: { sensorSessionId: sensor.sessions[0].id }, _max: { sequenceNumber: true } });
+    const firstSequence = Number(maximum._max.sequenceNumber ?? -1n) + 1;
+    if (!Number.isSafeInteger(firstSequence + 4)) throw new ConflictError('Sensor sequence number is too large to simulate telemetry');
+    const temperatures = [9.2, 9.5, 9.8, 10.1, 10.3];
+    const readings = temperatures.map((temperature, index) => ({
+      sensorId: sensor.code,
+      deviceUid: sensor.deviceUid,
+      temperature,
+      sequenceNumber: firstSequence + index,
+      measuredAt: new Date(now.getTime() - (temperatures.length - 1 - index) * 1000),
+    }));
+    await this.telemetry.ingestMany(readings);
+    return { sensorId: sensor.id.toString(), readingCount: readings.length, temperatures, generatedAt: now.toISOString() };
   }
 }

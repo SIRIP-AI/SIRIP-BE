@@ -21,8 +21,10 @@ import { TelemetryRepository } from '../telemetry/telemetry-repository';
 import { createTelemetryRouter } from '../telemetry/telemetry-router';
 import { requireAuth, createAuthRouter } from '../auth/auth-router';
 import type { Database } from '../persistence/database';
+import type { TelegramService } from '../messaging/telegram-service';
+import { createTelegramAccountRouter, createTelegramWebhookRouter } from '../messaging/telegram-router';
 
-export function createApp(database: Database) {
+export function createApp(database: Database, telegram: TelegramService) {
   const app = express();
   const auth = new AuthService(database);
   const origin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
@@ -37,11 +39,13 @@ export function createApp(database: Database) {
   });
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
+  app.use('/api/integrations/telegram', createTelegramWebhookRouter(telegram));
   app.use('/api/auth', createAuthRouter(auth));
-  const telemetry = new TelemetryRepository(database);
+  const telemetry = new TelemetryRepository(database, telegram);
   app.use('/api/telemetry', createTelemetryRouter(telemetry));
   app.use('/api', requireAuth(auth));
   app.use('/api/debug', createDemoRouter(new DemoService(database, telemetry)));
+  app.use('/api/integrations/telegram', createTelegramAccountRouter(telegram));
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));

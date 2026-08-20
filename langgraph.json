@@ -3,7 +3,8 @@
   "node_version": "20",
   "dependencies": ["."],
   "graphs": {
-    "plan_workflow": "./src/infrastructure/plans/plan-graph.studio.ts:planWorkflow"
+    "plan_workflow": "./src/infrastructure/plans/plan-graph.studio.ts:planWorkflow",
+    "chat_workflow": "./src/infrastructure/messaging/chat-graph.studio.ts:chatWorkflow"
   },
   "env": ".env"
 }
