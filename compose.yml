@@ -53,6 +53,9 @@ services:
       AI_API_URL: ${AI_API_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-sirip-ai}
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:

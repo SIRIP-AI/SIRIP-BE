@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { PlanService, type PlanRepositoryPort } from './plan-service';
 import type { AiPlanProposal, PlanningContext, PlanView } from '../../domain/plans/plans';
+import { RequestError } from '../../domain/errors';
 
 const step = { actionType: 'INSPECT' as const, batchId: '7', scheduledAt: '2026-08-21T10:00:00.000Z' };
 const currentPlan = { id: '10', version: 1, reason: 'Current', steps: [{ sequence: 1, ...step, status: 'COMPLETED' as const, completedAt: '2026-08-20T10:00:00.000Z', coldStorageId: null, vehicleId: null, destinationId: null, notes: null }] };
@@ -36,9 +37,9 @@ test('revising a proposal keeps its scope and requests transactional replacement
     completeStep: async () => view('ACTIVE'),
   };
   const proposal: AiPlanProposal = { reason: 'Revised', steps: [step] };
-  const service = new PlanService(repository, async (_context, request) => {
-    generationInstruction = request?.instruction;
-    return proposal;
+  const service = new PlanService(repository, async (request) => {
+    generationInstruction = request.instruction;
+    return { proposal, context };
   }, () => []);
 
   await service.revise(1n, 10n, 'Use another truck');
@@ -47,4 +48,16 @@ test('revising a proposal keeps its scope and requests transactional replacement
   assert.deepEqual(saved?.[2], [7n]);
   assert.equal(saved?.[3], currentPlan);
   assert.deepEqual(saved?.[4], { replaceProposalId: 10n });
+});
+
+test('does not persist a workflow result that fails deterministic validation', async () => {
+  let saved = false;
+  const repository = {
+    get: async () => view('ACTIVE'),
+    saveProposal: async () => { saved = true; return view('PROPOSED'); },
+  } as unknown as PlanRepositoryPort;
+  const service = new PlanService(repository, async () => ({ proposal: { reason: 'Invalid', steps: [step] }, context }), () => ['Invalid']);
+
+  await assert.rejects(() => service.generateProposal(1n, [7n]), (error) => error instanceof RequestError && error.status === 502);
+  assert.equal(saved, false);
 });

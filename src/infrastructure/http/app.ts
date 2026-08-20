@@ -4,7 +4,7 @@ import { PlanService } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
 import { validatePlanProposal } from '../../domain/plans/plans';
 import { AuthService } from '../auth/auth-service';
-import { generateAiPlan } from '../plans/plan-generator';
+import { createPlanGraph, createPlanWorkflow } from '../plans/plan-graph';
 import { BatchRepository } from '../batches/batch-repository';
 import { createBatchesRouter } from '../batches/batches-router';
 import { FishingTripRepository } from '../fishing-trips/fishing-trip-repository';
@@ -45,7 +45,9 @@ export function createApp(database: Database) {
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));
-  app.use('/api/plans', createPlansRouter(new PlanService(new PlanRepository(database), generateAiPlan, validatePlanProposal)));
+  const plans = new PlanRepository(database);
+  const planWorkflow = createPlanWorkflow(createPlanGraph({ repository: plans, validate: validatePlanProposal }));
+  app.use('/api/plans', createPlansRouter(new PlanService(plans, planWorkflow, validatePlanProposal)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {

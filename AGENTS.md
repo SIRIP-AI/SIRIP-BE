@@ -48,6 +48,11 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 - `npm run build`: compile with strict TypeScript checks.
 - `npm run db:reset`: destructively rebuild the configured local database and seed the provisioning baseline.
 - `npm run seed`: reset the demo account to two cold rooms, three trucks, three destinations, and no operational workflow or sensor data.
+- `npm run langgraph:dev`: run the local LangGraph Agent Server and open the plan workflow in Studio.
 - `npm start`: run the compiled server.
+
+Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse output, refresh context, and route deterministic validation repairs. Prisma remains authoritative for proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
+
+LangGraph Studio reads real development data for the supplied user ID and can make configured model calls. Run the Agent Server on localhost only; Studio graph execution intentionally cannot save or activate plans.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.
