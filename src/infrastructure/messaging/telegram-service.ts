@@ -1,14 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { RequestError } from '../../domain/errors';
-import type { ChatService } from '../../application/messaging/chat-service';
+import { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
+import type { TelegramOperations, TelegramReply } from './telegram-operations';
 
 const linkLifetimeMs = 10 * 60_000;
 
 type TelegramUpdate = {
   update_id?: unknown;
   message?: { message_id?: unknown; text?: unknown; chat?: { id?: unknown; first_name?: unknown; username?: unknown } };
+  callback_query?: { id?: unknown; data?: unknown; message?: { chat?: { id?: unknown } } };
 };
 
 export type ExcursionAlert = {
@@ -27,7 +29,7 @@ function hash(value: string) {
 export class TelegramService {
   private botUsername: string | null = null;
 
-  constructor(private readonly database: Database, private readonly chat: ChatService) {}
+  constructor(private readonly database: Database, private readonly operations: TelegramOperations) {}
 
   private token() {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -56,7 +58,7 @@ export class TelegramService {
     this.botUsername = bot.username;
     const url = new URL('/api/integrations/telegram/webhook', base);
     if (url.protocol !== 'https:') throw new Error('PUBLIC_BASE_URL must use HTTPS');
-    await this.call('setWebhook', { url: url.toString(), secret_token: secret, allowed_updates: ['message'] });
+    await this.call('setWebhook', { url: url.toString(), secret_token: secret, allowed_updates: ['message', 'callback_query'] });
     return true;
   }
 
@@ -77,7 +79,10 @@ export class TelegramService {
   }
 
   async disconnect(userId: bigint) {
-    await this.database.messagingConnection.deleteMany({ where: { userId, channel: 'TELEGRAM' } });
+    await this.database.$transaction([
+      this.database.messagingConversation.deleteMany({ where: { userId, channel: 'TELEGRAM' } }),
+      this.database.messagingConnection.deleteMany({ where: { userId, channel: 'TELEGRAM' } }),
+    ]);
   }
 
   verifySecret(provided: string | undefined) {
@@ -89,6 +94,31 @@ export class TelegramService {
   }
 
   async receive(update: TelegramUpdate) {
+    if (typeof update.update_id !== 'number' || !Number.isSafeInteger(update.update_id) || update.update_id < 0) return;
+    const externalUpdateId = String(update.update_id);
+    try {
+      await this.database.messagingUpdate.create({ data: { channel: 'TELEGRAM', externalUpdateId } });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return;
+      throw error;
+    }
+    try {
+      await this.processUpdate(update);
+    } catch (error) {
+      await this.database.messagingUpdate.deleteMany({ where: { channel: 'TELEGRAM', externalUpdateId } });
+      throw error;
+    }
+  }
+
+  private async processUpdate(update: TelegramUpdate) {
+    const callbackQuery = update.callback_query;
+    const callbackChatId = callbackQuery?.message?.chat?.id;
+    const callbackData = callbackQuery?.data;
+    if ((typeof callbackChatId === 'number' || typeof callbackChatId === 'string') && typeof callbackData === 'string' && callbackData.length <= 64) {
+      if (typeof callbackQuery?.id === 'string') await this.call('answerCallbackQuery', { callback_query_id: callbackQuery.id });
+      await this.receiveConnected(String(callbackChatId), null, callbackData);
+      return;
+    }
     const message = update.message;
     const chatId = message?.chat?.id;
     const text = message?.text;
@@ -106,7 +136,13 @@ export class TelegramService {
       await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.');
       return;
     }
-    await this.send(externalChatId, await this.chat.reply({ userId: connection.userId, text }));
+    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, null));
+  }
+
+  private async receiveConnected(externalChatId: string, text: string | null, callback: string | null) {
+    const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
+    if (!connection) { await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.'); return; }
+    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, callback));
   }
 
   private async consumeLink(token: string, externalChatId: string, displayName: string | null) {
@@ -128,7 +164,7 @@ export class TelegramService {
   async sendExcursion(alert: ExcursionAlert) {
     const connection = await this.database.messagingConnection.findUnique({ where: { userId_channel: { userId: alert.userId, channel: 'TELEGRAM' } } });
     if (!connection) return;
-    await this.send(connection.externalChatId, [
+    const text = [
       'SIRIP - TEMPERATURE ALERT',
       '',
       `Sensor: ${alert.sensorCode}`,
@@ -138,10 +174,19 @@ export class TelegramService {
       `Excursion threshold: ${alert.thresholdC.toFixed(1)}°C`,
       '',
       'Please inspect the batch and cooling system immediately.',
-    ].join('\n'));
+    ].join('\n');
+    await this.send(connection.externalChatId, text);
+    await this.operations.recordAssistant(alert.userId, text);
   }
 
   private send(chatId: string, text: string) {
     return this.call('sendMessage', { chat_id: chatId, text });
+  }
+
+  private async sendReply(chatId: string, reply: TelegramReply) {
+    const chunks = reply.text.match(/[\s\S]{1,4000}/g) ?? [''];
+    for (let index = 0; index < chunks.length; index += 1) {
+      await this.call('sendMessage', { chat_id: chatId, text: chunks[index], ...(index === chunks.length - 1 && reply.buttons ? { reply_markup: { inline_keyboard: reply.buttons } } : {}) });
+    }
   }
 }

@@ -35,17 +35,21 @@ export class PlanService {
     return this.generateAndSave(userId, batchIds, destinationId, deadline, undefined, undefined, triggerEventId);
   }
 
-  async revise(userId: bigint, planId: bigint, instruction: string) {
+  async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint) {
     const plan = await this.repository.get(userId, planId);
     if (plan.status !== 'ACTIVE' && plan.status !== 'PROPOSED') throw new ConflictError('Only active or proposed plans can be revised');
-    return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), undefined, plan.deadline, planId, instruction, undefined, plan.status === 'PROPOSED' ? planId : undefined);
+    return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), undefined, plan.deadline, planId, instruction, triggerEventId, plan.status === 'PROPOSED' ? planId : undefined);
   }
 
   private async generateAndSave(userId: bigint, batchIds: bigint[], destinationId: bigint | undefined, deadline: string | null, planId?: bigint, instruction?: string, triggerEventId?: bigint, replaceProposalId?: bigint): Promise<PlanGenerationResult> {
     const { result, context } = await this.workflow({ userId, batchIds, destinationId, deadline, ...(planId !== undefined ? { planId } : {}), ...(instruction ? { instruction } : {}) });
     if (result.status === 'INFEASIBLE') return result;
     const proposal = { reason: result.reason, steps: result.steps };
-    if (this.validate(proposal, context).length) throw new RequestError('AI generated an infeasible plan', 502);
+    const validationErrors = this.validate(proposal, context);
+    if (validationErrors.length) {
+      console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors, proposal });
+      throw new RequestError('AI generated an infeasible plan', 502);
+    }
     return { status: 'FEASIBLE', proposal: await this.repository.saveProposal(userId, proposal, batchIds, deadline, context.currentPlan, { ...(triggerEventId !== undefined ? { triggerEventId } : {}), ...(replaceProposalId !== undefined ? { replaceProposalId } : {}) }) };
   }
 

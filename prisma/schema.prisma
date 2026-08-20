@@ -67,6 +67,7 @@ enum OperationalEventSource {
   SYSTEM
   WEB
   WHATSAPP
+  TELEGRAM
 }
 
 enum MessagingChannel {
@@ -116,6 +117,7 @@ model User {
   authSessions      AuthSession[]
   messagingConnections MessagingConnection[]
   messagingLinkTokens  MessagingLinkToken[]
+  messagingConversations MessagingConversation[]
 
   @@map("users")
 }
@@ -144,6 +146,30 @@ model MessagingLinkToken {
 
   @@index([expiresAt])
   @@map("messaging_link_tokens")
+}
+
+model MessagingConversation {
+  id        BigInt           @id @default(autoincrement())
+  userId    BigInt           @map("user_id")
+  channel   MessagingChannel
+  state     Json
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@index([expiresAt])
+  @@map("messaging_conversations")
+}
+
+model MessagingUpdate {
+  channel          MessagingChannel
+  externalUpdateId String           @map("external_update_id")
+  receivedAt       DateTime         @default(now()) @map("received_at") @db.Timestamptz
+
+  @@id([channel, externalUpdateId])
+  @@index([receivedAt])
+  @@map("messaging_updates")
 }
 
 model AuthSession {
@@ -215,6 +241,7 @@ model Sensor {
   deletedAt          DateTime?                @map("deleted_at") @db.Timestamptz
   user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessions           SensorSession[]
+  operationalEvents  OperationalEvent[]
 
   @@unique([userId, code])
   @@map("sensors")
@@ -316,6 +343,7 @@ model OperationalEvent {
   vehicleId      BigInt?                @map("vehicle_id")
   coldStorageId  BigInt?                @map("cold_storage_id")
   destinationId  BigInt?                @map("destination_id")
+  sensorId       BigInt?                @map("sensor_id")
   rawMessage     String?                @map("raw_message")
   dedupeKey      String?                @unique @map("dedupe_key")
   structuredData Json                   @default("{}") @map("structured_data")
@@ -326,6 +354,7 @@ model OperationalEvent {
   vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
   destination    Destination?           @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  sensor         Sensor?                @relation(fields: [sensorId], references: [id], onDelete: Restrict)
   triggeredPlans Plan[]
 
   @@index([userId, occurredAt])

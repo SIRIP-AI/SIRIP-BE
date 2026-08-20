@@ -45,6 +45,9 @@ Core domain rules include:
 - Vehicle delays reset after their last active-plan use unless explicitly marked persistent; availability and capacity never reset implicitly.
 - A plan has explicit batch scope. Multiple plans may be active for one user, but a batch may belong to at most one active plan.
 - Active-scope overlap is enforced transactionally during approval under a per-user PostgreSQL advisory lock; PostgreSQL cannot express the cross-table status constraint as a simple partial index.
+- Initial plan creation remains web-only. Linked Telegram operators may query operational state and may report supported operational facts only after preview and explicit confirmation.
+- A confirmed Telegram report atomically creates a `TELEGRAM` operational event and updates the authoritative fact. Replanning, revision approval, and dismissal remain separate explicit decisions; approval requires final confirmation.
+- Telegram conversations persist a runtime-validated pending-state envelope and the newest 10 visible messages with rolling 30-minute expiry; legacy direct pending JSON is normalized without a migration. Clarification and report-correction slots merge deterministically, with newly supplied non-null values taking precedence. Webhook update IDs are replay-protected, and callback queries use bounded inline actions.
 
 Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep transport DTOs out of the domain and do not expose secrets or private operator data in logs or errors.
 
@@ -61,10 +64,14 @@ Telegram development uses an HTTPS webhook at `${PUBLIC_BASE_URL}/api/integratio
 
 Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse feasible or infeasible output, refresh context, and route up to two deterministic validation repairs. Prisma remains authoritative for feasible proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
 
-The separate `chat_workflow` normalizes channel-independent chatbot behavior. Telegram is the current transport; deterministic outbound monitoring alerts do not invoke an LLM.
+Before Telegram intent/slot extraction, the backend loads a compact user-scoped snapshot of every active/proposed plan plus bounded current batches, resources, sensors, and active alerts. Extraction receives that snapshot, pending structured state, the newest 10 total visible messages, and the current message, with one bounded repair and no regex fallback. Incident facts remain reports unless the operator explicitly requests replanning; `V2` is a display version, not a database ID.
+
+User-scoped resolution, query execution and pagination, report previews and confirmed mutations, impact assessment, planner permission, proposal validation, and approval remain deterministic. Query answer wording may use a separate model call containing only the operator question and validated result facts; failure returns the deterministic wording, and pagination/buttons never depend on model output. The newest 10 visible inbound, assistant, semantic callback, and outbound-alert messages provide restart-safe context; callback payloads and secrets are never retained. Deterministic outbound monitoring alerts do not invoke an LLM.
 
 LangGraph Studio reads real development data for the supplied user ID and can make configured model calls. Run the Agent Server on localhost only; Studio graph execution intentionally cannot save or activate plans.
 
 The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed`, removes messaging connections and pending link tokens, and preserves the current password and authenticated sessions; the CLI seed also resets credentials and clears sessions.
+
+Loading in-app demo data creates three reserved trips with two batches each, six provisioned assigned sensors, and five healthy or warming readings per sensor. Reserved codes and per-user device UIDs are stable; reruns preserve trip, batch, and sensor identities, replace only reserved sessions/readings, and reingest each sensor through the production telemetry path. The provisioning seed and reset baseline remain resource-only.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

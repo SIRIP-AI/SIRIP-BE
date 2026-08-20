@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { PlanRepositoryPort, PlanValidator, PlanWorkflow, PlanWorkflowInput } from '../../application/plans/plan-service';
 import { ConflictError, RequestError } from '../../domain/errors';
 import { InvalidPlanProposalError, orderPlanProposal, parseAiPlanResult, planSnapshot, type AiPlanResult, type PlanningContext } from '../../domain/plans/plans';
-import { createPlanningModel, messageText, planningMessages, planningProviderError, type PlanningModel } from './plan-generator';
+import { createPlanningModel, messageText, normalizePlanResponse, planningMessages, planningProviderError, type PlanningModel } from './plan-generator';
 
 const PlanGraphState = Annotation.Root({
   userId: Annotation<string>(),
@@ -63,7 +63,14 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     if (!state.generationContext) throw new Error('Planning context is unavailable');
     try {
       const response = await model().invoke(planningMessages(state.generationContext, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors));
-      return { rawOutput: messageText(response), result: null };
+      const rawOutput = messageText(response);
+      console.info('[AI plan output]', {
+        planId: state.planId,
+        parserRepair: state.parserRepairCount ?? 0,
+        validationRepair: state.validationRepairCount ?? 0,
+        output: rawOutput,
+      });
+      return { rawOutput, result: null };
     } catch (error) {
       if (error instanceof RequestError) throw error;
       throw planningProviderError(error);
@@ -71,11 +78,13 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const parse = (state: typeof PlanGraphState.State) => {
     try {
-      const result = parseAiPlanResult(state.rawOutput ?? '');
+      const result = parseAiPlanResult(normalizePlanResponse(state.rawOutput ?? ''));
       return { result: result.status === 'FEASIBLE' ? { status: 'FEASIBLE' as const, ...orderPlanProposal(result) } : result, parserError: null };
     } catch (error) {
       if (!(error instanceof InvalidPlanProposalError)) throw error;
-      return { result: null, parserError: error.message.slice(0, 300), parserRepairCount: (state.parserRepairCount ?? 0) + 1 };
+      const parserError = error.message.slice(0, 300);
+      console.warn('[AI plan parse rejected]', { planId: state.planId, error: parserError });
+      return { result: null, parserError, parserRepairCount: (state.parserRepairCount ?? 0) + 1 };
     }
   };
   const afterParse = (state: typeof PlanGraphState.State) => {
@@ -94,7 +103,9 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     if (!state.result || !state.generationContext || !state.freshContext) throw new Error('Plan validation state is incomplete');
     const changed = planSnapshot(state.generationContext.currentPlan) !== planSnapshot(state.freshContext.currentPlan);
     if (changed && (state.validationRepairCount ?? 0) > 0) throw new ConflictError('Current plan changed during generation');
-    return { validationErrors: changed ? ['Current plan changed during generation'] : state.result.status === 'INFEASIBLE' ? [] : validate(state.result, state.freshContext) };
+    const validationErrors = changed ? ['Current plan changed during generation'] : state.result.status === 'INFEASIBLE' ? [] : validate(state.result, state.freshContext);
+    if (validationErrors.length) console.warn('[AI plan validation rejected]', { planId: state.planId, errors: validationErrors });
+    return { validationErrors };
   };
   const afterValidation = (state: typeof PlanGraphState.State) => {
     if (!state.validationErrors.length) return END;

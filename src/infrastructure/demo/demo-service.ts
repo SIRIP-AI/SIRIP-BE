@@ -5,9 +5,40 @@ import { resetSeedBaseline, seededUser } from '../persistence/seed-baseline';
 import { parseTelemetryReadings } from '../telemetry/telemetry-router';
 import type { TelemetryRepository } from '../telemetry/telemetry-repository';
 
-const tripCode = 'DEMO-TRIP';
-const batchCode = 'DEMO-BATCH';
-const sensorCode = 'DEMO-SENSOR';
+const hour = 60 * 60_000;
+
+export const demoTrips = [
+  { code: 'DEMO-TRIP', vesselName: 'KM Demo Laut', ageHours: 42 },
+  { code: 'DEMO-TRIP-02', vesselName: 'KM Sinar Tuna', ageHours: 36 },
+  { code: 'DEMO-TRIP-03', vesselName: 'KM Bahari Jaya', ageHours: 30 },
+] as const;
+
+export const demoBatches = [
+  { code: 'DEMO-BATCH', tripCode: 'DEMO-TRIP', sensorCode: 'DEMO-SENSOR', weightKg: 350, grade: 'A', profile: 'healthy', temperatures: [1.8, 2, 2.1, 2.2, 2.3] },
+  { code: 'DEMO-BATCH-02', tripCode: 'DEMO-TRIP', sensorCode: 'DEMO-SENSOR-02', weightKg: 280, grade: 'A', profile: 'warming', temperatures: [2.2, 3.1, 4.2, 5.3, 6.4] },
+  { code: 'DEMO-BATCH-03', tripCode: 'DEMO-TRIP-02', sensorCode: 'DEMO-SENSOR-03', weightKg: 410, grade: 'A', profile: 'healthy', temperatures: [1.6, 1.8, 2, 2.1, 2.2] },
+  { code: 'DEMO-BATCH-04', tripCode: 'DEMO-TRIP-02', sensorCode: 'DEMO-SENSOR-04', weightKg: 320, grade: 'B', profile: 'warming', temperatures: [2.4, 3.3, 4.5, 5.8, 7.2] },
+  { code: 'DEMO-BATCH-05', tripCode: 'DEMO-TRIP-03', sensorCode: 'DEMO-SENSOR-05', weightKg: 295, grade: 'A', profile: 'healthy', temperatures: [1.9, 2, 2.2, 2.3, 2.4] },
+  { code: 'DEMO-BATCH-06', tripCode: 'DEMO-TRIP-03', sensorCode: 'DEMO-SENSOR-06', weightKg: 365, grade: 'B', profile: 'warming', temperatures: [2.1, 3, 4.1, 5.5, 6.8] },
+] as const;
+
+export function demoDeviceUid(userId: bigint, sensorIndex: number) {
+  return `sirip-demo-device:${userId}:${sensorIndex + 1}`;
+}
+
+type DemoSession = {
+  sensorId: bigint;
+  batchId: bigint;
+  sensor: { userId: bigint | null };
+  batch: { userId: bigint | null };
+};
+
+export function isUnsafeDemoSession(userId: bigint, reservedSensorIds: ReadonlySet<bigint>, reservedBatchIds: ReadonlySet<bigint>, session: DemoSession) {
+  return session.sensor.userId !== userId
+    || session.batch.userId !== userId
+    || !reservedSensorIds.has(session.sensorId)
+    || !reservedBatchIds.has(session.batchId);
+}
 
 export class DemoService {
   constructor(private readonly database: Database, private readonly telemetry: Pick<TelemetryRepository, 'ingestMany'>) {}
@@ -27,62 +58,89 @@ export class DemoService {
   }
 
   async generate(userId: bigint, now = new Date()) {
-    const deviceUid = `sirip-demo-device:${userId}`;
-    const { trip, batch, sensor } = await this.database.$transaction(async (transaction) => {
+    const prepared = await this.database.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
 
-      const trip = await transaction.fishingTrip.upsert({
-        where: { userId_code: { userId, code: tripCode } },
-        create: { userId, code: tripCode, vesselName: 'KM Demo Laut', startedAt: new Date(now.getTime() - 36 * 60 * 60_000), status: 'ACTIVE' },
-        update: { vesselName: 'KM Demo Laut', startedAt: new Date(now.getTime() - 36 * 60 * 60_000), endedAt: null, status: 'ACTIVE', deletedAt: null },
-      });
-      const batch = await transaction.batch.upsert({
-        where: { userId_code: { userId, code: batchCode } },
-        create: { userId, code: batchCode, fishingTripId: trip.id, weightKg: 350, grade: 'A', status: 'MONITORING', receivedAt: new Date(now.getTime() - 24 * 60 * 60_000) },
-        update: { fishingTripId: trip.id, weightKg: 350, grade: 'A', status: 'MONITORING', receivedAt: new Date(now.getTime() - 24 * 60 * 60_000), handedOverAt: null, equivalentQualityAgeDays: null, remainingQualityWindowDays: null, qualityEstimateStartedAt: null, currentTemperatureC: null, deletedAt: null },
-      });
-      const sensor = await transaction.sensor.upsert({
-        where: { userId_code: { userId, code: sensorCode } },
-        create: { userId, code: sensorCode, deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED' },
-        update: { deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED', lastSeenAt: null, deletedAt: null },
-      });
-      const foreignAssignment = await transaction.sensorSession.findFirst({ where: { batchId: batch.id, status: 'ACTIVE', sensorId: { not: sensor.id } } });
-      if (foreignAssignment) throw new ConflictError('Demo batch is assigned to another sensor; unassign it before loading demo data');
+      const trips = [];
+      for (const definition of demoTrips) {
+        trips.push(await transaction.fishingTrip.upsert({
+          where: { userId_code: { userId, code: definition.code } },
+          create: { userId, code: definition.code, vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), status: 'ACTIVE' },
+          update: { vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), endedAt: null, status: 'ACTIVE', deletedAt: null },
+        }));
+      }
+      const tripsByCode = new Map(trips.map((trip) => [trip.code, trip]));
 
-      const oldSessions = await transaction.sensorSession.findMany({ where: { OR: [{ sensorId: sensor.id }, { batchId: batch.id }] }, select: { id: true } });
-      await transaction.temperatureReading.deleteMany({ where: { sensorSessionId: { in: oldSessions.map(({ id }) => id) } } });
-      await transaction.sensorSession.updateMany({ where: { id: { in: oldSessions.map(({ id }) => id) }, status: 'ACTIVE' }, data: { status: 'COMPLETED', endedAt: now } });
-      await transaction.sensorSession.create({ data: { sensorId: sensor.id, batchId: batch.id, startedAt: new Date(now.getTime() - 24 * 60 * 60_000), status: 'ACTIVE' } });
-      return { trip, batch, sensor };
+      const batches = [];
+      const sensors = [];
+      for (const [index, definition] of demoBatches.entries()) {
+        const trip = tripsByCode.get(definition.tripCode)!;
+        batches.push(await transaction.batch.upsert({
+          where: { userId_code: { userId, code: definition.code } },
+          create: { userId, code: definition.code, fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: 'MONITORING', receivedAt: new Date(now.getTime() - 24 * hour) },
+          update: { fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: 'MONITORING', receivedAt: new Date(now.getTime() - 24 * hour), handedOverAt: null, deletedAt: null },
+        }));
+        const deviceUid = demoDeviceUid(userId, index);
+        sensors.push(await transaction.sensor.upsert({
+          where: { userId_code: { userId, code: definition.sensorCode } },
+          create: { userId, code: definition.sensorCode, deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED' },
+          update: { deviceUid, status: 'ASSIGNED', provisioningStatus: 'PROVISIONED', lastSeenAt: null, deletedAt: null },
+        }));
+      }
+
+      const reservedSensorIds = new Set(sensors.map(({ id }) => id));
+      const reservedBatchIds = new Set(batches.map(({ id }) => id));
+      const sessions = await transaction.sensorSession.findMany({
+        where: { OR: [{ sensorId: { in: [...reservedSensorIds] } }, { batchId: { in: [...reservedBatchIds] } }] },
+        select: { id: true, sensorId: true, batchId: true, sensor: { select: { userId: true } }, batch: { select: { userId: true } } },
+      });
+      if (sessions.some((session) => isUnsafeDemoSession(userId, reservedSensorIds, reservedBatchIds, session))) {
+        throw new ConflictError('Demo load aborted because reserved sensors or batches have conflicting assignments');
+      }
+
+      const sessionIds = sessions.map(({ id }) => id);
+      await transaction.temperatureReading.deleteMany({ where: { sensorSessionId: { in: sessionIds } } });
+      await transaction.sensorSession.deleteMany({ where: { id: { in: sessionIds } } });
+      await transaction.batch.updateMany({
+        where: { id: { in: [...reservedBatchIds] } },
+        data: { equivalentQualityAgeDays: null, remainingQualityWindowDays: null, qualityEstimateStartedAt: null, currentTemperatureC: null },
+      });
+      for (const [index, batch] of batches.entries()) {
+        await transaction.sensorSession.create({ data: { sensorId: sensors[index]!.id, batchId: batch.id, startedAt: new Date(now.getTime() - 24 * hour), status: 'ACTIVE' } });
+      }
+      return { trips, batches, sensors };
     });
 
-    const hour = 60 * 60_000;
-    const samples = [
-      [-24 * hour, 2.1],
-      [-18 * hour, 2.4],
-      [-12 * hour, 3.0],
-      [-6 * hour, 5.6],
-      [-60_000, 9.2],
-    ];
-    const payload = samples.map(([offset, temperature], sequenceNumber) => ({
-      sensorId: sensorCode,
-      deviceUid,
-      temperature,
-      sequenceNumber: sequenceNumber + 1,
-      measuredAt: new Date(now.getTime() + offset).toISOString(),
-    }));
-    const { readings } = parseTelemetryReadings({ readings: payload }, now.getTime());
-    await this.telemetry.ingestMany(readings);
+    for (const [index, definition] of demoBatches.entries()) {
+      const sensor = prepared.sensors[index]!;
+      const payload = definition.temperatures.map((temperature, sequenceNumber) => ({
+        sensorId: definition.sensorCode,
+        deviceUid: sensor.deviceUid,
+        temperature,
+        sequenceNumber: sequenceNumber + 1,
+        measuredAt: new Date(now.getTime() - (24 - sequenceNumber * 6) * hour).toISOString(),
+      }));
+      const { readings } = parseTelemetryReadings({ readings: payload }, now.getTime());
+      await this.telemetry.ingestMany(readings);
+    }
 
-    const result = await this.database.batch.findUniqueOrThrow({ where: { id: batch.id }, select: { currentTemperatureC: true, remainingQualityWindowDays: true } });
+    const quality = await this.database.batch.findMany({
+      where: { id: { in: prepared.batches.map(({ id }) => id) } },
+      select: { id: true, currentTemperatureC: true, remainingQualityWindowDays: true },
+    });
+    const qualityById = new Map(quality.map((batch) => [batch.id, batch]));
     return {
-      trip: { id: trip.id.toString(), code: trip.code },
-      batch: { id: batch.id.toString(), code: batch.code },
-      sensor: { id: sensor.id.toString(), code: sensor.code },
-      readingCount: readings.length,
+      trips: prepared.trips.map((trip) => ({ id: trip.id.toString(), code: trip.code })),
+      batches: prepared.batches.map((batch, index) => ({
+        id: batch.id.toString(),
+        code: batch.code,
+        tripCode: demoBatches[index]!.tripCode,
+        currentTemperatureC: qualityById.get(batch.id)!.currentTemperatureC,
+        remainingQualityWindowDays: qualityById.get(batch.id)!.remainingQualityWindowDays,
+      })),
+      sensors: prepared.sensors.map((sensor, index) => ({ id: sensor.id.toString(), code: sensor.code, batchCode: demoBatches[index]!.code, readingCount: demoBatches[index]!.temperatures.length })),
+      readingCount: demoBatches.reduce((count, batch) => count + batch.temperatures.length, 0),
       generatedAt: now.toISOString(),
-      currentTemperatureC: result.currentTemperatureC,
-      remainingQualityWindowDays: result.remainingQualityWindowDays,
     };
   }
 

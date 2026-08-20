@@ -79,3 +79,16 @@ test('does not persist an infeasible workflow result', async () => {
   assert.deepEqual(result, { status: 'INFEASIBLE', reason: 'No route reaches the destination in time.' });
   assert.equal(saved, false);
 });
+
+test('attaches a reporting event to a generated revision', async () => {
+  let options: Parameters<PlanRepositoryPort['saveProposal']>[5];
+  const repository = {
+    get: async () => view('ACTIVE'),
+    saveProposal: async (...parameters: Parameters<PlanRepositoryPort['saveProposal']>) => { options = parameters[5]; return view('PROPOSED'); },
+  } as unknown as PlanRepositoryPort;
+  const service = new PlanService(repository, async () => ({ result: { status: 'FEASIBLE', reason: 'Revised', steps: [step] }, context }), () => []);
+
+  await service.revise(1n, 10n, 'Account for the report', 44n);
+
+  assert.deepEqual(options!, { triggerEventId: 44n });
+});

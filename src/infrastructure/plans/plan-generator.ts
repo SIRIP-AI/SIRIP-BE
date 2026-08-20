@@ -9,7 +9,7 @@ const timeoutMilliseconds = 20_000;
 const maximumPlanResponseBytes = 100_000;
 export const maximumPlanResponseCharacters = 100_000;
 const oversizedResponseMarker = 'SIRIP_PLAN_RESPONSE_TOO_LARGE';
-const systemPrompt = 'You are SIRIP cold-chain operations planner. Return only one JSON object. If a plan is possible, return exactly status, reason, and steps with status "FEASIBLE". reason is a concise non-empty string up to 1000 characters. steps is an ordered array of 1 to 100 future actions. Every scoped batch must have at least one future step and, when selectedDestinationId is present, a DISPATCH to that destination. Destination arrival must be no later than both the plan deadline and the batch remaining quality deadline. If no plan can satisfy the context, return exactly {"status":"INFEASIBLE","reason":"..."}; never invent partial steps. Each step has actionType, positive string batchId, ISO scheduledAt, and only applicable optional coldStorageId, vehicleId, destinationId, notes. Action types: STORE uses coldStorageId only; LOAD uses vehicleId only; DISPATCH and HANDOVER use destinationId only; INSPECT and OTHER use no resource IDs. Use only IDs in context. Respect quality, aggregate capacity, availability, delays, travel time, and UTC daily receiving/availability windows. The current plan is authoritative context: completed steps are immutable and must not be returned; regenerate future steps only. Restrictions and notes are operational context; account for them conservatively.';
+const systemPrompt = 'You are SIRIP cold-chain operations planner. Return only one JSON object with no Markdown fences, commentary, or text before or after it. If a plan is possible, return exactly status, reason, and steps with status "FEASIBLE". reason is a concise non-empty string up to 1000 characters. steps is an ordered array of 1 to 100 future actions. Every scoped batch must have at least one future step and, when selectedDestinationId is present, a DISPATCH to that destination. Destination arrival must be no later than both the plan deadline and the batch remaining quality deadline. If no plan can satisfy the context, return exactly {"status":"INFEASIBLE","reason":"..."}; never invent partial steps. Each step has actionType, positive string batchId, ISO scheduledAt, and only applicable optional coldStorageId, vehicleId, destinationId, notes. Action types: STORE uses coldStorageId only; LOAD uses vehicleId only; DISPATCH and HANDOVER use destinationId only; INSPECT and OTHER use no resource IDs. Use only IDs in context. Respect quality, aggregate capacity, availability, delays, travel time, and UTC daily receiving/availability windows. The current plan is authoritative context: completed steps are immutable and must not be returned; regenerate future steps only. Restrictions and notes are operational context; account for them conservatively.';
 
 export type PlanningModel = Pick<BaseChatModel, 'invoke'>;
 
@@ -96,7 +96,7 @@ export function planningProviderError(error: unknown) {
 
 export function planningMessages(context: PlanningContext, instruction?: string, parserError?: string, validationErrors: string[] = []) {
   const repair = parserError
-    ? `Your previous answer violated the strict JSON contract. Return corrected strict JSON. Parser error: ${parserError.slice(0, 300)}`
+    ? `Your previous answer violated the strict JSON contract. Return only the corrected JSON object without Markdown fences or commentary. Parser error: ${parserError.slice(0, 300)}`
     : validationErrors.length
       ? `Repair the plan using these deterministic validation errors: ${JSON.stringify(validationErrors.slice(0, 20).map((error) => error.slice(0, 300)))}`
       : null;
@@ -109,4 +109,9 @@ export function planningMessages(context: PlanningContext, instruction?: string,
 export function messageText(message: BaseMessage) {
   if (typeof message.content !== 'string' || !message.content || message.content.length > maximumPlanResponseCharacters) throw new RequestError('AI provider returned an invalid response', 502);
   return message.content;
+}
+
+export function normalizePlanResponse(content: string) {
+  const fences = [...content.matchAll(/```(?:json)?[\t ]*\r?\n([\s\S]*?)\r?\n?```/gi)];
+  return fences.length === 1 ? fences[0]![1]!.trim() : content.trim();
 }
