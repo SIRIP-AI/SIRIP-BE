@@ -11,7 +11,7 @@ const context: PlanningContext = {
   now: '2026-08-20T12:00:00.000Z',
   batches: [{ id: '7', code: 'B-7', weightKg: 10, grade: 'A', status: 'ACTIVE', quality: { equivalentQualityAgeDays: 1, remainingQualityWindowDays: 5, qualityEstimateStartedAt: '2026-08-20T00:00:00.000Z', currentTemperatureC: 2 }, telemetry: [] }],
   coldStorages: [{ id: '1', name: 'Cold', capacityKg: 100, availableCapacityKg: 100, operationalStatus: 'AVAILABLE' }],
-  vehicles: [{ id: '2', code: 'Truck', capacityKg: 100, operationalStatus: 'AVAILABLE', delayMinutes: 0, restriction: null, availabilityStart: null, availabilityEnd: null }],
+  vehicles: [{ id: '2', code: 'Truck', capacityKg: 100, operationalStatus: 'AVAILABLE', delayMinutes: 0, delayPersistent: false, restriction: null, availabilityStart: null, availabilityEnd: null }],
   destinations: [{ id: '3', name: 'Port', address: 'A', travelMinutes: 10, receivingStart: '00:00', receivingEnd: '23:59', status: 'AVAILABLE', notes: null }],
   currentPlan: { id: '10', version: 1, reason: 'Current', steps: [] },
 };

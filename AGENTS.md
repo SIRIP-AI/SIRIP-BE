@@ -37,6 +37,9 @@ Core domain rules include:
 - Completed plan steps are historical facts and cannot be replanned.
 - AI proposals require deterministic validation and human approval before activation.
 - Only configured resources may be used in a plan.
+- Completing the final upcoming step atomically completes the active plan and releases its batch scope.
+- A completed plan cannot be revised. Direct pending revisions are dismissed when their predecessor completes.
+- Vehicle delays reset after their last active-plan use unless explicitly marked persistent; availability and capacity never reset implicitly.
 - A plan has explicit batch scope. Multiple plans may be active for one user, but a batch may belong to at most one active plan.
 - Active-scope overlap is enforced transactionally during approval under a per-user PostgreSQL advisory lock; PostgreSQL cannot express the cross-table status constraint as a simple partial index.
 
@@ -54,5 +57,7 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse output, refresh context, and route deterministic validation repairs. Prisma remains authoritative for proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
 
 LangGraph Studio reads real development data for the supplied user ID and can make configured model calls. Run the Agent Server on localhost only; Studio graph execution intentionally cannot save or activate plans.
+
+The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed` while preserving the current password and authenticated sessions; the CLI seed also resets credentials and clears sessions.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

@@ -3,7 +3,7 @@ export const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] a
 
 export type PlanActionType = typeof planActionTypes[number];
 export type ActiveBatchStatus = typeof activeBatchStatuses[number];
-export type PlanStatus = 'PROPOSED' | 'ACTIVE' | 'SUPERSEDED' | 'DISMISSED';
+export type PlanStatus = 'PROPOSED' | 'ACTIVE' | 'COMPLETED' | 'SUPERSEDED' | 'DISMISSED';
 export type PlanStepStatus = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
 export type AiPlanStep = {
@@ -54,6 +54,7 @@ export type PlanningVehicle = {
   capacityKg: number;
   operationalStatus: 'AVAILABLE' | 'UNAVAILABLE';
   delayMinutes: number;
+  delayPersistent: boolean;
   restriction: string | null;
   availabilityStart: string | null;
   availabilityEnd: string | null;
@@ -133,6 +134,7 @@ export type PlanView = {
   reason: string;
   createdAt: string;
   approvedAt: string | null;
+  completedAt: string | null;
   batches: Array<{ id: string; code: string }>;
   trigger: {
     id: string;

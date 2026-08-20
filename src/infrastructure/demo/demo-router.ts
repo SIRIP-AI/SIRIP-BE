@@ -9,5 +9,9 @@ export function createDemoRouter(service: DemoService) {
     const { user } = response.locals as AuthLocals;
     response.json(await service.generate(BigInt(user.id)));
   });
+  router.post('/demo/reset', async (_request, response) => {
+    const { user } = response.locals as AuthLocals;
+    response.json(await service.reset(user));
+  });
   return router;
 }

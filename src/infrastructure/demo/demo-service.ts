@@ -1,5 +1,7 @@
-import { ConflictError } from '../../domain/errors';
+import { ConflictError, RequestError } from '../../domain/errors';
+import type { AuthUser } from '../../domain/auth/auth';
 import type { Database } from '../persistence/database';
+import { resetSeedBaseline, seededUser } from '../persistence/seed-baseline';
 import { parseTelemetryReadings } from '../telemetry/telemetry-router';
 import type { TelemetryRepository } from '../telemetry/telemetry-repository';
 
@@ -9,6 +11,20 @@ const sensorCode = 'DEMO-SENSOR';
 
 export class DemoService {
   constructor(private readonly database: Database, private readonly telemetry: Pick<TelemetryRepository, 'ingestMany'>) {}
+
+  async reset(user: AuthUser) {
+    if (user.email !== seededUser.email) throw new RequestError('Demo reset is only available for the seeded account', 403);
+    const userId = BigInt(user.id);
+    const resetAt = new Date();
+    const result = await this.database.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
+      const currentUser = await transaction.user.findUnique({ where: { id: userId }, select: { email: true } });
+      if (!currentUser || currentUser.email !== seededUser.email) throw new RequestError('Demo reset is only available for the seeded account', 403);
+      await transaction.user.update({ where: { id: userId }, data: { name: seededUser.name, phone: seededUser.phone } });
+      return resetSeedBaseline(transaction, userId);
+    });
+    return { resetAt: resetAt.toISOString(), ...result, sessionPreserved: true as const };
+  }
 
   async generate(userId: bigint, now = new Date()) {
     const deviceUid = `sirip-demo-device:${userId}`;

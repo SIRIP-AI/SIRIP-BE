@@ -1,0 +1,1 @@
+ALTER TYPE "PlanStatus" ADD VALUE 'COMPLETED';

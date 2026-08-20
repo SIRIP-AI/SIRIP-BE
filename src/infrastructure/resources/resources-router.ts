@@ -100,6 +100,7 @@ function vehicleInput(body: unknown): VehicleInput {
   const value = bodyObject(body);
   rejectField(value, 'status');
   rejectField(value, 'delayMinutes');
+  rejectField(value, 'delayPersistent');
   const availabilityStart = nullableTime(value, 'availabilityStart');
   const availabilityEnd = nullableTime(value, 'availabilityEnd');
   if ((availabilityStart === null) !== (availabilityEnd === null)) throw new RequestError('availabilityStart and availabilityEnd must both be provided', 400);

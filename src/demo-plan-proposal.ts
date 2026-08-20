@@ -176,6 +176,7 @@ async function run() {
     assert.equal(proposal.version, 1);
     assert.equal(proposal.status, 'PROPOSED');
     assert.equal(proposal.previousPlanId, null);
+    assert.equal(proposal.completedAt, null);
     assert.deepEqual(proposal.steps.map(({ actionType }) => actionType), ['STORE', 'LOAD', 'DISPATCH']);
     assert.deepEqual(proposal.steps.map(({ resource }) => resource?.id), [coldStorage.id, vehicle.id, destination.id]);
     const plans = (await request<PlanList>(baseUrl, '/plans', 'GET', undefined, cookie)).data;

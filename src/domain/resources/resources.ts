@@ -27,6 +27,7 @@ export type Vehicle = {
   operationalStatus: ResourceOperationalStatus;
   status: VehicleStatus;
   delayMinutes: number;
+  delayPersistent: boolean;
   restriction: string | null;
   availabilityStart: string | null;
   availabilityEnd: string | null;

@@ -72,6 +72,7 @@ enum OperationalEventSource {
 enum PlanStatus {
   PROPOSED
   ACTIVE
+  COMPLETED
   SUPERSEDED
   DISMISSED
 }
@@ -241,6 +242,7 @@ model Vehicle {
   capacityKg        Float              @map("capacity_kg")
   operationalStatus ResourceOperationalStatus @map("operational_status")
   delayMinutes      Int                @default(0) @map("delay_minutes")
+  delayPersistent   Boolean            @default(false) @map("delay_persistent")
   restriction       String?
   availabilityStart DateTime?          @map("availability_start") @db.Time
   availabilityEnd   DateTime?          @map("availability_end") @db.Time
@@ -307,6 +309,7 @@ model Plan {
   reason         String
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
+  completedAt    DateTime?         @map("completed_at") @db.Timestamptz
   approvedById   BigInt?           @map("approved_by")
   previousPlan   Plan?             @relation("PlanVersions", fields: [previousPlanId], references: [id])
   revisions      Plan[]            @relation("PlanVersions")
@@ -317,6 +320,8 @@ model Plan {
   batches        PlanBatch[]
 
   @@unique([userId, version])
+  @@index([userId, status, createdAt])
+  @@index([previousPlanId, status])
   @@map("plans")
 }
 
@@ -351,5 +356,7 @@ model PlanStep {
   destination   Destination?   @relation(fields: [destinationId], references: [id], onDelete: Restrict)
 
   @@unique([planId, sequence])
+  @@index([planId, status])
+  @@index([vehicleId, status])
   @@map("plan_steps")
 }

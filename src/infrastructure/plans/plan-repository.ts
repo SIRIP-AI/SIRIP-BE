@@ -44,6 +44,7 @@ function serializePlan(plan: StoredPlan): PlanView {
     reason: plan.reason,
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
+    completedAt: plan.completedAt?.toISOString() ?? null,
     batches: plan.batches.map(({ batch }) => ({ id: batch.id.toString(), code: batch.code })),
     trigger: plan.triggerEvent ? {
       id: plan.triggerEvent.id.toString(),
@@ -222,6 +223,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       capacityKg: resource.capacityKg,
       operationalStatus: resource.operationalStatus,
       delayMinutes: resource.delayMinutes,
+      delayPersistent: resource.delayPersistent,
       restriction: resource.restriction,
       availabilityStart: resource.availabilityStart?.toISOString().slice(11, 16) ?? null,
       availabilityEnd: resource.availabilityEnd?.toISOString().slice(11, 16) ?? null,
@@ -435,7 +437,22 @@ export class PlanRepository implements PlanRepositoryPort {
       if (plan.status !== 'ACTIVE') throw new ConflictError('Plan is not active');
       if (step.status !== 'UPCOMING') throw new ConflictError('Plan step is not upcoming');
       if (step.batch.deletedAt) throw new ConflictError('Plan step batch is no longer active');
-      await transaction.planStep.update({ where: { id: stepId }, data: { status: 'COMPLETED', completedAt: new Date() } });
+      const completedAt = new Date();
+      await transaction.planStep.update({ where: { id: stepId }, data: { status: 'COMPLETED', completedAt } });
+      const upcoming = await transaction.planStep.findFirst({ where: { planId, status: 'UPCOMING' }, select: { id: true } });
+      if (!upcoming) {
+        await transaction.plan.update({ where: { id: planId }, data: { status: 'COMPLETED', completedAt } });
+        await transaction.plan.updateMany({ where: { previousPlanId: planId, status: 'PROPOSED' }, data: { status: 'DISMISSED' } });
+        const vehicles = await transaction.planStep.findMany({ where: { planId, vehicleId: { not: null } }, distinct: ['vehicleId'], select: { vehicleId: true } });
+        await transaction.vehicle.updateMany({
+          where: {
+            id: { in: vehicles.flatMap(({ vehicleId }) => vehicleId === null ? [] : [vehicleId]) },
+            delayPersistent: false,
+            planSteps: { none: { status: 'UPCOMING', plan: { status: 'ACTIVE' } } },
+          },
+          data: { delayMinutes: 0, delayPersistent: false },
+        });
+      }
       return serializePlan(await transaction.plan.findUniqueOrThrow({ where: { id: planId }, include: planInclude }));
     });
   }
