@@ -1,10 +1,10 @@
-import type { PlanGenerationFeedback } from '../../application/plans/plan-service';
+import type { PlanGenerationFeedback, PlanGenerationRequest } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
 import { InvalidPlanProposalError, parseAiPlanProposal, type PlanningContext } from '../../domain/plans/plans';
 
 const timeoutMilliseconds = 20_000;
 const maximumResponseBytes = 100_000;
-const systemPrompt = 'You are SIRIP cold-chain operations planner. Return only one JSON object with exactly reason and steps. reason is a concise non-empty string up to 1000 characters. steps is an ordered array of 1 to 100 future actions. Every active batch must have at least one step. Each step has actionType, positive string batchId, ISO scheduledAt, and only applicable optional coldStorageId, vehicleId, destinationId, notes. Action types: STORE uses coldStorageId only; LOAD uses vehicleId only; DISPATCH and HANDOVER use destinationId only; INSPECT and OTHER use no resource IDs. Use only IDs in context. Respect quality, aggregate capacity, availability, delays, travel time, and UTC daily receiving/availability windows. Completed active-plan steps are immutable and must not be repeated. Restrictions and notes are operational context; account for them conservatively.';
+const systemPrompt = 'You are SIRIP cold-chain operations planner. Return only one JSON object with exactly reason and steps. reason is a concise non-empty string up to 1000 characters. steps is an ordered array of 1 to 100 future actions. Every scoped batch must have at least one future step. Each step has actionType, positive string batchId, ISO scheduledAt, and only applicable optional coldStorageId, vehicleId, destinationId, notes. Action types: STORE uses coldStorageId only; LOAD uses vehicleId only; DISPATCH and HANDOVER use destinationId only; INSPECT and OTHER use no resource IDs. Use only IDs in context. Respect quality, aggregate capacity, availability, delays, travel time, and UTC daily receiving/availability windows. The current plan is authoritative context: completed steps are immutable and must not be returned; regenerate future steps only. Restrictions and notes are operational context; account for them conservatively.';
 
 function configuration() {
   const apiUrl = process.env.AI_API_URL?.trim();
@@ -60,16 +60,19 @@ function content(body: unknown) {
   return value;
 }
 
-function userPrompt(context: PlanningContext, feedback?: PlanGenerationFeedback, parserError?: string) {
-  const request = parserError
+function userPrompt(context: PlanningContext, request?: PlanGenerationRequest, feedback?: PlanGenerationFeedback, parserError?: string) {
+  const repair = parserError
     ? `Your previous answer violated the strict JSON contract. Return corrected strict JSON. Parser error: ${parserError.slice(0, 300)}`
     : feedback
       ? `Repair the plan using these deterministic validation errors: ${JSON.stringify(feedback.validationErrors.slice(0, 20).map((error) => error.slice(0, 300)))}`
-      : 'Generate a feasible revision of future operations.';
-  return `${request}\nCurrent context:\n${JSON.stringify(context)}`;
+      : null;
+  const task = request?.instruction
+    ? `Revise future operations according to this operator instruction: ${JSON.stringify(request.instruction)}${repair ? `\n${repair}` : ''}`
+    : repair ?? 'Generate a feasible plan for future operations.';
+  return `${task}\nCurrent plan and operational context:\n${JSON.stringify(context)}`;
 }
 
-async function requestPlan(configurationValue: ReturnType<typeof configuration>, context: PlanningContext, feedback?: PlanGenerationFeedback, parserError?: string) {
+async function requestPlan(configurationValue: ReturnType<typeof configuration>, context: PlanningContext, request?: PlanGenerationRequest, feedback?: PlanGenerationFeedback, parserError?: string) {
   let response: Response;
   try {
     response = await fetch(configurationValue.apiUrl, {
@@ -82,7 +85,7 @@ async function requestPlan(configurationValue: ReturnType<typeof configuration>,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt(context, feedback, parserError) },
+          { role: 'user', content: userPrompt(context, request, feedback, parserError) },
         ],
       }),
       signal: AbortSignal.timeout(timeoutMilliseconds),
@@ -104,11 +107,11 @@ async function requestPlan(configurationValue: ReturnType<typeof configuration>,
   return content(body);
 }
 
-export async function generateAiPlan(context: PlanningContext, feedback?: PlanGenerationFeedback) {
+export async function generateAiPlan(context: PlanningContext, request?: PlanGenerationRequest, feedback?: PlanGenerationFeedback) {
   const configurationValue = configuration();
   let parserError: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const output = await requestPlan(configurationValue, context, feedback, parserError);
+    const output = await requestPlan(configurationValue, context, request, feedback, parserError);
     try {
       return parseAiPlanProposal(output);
     } catch (error) {

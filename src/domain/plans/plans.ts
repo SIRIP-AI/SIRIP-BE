@@ -96,10 +96,10 @@ export type PlanningContext = {
   coldStorages: PlanningColdStorage[];
   vehicles: PlanningVehicle[];
   destinations: PlanningDestination[];
-  activePlan: PlanningActivePlan | null;
+  currentPlan: PlanningActivePlan | null;
 };
 
-export function activePlanSnapshot(plan: PlanningActivePlan | null) {
+export function planSnapshot(plan: PlanningActivePlan | null) {
   return JSON.stringify(plan ? [
     plan.id,
     plan.version,
@@ -133,6 +133,7 @@ export type PlanView = {
   reason: string;
   createdAt: string;
   approvedAt: string | null;
+  batches: Array<{ id: string; code: string }>;
   trigger: {
     id: string;
     type: string;
@@ -155,7 +156,7 @@ export type PlanView = {
 
 export type PlanList = {
   updatedAt: string;
-  activePlan: PlanView | null;
+  activePlans: PlanView[];
   proposedPlans: PlanView[];
   history: PlanView[];
 };

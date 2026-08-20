@@ -162,6 +162,7 @@ model Batch {
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
   planSteps                  PlanStep[]
+  planBatches                PlanBatch[]
 
   @@unique([userId, code])
   @@index([userId, status])
@@ -313,9 +314,21 @@ model Plan {
   user           User?             @relation("OwnedPlans", fields: [userId], references: [id], onDelete: Cascade)
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
+  batches        PlanBatch[]
 
   @@unique([userId, version])
   @@map("plans")
+}
+
+model PlanBatch {
+  planId  BigInt @map("plan_id")
+  batchId BigInt @map("batch_id")
+  plan    Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  @@id([planId, batchId])
+  @@index([batchId])
+  @@map("plan_batches")
 }
 
 model PlanStep {

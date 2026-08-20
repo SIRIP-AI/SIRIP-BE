@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { activePlanSnapshot, type AiPlanProposal, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
+import { planSnapshot, type AiPlanProposal, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
 import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
@@ -9,6 +9,7 @@ const maximumListedPlans = 50;
 const recentReadingsPerBatch = 24;
 
 const planInclude = {
+  batches: { orderBy: { batchId: 'asc' as const }, select: { batch: { select: { id: true, code: true } } } },
   triggerEvent: { select: { id: true, type: true, source: true, rawMessage: true, structuredData: true, occurredAt: true } },
   steps: {
     orderBy: { sequence: 'asc' as const },
@@ -43,6 +44,7 @@ function serializePlan(plan: StoredPlan): PlanView {
     reason: plan.reason,
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
+    batches: plan.batches.map(({ batch }) => ({ id: batch.id.toString(), code: batch.code })),
     trigger: plan.triggerEvent ? {
       id: plan.triggerEvent.id.toString(),
       type: plan.triggerEvent.type,
@@ -143,10 +145,10 @@ function completedFacts(steps: Array<{
 
 type PlanningClient = Pick<Prisma.TransactionClient, 'batch' | 'coldStorage' | 'vehicle' | 'destination' | 'plan'>;
 
-async function loadPlanningContext(client: PlanningClient, userId: bigint): Promise<PlanningContext> {
-  const [batches, coldStorages, vehicles, destinations, activePlan] = await Promise.all([
+async function loadPlanningContext(client: PlanningClient, userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext> {
+  const [batches, coldStorages, vehicles, destinations, currentPlan] = await Promise.all([
     client.batch.findMany({
-      where: { userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
+      where: { id: { in: batchIds }, userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
       orderBy: { code: 'asc' },
       select: {
         id: true,
@@ -174,8 +176,8 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint): Prom
     client.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
     client.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
     client.destination.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
-    client.plan.findFirst({
-      where: { userId, status: 'ACTIVE' },
+    planId === undefined ? null : client.plan.findFirst({
+      where: { id: planId, userId },
       select: {
         id: true,
         version: true,
@@ -234,11 +236,11 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint): Prom
       status: resource.status,
       notes: resource.notes,
     })),
-    activePlan: activePlan ? {
-      id: activePlan.id.toString(),
-      version: activePlan.version,
-      reason: activePlan.reason,
-      steps: activePlan.steps.map(planningStep),
+    currentPlan: currentPlan ? {
+      id: currentPlan.id.toString(),
+      version: currentPlan.version,
+      reason: currentPlan.reason,
+      steps: currentPlan.steps.map(planningStep),
     } : null,
   };
 }
@@ -272,6 +274,7 @@ function storedProposal(plan: {
 async function lockApprovalContext(transaction: Prisma.TransactionClient, userId: bigint, planId: bigint) {
   await lockUser(transaction, userId);
   await transaction.$queryRaw`SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE') FOR UPDATE`;
+  await transaction.$queryRaw`SELECT "plan_id", "batch_id" FROM "plan_batches" WHERE "plan_id" IN (SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE')) FOR UPDATE`;
   await transaction.$queryRaw`SELECT "id" FROM "plan_steps" WHERE "plan_id" IN (SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE')) FOR UPDATE`;
   await transaction.$queryRaw`SELECT "id" FROM "batches" WHERE "user_id" = ${userId} AND "deleted_at" IS NULL AND "status" IN ('MONITORING', 'ACTIVE', 'INSPECTION_HOLD') FOR UPDATE`;
   await transaction.$queryRaw`SELECT "id" FROM "cold_storages" WHERE "user_id" = ${userId} FOR UPDATE`;
@@ -283,35 +286,43 @@ export class PlanRepository implements PlanRepositoryPort {
   constructor(private readonly database: Database) {}
 
   async list(userId: bigint) {
-    const [activePlan, plans] = await this.database.$transaction(async (transaction) => {
-      const active = await transaction.plan.findFirst({ where: { userId, status: 'ACTIVE' }, include: planInclude });
+    const [activePlans, plans] = await this.database.$transaction(async (transaction) => {
+      const active = await transaction.plan.findMany({ where: { userId, status: 'ACTIVE' }, orderBy: { createdAt: 'desc' }, include: planInclude });
       const others = await transaction.plan.findMany({ where: { userId, status: { not: 'ACTIVE' } }, orderBy: { createdAt: 'desc' }, take: maximumListedPlans, include: planInclude });
       return [active, others] as const;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     const serialized = plans.map(serializePlan);
     return {
       updatedAt: new Date().toISOString(),
-      activePlan: activePlan ? serializePlan(activePlan) : null,
+      activePlans: activePlans.map(serializePlan),
       proposedPlans: serialized.filter((plan) => plan.status === 'PROPOSED'),
       history: serialized.filter((plan) => plan.status !== 'PROPOSED'),
     };
   }
 
-  loadContext(userId: bigint) {
-    return loadPlanningContext(this.database, userId);
+  async get(userId: bigint, planId: bigint) {
+    const plan = await this.database.plan.findFirst({ where: { id: planId, userId }, include: planInclude });
+    if (!plan) throw new NotFoundError('Plan');
+    return serializePlan(plan);
   }
 
-  async saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null, triggerEventId?: bigint) {
+  loadContext(userId: bigint, batchIds: bigint[], planId?: bigint) {
+    return loadPlanningContext(this.database, userId, batchIds, planId);
+  }
+
+  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
-      if (triggerEventId !== undefined) {
-        const triggerEvent = await transaction.operationalEvent.findFirst({ where: { id: triggerEventId, userId }, select: { id: true } });
+      if (options.triggerEventId !== undefined) {
+        const triggerEvent = await transaction.operationalEvent.findFirst({ where: { id: options.triggerEventId, userId }, select: { id: true } });
         if (!triggerEvent) throw new NotFoundError('Operational event');
       }
-      const activePlan = await transaction.plan.findFirst({
-        where: { userId, status: 'ACTIVE' },
+      const currentPlan = expectedPlan ? await transaction.plan.findFirst({
+        where: { id: BigInt(expectedPlan.id), userId },
         select: {
           id: true,
+          status: true,
+          previousPlanId: true,
           version: true,
           reason: true,
           steps: {
@@ -319,25 +330,28 @@ export class PlanRepository implements PlanRepositoryPort {
             select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, notes: true },
           },
         },
-      });
-      const currentSnapshot = activePlan ? {
-        id: activePlan.id.toString(),
-        version: activePlan.version,
-        reason: activePlan.reason,
-        steps: activePlan.steps.map(planningStep),
+      }) : null;
+      const currentSnapshot = currentPlan ? {
+        id: currentPlan.id.toString(),
+        version: currentPlan.version,
+        reason: currentPlan.reason,
+        steps: currentPlan.steps.map(planningStep),
       } : null;
-      if (activePlanSnapshot(currentSnapshot) !== activePlanSnapshot(expectedActivePlan)) throw new ConflictError('Active plan changed while generating the proposal');
+      if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Current plan changed while generating the proposal');
+      if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Proposal changed while generating its replacement');
+      if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Active plan changed while generating its revision');
       const latest = await transaction.plan.aggregate({ where: { userId }, _max: { version: true } });
-      const completed = activePlan?.steps.filter((step) => step.status === 'COMPLETED') ?? [];
+      const completed = currentPlan?.steps.filter((step) => step.status === 'COMPLETED') ?? [];
       const nextSequence = completed.reduce((maximum, step) => Math.max(maximum, step.sequence), 0) + 1;
-      return serializePlan(await transaction.plan.create({
+      const saved = await transaction.plan.create({
         data: {
           userId,
           version: (latest._max.version ?? 0) + 1,
           status: 'PROPOSED',
-          previousPlanId: activePlan?.id ?? null,
-          triggerEventId: triggerEventId ?? null,
+          previousPlanId: currentPlan?.status === 'PROPOSED' ? currentPlan.previousPlanId : currentPlan?.id ?? null,
+          triggerEventId: options.triggerEventId ?? null,
           reason: proposal.reason,
+          batches: { create: batchIds.map((batchId) => ({ batchId })) },
           steps: {
             create: [
               ...completed.map((step) => ({ ...step, status: 'COMPLETED' as const })),
@@ -346,7 +360,9 @@ export class PlanRepository implements PlanRepositoryPort {
           },
         },
         include: planInclude,
-      }));
+      });
+      if (options.replaceProposalId !== undefined) await transaction.plan.update({ where: { id: options.replaceProposalId }, data: { status: 'DISMISSED' } });
+      return serializePlan(saved);
     });
   }
 
@@ -359,18 +375,27 @@ export class PlanRepository implements PlanRepositoryPort {
           status: true,
           previousPlanId: true,
           reason: true,
+          batches: { select: { batchId: true } },
           steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, notes: true } },
         },
       });
       if (!proposal) throw new NotFoundError('Plan');
       if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
-      const context = await loadPlanningContext(transaction, userId);
+      const scope = proposal.batches.map(({ batchId }) => batchId);
+      if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
+      const context = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
       const errors = validate(storedProposal({ reason: proposal.reason, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
       if (errors.length) throw new ConflictError('Plan proposal is no longer feasible');
-      const activePlanId = context.activePlan?.id ?? null;
-      if ((proposal.previousPlanId?.toString() ?? null) !== activePlanId) throw new ConflictError('Plan proposal is stale');
+      if (proposal.previousPlanId && !context.currentPlan) throw new ConflictError('Plan proposal is stale');
+      if (context.currentPlan && context.currentPlan.id !== proposal.previousPlanId?.toString()) throw new ConflictError('Plan proposal is stale');
+      if (proposal.previousPlanId) {
+        const predecessor = await transaction.plan.findUnique({ where: { id: proposal.previousPlanId }, select: { status: true } });
+        if (predecessor?.status !== 'ACTIVE') throw new ConflictError('Plan proposal is stale');
+      }
+      const overlap = await transaction.planBatch.findFirst({ where: { batchId: { in: scope }, plan: { userId, status: 'ACTIVE', ...(proposal.previousPlanId ? { id: { not: proposal.previousPlanId } } : {}) } } });
+      if (overlap) throw new ConflictError('A batch is already assigned to another active plan');
       const completed = proposal.steps.filter((step) => step.status === 'COMPLETED');
-      const activeCompleted = context.activePlan?.steps.filter((step) => step.status === 'COMPLETED').map((step) => ({
+      const activeCompleted = context.currentPlan?.steps.filter((step) => step.status === 'COMPLETED').map((step) => ({
         ...step,
         batchId: BigInt(step.batchId),
         coldStorageId: step.coldStorageId ? BigInt(step.coldStorageId) : null,
@@ -380,7 +405,7 @@ export class PlanRepository implements PlanRepositoryPort {
         completedAt: step.completedAt ? new Date(step.completedAt) : null,
       })) ?? [];
       if (completedFacts(completed) !== completedFacts(activeCompleted)) throw new ConflictError('Plan proposal is stale');
-      if (activePlanId) await transaction.plan.update({ where: { id: BigInt(activePlanId) }, data: { status: 'SUPERSEDED' } });
+      if (proposal.previousPlanId) await transaction.plan.update({ where: { id: proposal.previousPlanId }, data: { status: 'SUPERSEDED' } });
       return serializePlan(await transaction.plan.update({
         where: { id: planId },
         data: { status: 'ACTIVE', approvedAt: new Date(), approvedById: userId },

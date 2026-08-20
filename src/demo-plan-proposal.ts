@@ -60,7 +60,7 @@ function mockAiServer() {
       assert.equal(body.stream, false);
       assert.deepEqual(body.response_format, { type: 'json_object' });
       const prompt = body.messages.find(({ role }) => role === 'user')?.content ?? '';
-      const marker = 'Current context:\n';
+      const marker = 'Current plan and operational context:\n';
       const markerIndex = prompt.lastIndexOf(marker);
       assert.notEqual(markerIndex, -1);
       const context = JSON.parse(prompt.slice(markerIndex + marker.length)) as PlanningContext;
@@ -171,7 +171,7 @@ async function run() {
     const readiness = (await request<{ ready: boolean; completedSteps: number }>(baseUrl, '/setup-readiness', 'GET', undefined, cookie)).data;
     assert.deepEqual(readiness, { ...readiness, ready: true, completedSteps: 4 });
 
-    const proposal = (await request<PlanView>(baseUrl, '/plans/proposals', 'POST', undefined, cookie, 201)).data;
+    const proposal = (await request<PlanView>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id] }, cookie, 201)).data;
     assert.equal(mock.calls(), 1);
     assert.equal(proposal.version, 1);
     assert.equal(proposal.status, 'PROPOSED');
@@ -179,7 +179,7 @@ async function run() {
     assert.deepEqual(proposal.steps.map(({ actionType }) => actionType), ['STORE', 'LOAD', 'DISPATCH']);
     assert.deepEqual(proposal.steps.map(({ resource }) => resource?.id), [coldStorage.id, vehicle.id, destination.id]);
     const plans = (await request<PlanList>(baseUrl, '/plans', 'GET', undefined, cookie)).data;
-    assert.equal(plans.activePlan, null);
+    assert.deepEqual(plans.activePlans, []);
     assert.deepEqual(plans.proposedPlans.map(({ id }) => id), [proposal.id]);
     assert.deepEqual(plans.history, []);
 

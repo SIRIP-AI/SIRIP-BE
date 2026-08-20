@@ -37,6 +37,8 @@ Core domain rules include:
 - Completed plan steps are historical facts and cannot be replanned.
 - AI proposals require deterministic validation and human approval before activation.
 - Only configured resources may be used in a plan.
+- A plan has explicit batch scope. Multiple plans may be active for one user, but a batch may belong to at most one active plan.
+- Active-scope overlap is enforced transactionally during approval under a per-user PostgreSQL advisory lock; PostgreSQL cannot express the cross-table status constraint as a simple partial index.
 
 Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep transport DTOs out of the domain and do not expose secrets or private operator data in logs or errors.
 
