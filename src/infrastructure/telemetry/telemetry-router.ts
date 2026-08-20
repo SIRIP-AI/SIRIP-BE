@@ -40,12 +40,11 @@ function telemetryReading(body: unknown, now: number): TelemetryInput {
   return { sensorId, deviceUid, temperature: input.temperature, sequenceNumber: input.sequenceNumber as number, measuredAt: new Date(measuredAtMs) };
 }
 
-function telemetryReadings(body: unknown) {
+export function parseTelemetryReadings(body: unknown, now = Date.now()) {
   const bulk = Array.isArray(body) || !!body && typeof body === 'object' && !Array.isArray(body) && 'readings' in body;
   const values = Array.isArray(body) ? body : bulk ? (body as Record<string, unknown>).readings : [body];
   if (!Array.isArray(values)) throw new RequestError('readings must be an array', 400);
   if (!values.length || values.length > 500) throw new RequestError('Telemetry requests must contain between 1 and 500 readings', 400);
-  const now = Date.now();
   const readings = values.map((value) => telemetryReading(value, now));
   const first = readings[0]!;
   if (readings.some((reading) => reading.sensorId !== first.sensorId || reading.deviceUid !== first.deviceUid)) throw new RequestError('All readings must target the same sensor', 400);
@@ -56,7 +55,7 @@ export function createTelemetryRouter(repository: Pick<TelemetryRepository, 'ing
   const router = Router();
   router.use(authenticate);
   router.post('/', async (request, response) => {
-    const { bulk, readings } = telemetryReadings(request.body);
+    const { bulk, readings } = parseTelemetryReadings(request.body);
     await repository.ingestMany(readings);
     if (!bulk) {
       const reading = readings[0]!;
