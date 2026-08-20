@@ -70,6 +70,7 @@ function mockAiServer() {
       assert.equal(context.coldStorages.length, 1);
       assert.equal(context.vehicles.length, 1);
       assert.equal(context.destinations.length, 1);
+      assert.ok(context.deadline);
       const batch = context.batches[0]!;
       const coldStorage = context.coldStorages[0]!;
       const vehicle = context.vehicles[0]!;
@@ -77,6 +78,7 @@ function mockAiServer() {
       const base = Date.parse(context.now);
       const scheduledAt = (minutes: number) => new Date(base + minutes * 60_000).toISOString();
       const proposal = {
+        status: 'FEASIBLE',
         reason: 'Store, load, and dispatch the monitored demo batch.',
         steps: [
           { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60) },
@@ -171,12 +173,16 @@ async function run() {
     const readiness = (await request<{ ready: boolean; completedSteps: number }>(baseUrl, '/setup-readiness', 'GET', undefined, cookie)).data;
     assert.deepEqual(readiness, { ...readiness, ready: true, completedSteps: 4 });
 
-    const proposal = (await request<PlanView>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id] }, cookie, 201)).data;
+    const deadline = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+    const generated = (await request<{ status: 'FEASIBLE'; proposal: PlanView }>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id], destinationId: destination.id, deadline }, cookie, 201)).data;
+    assert.equal(generated.status, 'FEASIBLE');
+    const proposal = generated.proposal;
     assert.equal(mock.calls(), 1);
     assert.equal(proposal.version, 1);
     assert.equal(proposal.status, 'PROPOSED');
     assert.equal(proposal.previousPlanId, null);
     assert.equal(proposal.completedAt, null);
+    assert.equal(proposal.deadline, deadline);
     assert.deepEqual(proposal.steps.map(({ actionType }) => actionType), ['STORE', 'LOAD', 'DISPATCH']);
     assert.deepEqual(proposal.steps.map(({ resource }) => resource?.id), [coldStorage.id, vehicle.id, destination.id]);
     const plans = (await request<PlanList>(baseUrl, '/plans', 'GET', undefined, cookie)).data;

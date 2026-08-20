@@ -307,6 +307,7 @@ model Plan {
   previousPlanId BigInt?           @map("previous_plan_id")
   triggerEventId BigInt?           @map("trigger_event_id")
   reason         String
+  deadline       DateTime?         @db.Timestamptz
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
   completedAt    DateTime?         @map("completed_at") @db.Timestamptz

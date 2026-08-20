@@ -21,6 +21,10 @@ export type AiPlanProposal = {
   steps: AiPlanStep[];
 };
 
+export type AiPlanResult =
+  | ({ status: 'FEASIBLE' } & AiPlanProposal)
+  | { status: 'INFEASIBLE'; reason: string };
+
 export type PlanningBatch = {
   id: string;
   code: string;
@@ -88,11 +92,14 @@ export type PlanningActivePlan = {
   id: string;
   version: number;
   reason: string;
+  deadline: string | null;
   steps: PlanningPlanStep[];
 };
 
 export type PlanningContext = {
   now: string;
+  selectedDestinationId: string | null;
+  deadline: string | null;
   batches: PlanningBatch[];
   coldStorages: PlanningColdStorage[];
   vehicles: PlanningVehicle[];
@@ -105,6 +112,7 @@ export function planSnapshot(plan: PlanningActivePlan | null) {
     plan.id,
     plan.version,
     plan.reason,
+    plan.deadline,
     plan.steps.map((step) => [
       step.sequence,
       step.actionType,
@@ -132,6 +140,7 @@ export type PlanView = {
   status: PlanStatus;
   previousPlanId: string | null;
   reason: string;
+  deadline: string | null;
   createdAt: string;
   approvedAt: string | null;
   completedAt: string | null;
@@ -214,7 +223,7 @@ function parseStep(value: unknown, index: number): AiPlanStep {
   };
 }
 
-export function parseAiPlanProposal(content: string): AiPlanProposal {
+export function parseAiPlanResult(content: string): AiPlanResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content) as unknown;
@@ -222,11 +231,16 @@ export function parseAiPlanProposal(content: string): AiPlanProposal {
     invalid('AI proposal must be valid JSON');
   }
   const proposal = object(parsed, 'proposal');
-  exactFields(proposal, new Set(['reason', 'steps']), 'proposal');
+  if (proposal.status !== 'FEASIBLE' && proposal.status !== 'INFEASIBLE') invalid('proposal.status must be FEASIBLE or INFEASIBLE');
   const reason = typeof proposal.reason === 'string' ? proposal.reason.trim() : '';
   if (!reason || reason.length > 1000) invalid('proposal.reason must contain 1 to 1000 characters');
+  if (proposal.status === 'INFEASIBLE') {
+    exactFields(proposal, new Set(['status', 'reason']), 'proposal');
+    return { status: 'INFEASIBLE', reason };
+  }
+  exactFields(proposal, new Set(['status', 'reason', 'steps']), 'proposal');
   if (!Array.isArray(proposal.steps) || proposal.steps.length < 1 || proposal.steps.length > 100) invalid('proposal.steps must contain 1 to 100 steps');
-  return { reason, steps: proposal.steps.map(parseStep) };
+  return { status: 'FEASIBLE', reason, steps: proposal.steps.map(parseStep) };
 }
 
 function minute(value: string | null) {
@@ -275,11 +289,16 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   const covered = new Set<string>();
   const storageAssignments = new Map<string, Set<string>>();
   const vehicleAssignments = new Map<string, Set<string>>();
+  const selectedDestination = context.selectedDestinationId ? destinations.get(context.selectedDestinationId) : undefined;
+  const deadline = context.deadline ? new Date(context.deadline) : null;
+  const dispatched = new Set<string>();
   let previousTime = Number.NEGATIVE_INFINITY;
 
   if (!proposal.reason.trim() || proposal.reason.length > 1000) errors.push('Plan reason is invalid');
   if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Plan must contain 1 to 100 future steps');
   if (Number.isNaN(now.getTime())) errors.push('Planning context time is invalid');
+  if (deadline && (Number.isNaN(deadline.getTime()) || deadline.getTime() <= now.getTime())) errors.push('Plan deadline must be a valid future datetime');
+  if (context.selectedDestinationId && (!selectedDestination || selectedDestination.status !== 'AVAILABLE')) errors.push('Selected destination is unavailable or unconfigured');
   for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} has no quality state`);
 
   proposal.steps.forEach((step, index) => {
@@ -325,6 +344,15 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
       if (destination.status !== 'AVAILABLE') errors.push(`${label} uses an unavailable destination`);
       const arrival = new Date(scheduledAt.getTime() + (step.actionType === 'DISPATCH' ? destination.travelMinutes * 60_000 : 0));
       if (!Number.isNaN(arrival.getTime()) && !inWindow(arrival, destination.receivingStart, destination.receivingEnd)) errors.push(`${label} arrives outside the destination receiving window`);
+      if (step.actionType === 'DISPATCH' && batch) {
+        if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
+        else dispatched.add(batch.id);
+        if (batch.quality && !Number.isNaN(arrival.getTime())) {
+          const deadline = now.getTime() + batch.quality.remainingQualityWindowDays * 86_400_000;
+          if (arrival.getTime() > deadline) errors.push(`${label} arrives after the batch quality deadline`);
+        }
+        if (deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} arrives after the plan deadline`);
+      }
     }
   });
 
@@ -339,5 +367,6 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     if (resource && assignedWeight > resource.capacityKg) errors.push(`Vehicle ${resourceId} is overbooked`);
   }
   for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
+  if (context.selectedDestinationId) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(`Active batch ${batch.id} is not dispatched to the selected destination`);
   return errors;
 }

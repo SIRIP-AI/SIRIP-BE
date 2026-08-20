@@ -36,6 +36,9 @@ Core domain rules include:
 - Telemetry ingestion is idempotent.
 - Completed plan steps are historical facts and cannot be replanned.
 - AI proposals require deterministic validation and human approval before activation.
+- Initial planning is scoped to selected batches and one selected destination; every scoped batch must be dispatched there within its current deterministic remaining quality window.
+- New initial plans require one persisted plan-level arrival deadline. Revisions inherit it, and dispatch arrival must satisfy both that deadline and each batch's quality deadline.
+- AI planning may return a transient infeasible result with a reason. Infeasible results are never persisted as plans.
 - Only configured resources may be used in a plan.
 - Completing the final upcoming step atomically completes the active plan and releases its batch scope.
 - A completed plan cannot be revised. Direct pending revisions are dismissed when their predecessor completes.
@@ -54,7 +57,7 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 - `npm run langgraph:dev`: run the local LangGraph Agent Server and open the plan workflow in Studio.
 - `npm start`: run the compiled server.
 
-Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse output, refresh context, and route deterministic validation repairs. Prisma remains authoritative for proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
+Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse feasible or infeasible output, refresh context, and route up to two deterministic validation repairs. Prisma remains authoritative for feasible proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
 
 LangGraph Studio reads real development data for the supplied user ID and can make configured model calls. Run the Agent Server on localhost only; Studio graph execution intentionally cannot save or activate plans.
 

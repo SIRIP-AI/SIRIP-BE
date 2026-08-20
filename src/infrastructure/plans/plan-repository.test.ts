@@ -12,6 +12,7 @@ function databaseWithUpcoming(upcoming: boolean) {
     status: upcoming ? 'ACTIVE' : 'COMPLETED',
     previousPlanId: null,
     reason: 'Plan',
+    deadline: new Date('2026-08-21T12:00:00Z'),
     createdAt: new Date('2026-08-20T09:00:00Z'),
     approvedAt: new Date('2026-08-20T09:30:00Z'),
     completedAt: upcoming ? null : new Date('2026-08-20T10:00:00Z'),

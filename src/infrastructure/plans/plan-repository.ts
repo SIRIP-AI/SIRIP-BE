@@ -42,6 +42,7 @@ function serializePlan(plan: StoredPlan): PlanView {
     status: plan.status,
     previousPlanId: plan.previousPlanId?.toString() ?? null,
     reason: plan.reason,
+    deadline: plan.deadline?.toISOString() ?? null,
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
     completedAt: plan.completedAt?.toISOString() ?? null,
@@ -183,12 +184,15 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
         id: true,
         version: true,
         reason: true,
+        deadline: true,
         steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, notes: true } },
       },
     }),
   ]);
   return {
     now: new Date().toISOString(),
+    selectedDestinationId: null,
+    deadline: null,
     batches: batches.map((batch) => {
       const quality = batch.equivalentQualityAgeDays !== null && batch.remainingQualityWindowDays !== null && batch.qualityEstimateStartedAt && batch.currentTemperatureC !== null ? {
         equivalentQualityAgeDays: batch.equivalentQualityAgeDays,
@@ -242,6 +246,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       id: currentPlan.id.toString(),
       version: currentPlan.version,
       reason: currentPlan.reason,
+      deadline: currentPlan.deadline?.toISOString() ?? null,
       steps: currentPlan.steps.map(planningStep),
     } : null,
   };
@@ -312,7 +317,7 @@ export class PlanRepository implements PlanRepositoryPort {
     return loadPlanningContext(this.database, userId, batchIds, planId);
   }
 
-  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
+  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
       if (options.triggerEventId !== undefined) {
@@ -327,6 +332,7 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: true,
           version: true,
           reason: true,
+          deadline: true,
           steps: {
             orderBy: { sequence: 'asc' },
             select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, notes: true },
@@ -337,9 +343,11 @@ export class PlanRepository implements PlanRepositoryPort {
         id: currentPlan.id.toString(),
         version: currentPlan.version,
         reason: currentPlan.reason,
+        deadline: currentPlan.deadline?.toISOString() ?? null,
         steps: currentPlan.steps.map(planningStep),
       } : null;
       if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Current plan changed while generating the proposal');
+      if (currentSnapshot && deadline !== currentSnapshot.deadline) throw new ConflictError('Plan deadline changed while generating the proposal');
       if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Proposal changed while generating its replacement');
       if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Active plan changed while generating its revision');
       const latest = await transaction.plan.aggregate({ where: { userId }, _max: { version: true } });
@@ -353,6 +361,7 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: currentPlan?.status === 'PROPOSED' ? currentPlan.previousPlanId : currentPlan?.id ?? null,
           triggerEventId: options.triggerEventId ?? null,
           reason: proposal.reason,
+          deadline: deadline ? new Date(deadline) : null,
           batches: { create: batchIds.map((batchId) => ({ batchId })) },
           steps: {
             create: [
@@ -377,6 +386,7 @@ export class PlanRepository implements PlanRepositoryPort {
           status: true,
           previousPlanId: true,
           reason: true,
+          deadline: true,
           batches: { select: { batchId: true } },
           steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, notes: true } },
         },
@@ -385,7 +395,8 @@ export class PlanRepository implements PlanRepositoryPort {
       if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
       const scope = proposal.batches.map(({ batchId }) => batchId);
       if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
-      const context = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
+      const loadedContext = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
+      const context = { ...loadedContext, deadline: proposal.deadline?.toISOString() ?? null };
       const errors = validate(storedProposal({ reason: proposal.reason, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
       if (errors.length) throw new ConflictError('Plan proposal is no longer feasible');
       if (proposal.previousPlanId && !context.currentPlan) throw new ConflictError('Plan proposal is stale');
