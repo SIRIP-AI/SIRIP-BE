@@ -7,6 +7,12 @@ import { loadEnvFile } from 'node:process';
 
 import type { PlanList, PlanningContext, PlanView } from './domain/plans/plans';
 import { createApp } from './infrastructure/http/app';
+import { TelegramService } from './infrastructure/messaging/telegram-service';
+import { TelegramOperations } from './infrastructure/messaging/telegram-operations';
+import { PlanService } from './application/plans/plan-service';
+import { validatePlanProposal } from './domain/plans/plans';
+import { createPlanGraph, createPlanWorkflow } from './infrastructure/plans/plan-graph';
+import { PlanRepository } from './infrastructure/plans/plan-repository';
 import { createDatabase, type Database } from './infrastructure/persistence/database';
 
 if (existsSync('.env')) loadEnvFile('.env');
@@ -60,7 +66,7 @@ function mockAiServer() {
       assert.equal(body.stream, false);
       assert.deepEqual(body.response_format, { type: 'json_object' });
       const prompt = body.messages.find(({ role }) => role === 'user')?.content ?? '';
-      const marker = 'Current context:\n';
+      const marker = 'Current plan and operational context:\n';
       const markerIndex = prompt.lastIndexOf(marker);
       assert.notEqual(markerIndex, -1);
       const context = JSON.parse(prompt.slice(markerIndex + marker.length)) as PlanningContext;
@@ -70,6 +76,7 @@ function mockAiServer() {
       assert.equal(context.coldStorages.length, 1);
       assert.equal(context.vehicles.length, 1);
       assert.equal(context.destinations.length, 1);
+      assert.ok(context.deadline);
       const batch = context.batches[0]!;
       const coldStorage = context.coldStorages[0]!;
       const vehicle = context.vehicles[0]!;
@@ -77,6 +84,7 @@ function mockAiServer() {
       const base = Date.parse(context.now);
       const scheduledAt = (minutes: number) => new Date(base + minutes * 60_000).toISOString();
       const proposal = {
+        status: 'FEASIBLE',
         reason: 'Store, load, and dispatch the monitored demo batch.',
         steps: [
           { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60) },
@@ -135,7 +143,9 @@ async function run() {
     process.env.AI_MODEL = mockModel;
     process.env.COOKIE_SECURE = 'false';
     process.env.SENSOR_API_KEY = mockSensorApiKey;
-    apiServer = createApp(database).listen(0, '127.0.0.1');
+    const planRepository = new PlanRepository(database);
+    const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validatePlanProposal })), validatePlanProposal);
+    apiServer = createApp(database, new TelegramService(database, new TelegramOperations(database, planService))).listen(0, '127.0.0.1');
     await once(apiServer, 'listening');
     const baseUrl = `http://127.0.0.1:${(apiServer.address() as AddressInfo).port}/api`;
 
@@ -171,15 +181,20 @@ async function run() {
     const readiness = (await request<{ ready: boolean; completedSteps: number }>(baseUrl, '/setup-readiness', 'GET', undefined, cookie)).data;
     assert.deepEqual(readiness, { ...readiness, ready: true, completedSteps: 4 });
 
-    const proposal = (await request<PlanView>(baseUrl, '/plans/proposals', 'POST', undefined, cookie, 201)).data;
+    const deadline = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+    const generated = (await request<{ status: 'FEASIBLE'; proposal: PlanView }>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id], destinationId: destination.id, deadline }, cookie, 201)).data;
+    assert.equal(generated.status, 'FEASIBLE');
+    const proposal = generated.proposal;
     assert.equal(mock.calls(), 1);
     assert.equal(proposal.version, 1);
     assert.equal(proposal.status, 'PROPOSED');
     assert.equal(proposal.previousPlanId, null);
+    assert.equal(proposal.completedAt, null);
+    assert.equal(proposal.deadline, deadline);
     assert.deepEqual(proposal.steps.map(({ actionType }) => actionType), ['STORE', 'LOAD', 'DISPATCH']);
     assert.deepEqual(proposal.steps.map(({ resource }) => resource?.id), [coldStorage.id, vehicle.id, destination.id]);
     const plans = (await request<PlanList>(baseUrl, '/plans', 'GET', undefined, cookie)).data;
-    assert.equal(plans.activePlan, null);
+    assert.deepEqual(plans.activePlans, []);
     assert.deepEqual(plans.proposedPlans.map(({ id }) => id), [proposal.id]);
     assert.deepEqual(plans.history, []);
 

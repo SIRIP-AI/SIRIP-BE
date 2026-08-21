@@ -67,11 +67,18 @@ enum OperationalEventSource {
   SYSTEM
   WEB
   WHATSAPP
+  TELEGRAM
+}
+
+enum MessagingChannel {
+  TELEGRAM
+  WHATSAPP
 }
 
 enum PlanStatus {
   PROPOSED
   ACTIVE
+  COMPLETED
   SUPERSEDED
   DISMISSED
 }
@@ -108,8 +115,61 @@ model User {
   sensors           Sensor[]
   operationalEvents OperationalEvent[]
   authSessions      AuthSession[]
+  messagingConnections MessagingConnection[]
+  messagingLinkTokens  MessagingLinkToken[]
+  messagingConversations MessagingConversation[]
 
   @@map("users")
+}
+
+model MessagingConnection {
+  id             BigInt           @id @default(autoincrement())
+  userId         BigInt           @map("user_id")
+  channel        MessagingChannel
+  externalChatId String           @map("external_chat_id")
+  displayName    String?          @map("display_name")
+  connectedAt    DateTime         @default(now()) @map("connected_at") @db.Timestamptz
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@unique([channel, externalChatId])
+  @@map("messaging_connections")
+}
+
+model MessagingLinkToken {
+  tokenHash String           @id @map("token_hash")
+  userId    BigInt           @map("user_id")
+  channel   MessagingChannel
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("messaging_link_tokens")
+}
+
+model MessagingConversation {
+  id        BigInt           @id @default(autoincrement())
+  userId    BigInt           @map("user_id")
+  channel   MessagingChannel
+  state     Json
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@index([expiresAt])
+  @@map("messaging_conversations")
+}
+
+model MessagingUpdate {
+  channel          MessagingChannel
+  externalUpdateId String           @map("external_update_id")
+  receivedAt       DateTime         @default(now()) @map("received_at") @db.Timestamptz
+
+  @@id([channel, externalUpdateId])
+  @@index([receivedAt])
+  @@map("messaging_updates")
 }
 
 model AuthSession {
@@ -162,6 +222,7 @@ model Batch {
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
   planSteps                  PlanStep[]
+  planBatches                PlanBatch[]
 
   @@unique([userId, code])
   @@index([userId, status])
@@ -180,6 +241,7 @@ model Sensor {
   deletedAt          DateTime?                @map("deleted_at") @db.Timestamptz
   user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessions           SensorSession[]
+  operationalEvents  OperationalEvent[]
 
   @@unique([userId, code])
   @@map("sensors")
@@ -240,6 +302,7 @@ model Vehicle {
   capacityKg        Float              @map("capacity_kg")
   operationalStatus ResourceOperationalStatus @map("operational_status")
   delayMinutes      Int                @default(0) @map("delay_minutes")
+  delayPersistent   Boolean            @default(false) @map("delay_persistent")
   restriction       String?
   availabilityStart DateTime?          @map("availability_start") @db.Time
   availabilityEnd   DateTime?          @map("availability_end") @db.Time
@@ -280,6 +343,7 @@ model OperationalEvent {
   vehicleId      BigInt?                @map("vehicle_id")
   coldStorageId  BigInt?                @map("cold_storage_id")
   destinationId  BigInt?                @map("destination_id")
+  sensorId       BigInt?                @map("sensor_id")
   rawMessage     String?                @map("raw_message")
   dedupeKey      String?                @unique @map("dedupe_key")
   structuredData Json                   @default("{}") @map("structured_data")
@@ -290,6 +354,7 @@ model OperationalEvent {
   vehicle        Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   coldStorage    ColdStorage?           @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
   destination    Destination?           @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  sensor         Sensor?                @relation(fields: [sensorId], references: [id], onDelete: Restrict)
   triggeredPlans Plan[]
 
   @@index([userId, occurredAt])
@@ -304,8 +369,10 @@ model Plan {
   previousPlanId BigInt?           @map("previous_plan_id")
   triggerEventId BigInt?           @map("trigger_event_id")
   reason         String
+  deadline       DateTime?         @db.Timestamptz
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
+  completedAt    DateTime?         @map("completed_at") @db.Timestamptz
   approvedById   BigInt?           @map("approved_by")
   previousPlan   Plan?             @relation("PlanVersions", fields: [previousPlanId], references: [id])
   revisions      Plan[]            @relation("PlanVersions")
@@ -313,9 +380,23 @@ model Plan {
   user           User?             @relation("OwnedPlans", fields: [userId], references: [id], onDelete: Cascade)
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
+  batches        PlanBatch[]
 
   @@unique([userId, version])
+  @@index([userId, status, createdAt])
+  @@index([previousPlanId, status])
   @@map("plans")
+}
+
+model PlanBatch {
+  planId  BigInt @map("plan_id")
+  batchId BigInt @map("batch_id")
+  plan    Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  @@id([planId, batchId])
+  @@index([batchId])
+  @@map("plan_batches")
 }
 
 model PlanStep {
@@ -338,5 +419,7 @@ model PlanStep {
   destination   Destination?   @relation(fields: [destinationId], references: [id], onDelete: Restrict)
 
   @@unique([planId, sequence])
+  @@index([planId, status])
+  @@index([vehicleId, status])
   @@map("plan_steps")
 }

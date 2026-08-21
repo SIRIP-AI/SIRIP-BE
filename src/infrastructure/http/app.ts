@@ -4,11 +4,13 @@ import { PlanService } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
 import { validatePlanProposal } from '../../domain/plans/plans';
 import { AuthService } from '../auth/auth-service';
-import { generateAiPlan } from '../plans/plan-generator';
+import { createPlanGraph, createPlanWorkflow } from '../plans/plan-graph';
 import { BatchRepository } from '../batches/batch-repository';
 import { createBatchesRouter } from '../batches/batches-router';
 import { FishingTripRepository } from '../fishing-trips/fishing-trip-repository';
 import { createFishingTripsRouter } from '../fishing-trips/fishing-trips-router';
+import { createDemoRouter } from '../demo/demo-router';
+import { DemoService } from '../demo/demo-service';
 import { OverviewRepository } from '../overview/overview-repository';
 import { createOverviewRouter } from '../overview/overview-router';
 import { PlanRepository } from '../plans/plan-repository';
@@ -19,8 +21,10 @@ import { TelemetryRepository } from '../telemetry/telemetry-repository';
 import { createTelemetryRouter } from '../telemetry/telemetry-router';
 import { requireAuth, createAuthRouter } from '../auth/auth-router';
 import type { Database } from '../persistence/database';
+import type { TelegramService } from '../messaging/telegram-service';
+import { createTelegramAccountRouter, createTelegramWebhookRouter } from '../messaging/telegram-router';
 
-export function createApp(database: Database) {
+export function createApp(database: Database, telegram: TelegramService) {
   const app = express();
   const auth = new AuthService(database);
   const origin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
@@ -35,13 +39,19 @@ export function createApp(database: Database) {
   });
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
+  app.use('/api/integrations/telegram', createTelegramWebhookRouter(telegram));
   app.use('/api/auth', createAuthRouter(auth));
-  app.use('/api/telemetry', createTelemetryRouter(new TelemetryRepository(database)));
+  const telemetry = new TelemetryRepository(database, telegram);
+  app.use('/api/telemetry', createTelemetryRouter(telemetry));
   app.use('/api', requireAuth(auth));
+  app.use('/api/debug', createDemoRouter(new DemoService(database, telemetry)));
+  app.use('/api/integrations/telegram', createTelegramAccountRouter(telegram));
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));
-  app.use('/api/plans', createPlansRouter(new PlanService(new PlanRepository(database), generateAiPlan, validatePlanProposal)));
+  const plans = new PlanRepository(database);
+  const planWorkflow = createPlanWorkflow(createPlanGraph({ repository: plans, validate: validatePlanProposal }));
+  app.use('/api/plans', createPlansRouter(new PlanService(plans, planWorkflow, validatePlanProposal)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {

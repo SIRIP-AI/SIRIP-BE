@@ -4,6 +4,8 @@ import { calculateQualityState } from '../../domain/quality/quality';
 import type { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
 
+export type ExcursionNotifier = { sendExcursion(alert: { userId: bigint; sensorCode: string; batchCode: string; averageTemperatureC: number; latestTemperatureC: number; thresholdC: number }): Promise<unknown> };
+
 export type TelemetryInput = {
   sensorId: string;
   deviceUid: string;
@@ -13,7 +15,7 @@ export type TelemetryInput = {
 };
 
 export class TelemetryRepository {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database, private readonly notifier?: ExcursionNotifier) {}
 
   async ingest(input: TelemetryInput) {
     await this.ingestMany([input]);
@@ -39,7 +41,7 @@ export class TelemetryRepository {
     }
     const readings = [...readingsBySequence.values()];
 
-    await this.database.$transaction(async (transaction) => {
+    const notifications = await this.database.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${resolvedSession.id})`;
       const currentSensor = await transaction.sensor.findUnique({ where: { deviceUid: first.deviceUid } });
       if (!currentSensor || currentSensor.id !== sensor.id || currentSensor.deletedAt || currentSensor.provisioningStatus !== 'PROVISIONED' || currentSensor.code !== first.sensorId) throw new NotFoundError('Provisioned sensor');
@@ -79,10 +81,23 @@ export class TelemetryRepository {
       const quality = calculateQualityState(retained);
       if (!quality) throw new ConflictError('Batch has no retained telemetry');
       const batch = await transaction.batch.update({ where: { id: session.batchId }, data: quality });
-      await this.reconcileMonitoringEvents(transaction, batch.userId, session.batchId, evaluateMonitoring(session.batchId, retained), syncedAt);
+      const created = await this.reconcileMonitoringEvents(transaction, batch.userId, session.batchId, evaluateMonitoring(session.batchId, retained), syncedAt);
       await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt } });
       await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: syncedAt } });
+      if (!batch.userId) return [];
+      return created.flatMap((event) => {
+        const rule = event.structuredData.rule;
+        if (rule.name !== 'temperature-excursion' || typeof rule.averageTemperatureC !== 'number' || typeof rule.latestTemperatureC !== 'number' || typeof rule.thresholdC !== 'number') return [];
+        return [{ userId: batch.userId!, sensorCode: sensor.code, batchCode: batch.code, averageTemperatureC: rule.averageTemperatureC, latestTemperatureC: rule.latestTemperatureC, thresholdC: rule.thresholdC }];
+      });
     });
+    for (const notification of notifications) {
+      try {
+        await this.notifier?.sendExcursion(notification);
+      } catch (error) {
+        console.error('Telegram excursion notification failed', error instanceof Error ? error.message : 'Unknown error');
+      }
+    }
   }
 
   private async reconcileMonitoringEvents(transaction: Prisma.TransactionClient, userId: bigint | null, batchId: bigint, decisions: MonitoringDecision[], syncedAt: Date) {
@@ -91,6 +106,7 @@ export class TelemetryRepository {
       select: { id: true, dedupeKey: true, structuredData: true },
     });
     const activeKeys = new Set(decisions.map((decision) => decision.dedupeKey));
+    const existingKeys = new Set(existing.map((event) => event.dedupeKey));
     for (const decision of decisions) {
       await transaction.operationalEvent.upsert({
         where: { dedupeKey: decision.dedupeKey },
@@ -118,5 +134,6 @@ export class TelemetryRepository {
         data: { structuredData: { ...data, alert: { ...alert, active: false, resolvedAt: syncedAt.toISOString() } } },
       });
     }
+    return decisions.filter((decision) => !existingKeys.has(decision.dedupeKey));
   }
 }

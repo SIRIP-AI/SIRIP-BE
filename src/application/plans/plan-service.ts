@@ -1,36 +1,25 @@
 import { ConflictError, RequestError } from '../../domain/errors';
-import { activePlanSnapshot, orderPlanProposal, type AiPlanProposal, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../../domain/plans/plans';
+import type { AiPlanProposal, AiPlanResult, PlanList, PlanningActivePlan, PlanningContext, PlanView } from '../../domain/plans/plans';
 
-export type PlanGenerationFeedback = { validationErrors: string[] };
-export type PlanGenerator = (context: PlanningContext, feedback?: PlanGenerationFeedback) => Promise<AiPlanProposal>;
 export type PlanValidator = (proposal: AiPlanProposal, context: PlanningContext) => string[];
+export type PlanWorkflowInput = { userId: bigint; batchIds: bigint[]; destinationId?: bigint; deadline: string | null; planId?: bigint; instruction?: string };
+export type PlanWorkflow = (input: PlanWorkflowInput) => Promise<{ result: AiPlanResult; context: PlanningContext }>;
+export type PlanGenerationResult = { status: 'FEASIBLE'; proposal: PlanView } | { status: 'INFEASIBLE'; reason: string };
 
 export type PlanRepositoryPort = {
   list(userId: bigint): Promise<PlanList>;
-  loadContext(userId: bigint): Promise<PlanningContext>;
-  saveProposal(userId: bigint, proposal: AiPlanProposal, expectedActivePlan: PlanningActivePlan | null, triggerEventId?: bigint): Promise<PlanView>;
+  get(userId: bigint, planId: bigint): Promise<PlanView>;
+  loadContext(userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext>;
+  saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options?: { triggerEventId?: bigint; replaceProposalId?: bigint }): Promise<PlanView>;
   activateProposal(userId: bigint, planId: bigint, validate: PlanValidator): Promise<PlanView>;
   dismissProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   completeStep(userId: bigint, planId: bigint, stepId: bigint): Promise<PlanView>;
 };
 
-function feedback(errors: string[]) {
-  return { validationErrors: errors.slice(0, 20).map((error) => error.slice(0, 300)) };
-}
-
-function requireGenerationContext(context: PlanningContext) {
-  if (!context.batches.length) throw new ConflictError('At least one active batch is required before planning');
-  if (context.batches.length > 100) throw new ConflictError('At most 100 active batches can be planned at once');
-  if (context.batches.some((batch) => !batch.quality)) throw new ConflictError('Every active batch requires a quality state before planning');
-  if (!context.coldStorages.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available cold storage is required before planning');
-  if (!context.vehicles.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available vehicle is required before planning');
-  if (!context.destinations.some((resource) => resource.status === 'AVAILABLE')) throw new ConflictError('At least one available destination is required before planning');
-}
-
 export class PlanService {
   constructor(
     private readonly repository: PlanRepositoryPort,
-    private readonly generate: PlanGenerator,
+    private readonly workflow: PlanWorkflow,
     private readonly validate: PlanValidator,
   ) {}
 
@@ -38,24 +27,30 @@ export class PlanService {
     return this.repository.list(userId);
   }
 
-  async generateProposal(userId: bigint, triggerEventId?: bigint) {
-    let generationContext = await this.repository.loadContext(userId);
-    requireGenerationContext(generationContext);
-    let proposal = orderPlanProposal(await this.generate(generationContext));
-    let freshContext = await this.repository.loadContext(userId);
-    requireGenerationContext(freshContext);
-    const activePlanChanged = activePlanSnapshot(generationContext.activePlan) !== activePlanSnapshot(freshContext.activePlan);
-    let errors = activePlanChanged ? ['Active plan changed during generation'] : this.validate(proposal, freshContext);
-    if (errors.length) {
-      generationContext = freshContext;
-      proposal = orderPlanProposal(await this.generate(generationContext, feedback(errors)));
-      freshContext = await this.repository.loadContext(userId);
-      requireGenerationContext(freshContext);
-      if (activePlanSnapshot(generationContext.activePlan) !== activePlanSnapshot(freshContext.activePlan)) throw new ConflictError('Active plan changed during generation');
-      errors = this.validate(proposal, freshContext);
+  get(userId: bigint, planId: bigint) {
+    return this.repository.get(userId, planId);
+  }
+
+  async generateProposal(userId: bigint, batchIds: bigint[], destinationId: bigint, deadline: string, triggerEventId?: bigint) {
+    return this.generateAndSave(userId, batchIds, destinationId, deadline, undefined, undefined, triggerEventId);
+  }
+
+  async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint) {
+    const plan = await this.repository.get(userId, planId);
+    if (plan.status !== 'ACTIVE' && plan.status !== 'PROPOSED') throw new ConflictError('Only active or proposed plans can be revised');
+    return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), undefined, plan.deadline, planId, instruction, triggerEventId, plan.status === 'PROPOSED' ? planId : undefined);
+  }
+
+  private async generateAndSave(userId: bigint, batchIds: bigint[], destinationId: bigint | undefined, deadline: string | null, planId?: bigint, instruction?: string, triggerEventId?: bigint, replaceProposalId?: bigint): Promise<PlanGenerationResult> {
+    const { result, context } = await this.workflow({ userId, batchIds, destinationId, deadline, ...(planId !== undefined ? { planId } : {}), ...(instruction ? { instruction } : {}) });
+    if (result.status === 'INFEASIBLE') return result;
+    const proposal = { reason: result.reason, steps: result.steps };
+    const validationErrors = this.validate(proposal, context);
+    if (validationErrors.length) {
+      console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors, proposal });
+      throw new RequestError('AI generated an infeasible plan', 502);
     }
-    if (errors.length) throw new RequestError('AI generated an infeasible plan', 502);
-    return this.repository.saveProposal(userId, proposal, freshContext.activePlan, triggerEventId);
+    return { status: 'FEASIBLE', proposal: await this.repository.saveProposal(userId, proposal, batchIds, deadline, context.currentPlan, { ...(triggerEventId !== undefined ? { triggerEventId } : {}), ...(replaceProposalId !== undefined ? { replaceProposalId } : {}) }) };
   }
 
   approve(userId: bigint, planId: bigint) {

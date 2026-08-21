@@ -30,6 +30,7 @@ function vehicleResponse(resource: {
   capacityKg: number;
   operationalStatus: string;
   delayMinutes: number;
+  delayPersistent: boolean;
   restriction: string | null;
   availabilityStart: Date | null;
   availabilityEnd: Date | null;
@@ -44,6 +45,7 @@ function vehicleResponse(resource: {
     operationalStatus: resource.operationalStatus,
     status,
     delayMinutes: resource.delayMinutes,
+    delayPersistent: resource.delayPersistent,
     restriction: resource.restriction,
     availabilityStart: resource.availabilityStart?.toISOString().slice(11, 16) ?? null,
     availabilityEnd: resource.availabilityEnd?.toISOString().slice(11, 16) ?? null,

@@ -2,3 +2,5 @@
 node_modules
 dist/
 /src/generated/prisma
+# LangGraph API
+.langgraph_api

@@ -13,28 +13,35 @@ test('no alerts while temperature and quality window stay within limits', () => 
   assert.deepEqual(evaluateMonitoring(batchId, []), []);
 });
 
-test('temperature excursion activates with the first high reading of the episode as boundary', () => {
+test('temperature excursion requires the latest five-reading average to reach the threshold', () => {
   const decisions = evaluateMonitoring(batchId, [
     reading(1, 0, 2, 0),
     reading(2, 1, 9, 1),
-    reading(3, 2, 4, 2),
+    reading(3, 2, 9, 2),
     reading(4, 3, 9, 3),
-    reading(5, 4, 10, 4),
+    reading(5, 4, 9, 4),
+    reading(6, 5, 9, 5),
   ]);
   assert.equal(decisions.length, 1);
   const excursion = decisions[0];
   assert.ok(excursion);
-  assert.equal(excursion.dedupeKey, `${monitoringEventPrefix(batchId)}temperature-excursion:4`);
-  assert.equal(excursion.occurredAt.getTime(), at(3).getTime());
+  assert.equal(excursion.dedupeKey, `${monitoringEventPrefix(batchId)}temperature-excursion:2`);
+  assert.equal(excursion.occurredAt.getTime(), at(1).getTime());
   assert.equal(excursion.structuredData.alert.active, true);
   assert.equal(excursion.structuredData.alert.severity, 'CRITICAL');
 });
 
-test('temperature excursion deactivates when the latest reading falls below the threshold', () => {
-  const active = evaluateMonitoring(batchId, [reading(1, 0, 2, 0), reading(2, 1, 9, 1)]);
+test('temperature excursion deactivates when the latest five-reading average falls below the threshold', () => {
+  const activeReadings = [reading(1, 0, 9, 0), reading(2, 1, 9, 1), reading(3, 2, 9, 2), reading(4, 3, 9, 3), reading(5, 4, 9, 4)];
+  const active = evaluateMonitoring(batchId, activeReadings);
   assert.equal(active.length, 1);
-  const resolved = evaluateMonitoring(batchId, [reading(1, 0, 2, 0), reading(2, 1, 9, 1), reading(3, 2, 4, 2)]);
+  const resolved = evaluateMonitoring(batchId, [...activeReadings, reading(6, 5, 2, 5), reading(7, 6, 2, 6)]);
   assert.deepEqual(resolved, []);
+});
+
+test('fewer than five readings and one isolated spike do not trigger an excursion', () => {
+  assert.deepEqual(evaluateMonitoring(batchId, [reading(1, 0, 10, 0), reading(2, 1, 10, 1), reading(3, 2, 10, 2), reading(4, 3, 10, 3)]), []);
+  assert.deepEqual(evaluateMonitoring(batchId, [reading(1, 0, 2, 0), reading(2, 1, 2, 1), reading(3, 2, 30, 2), reading(4, 3, 2, 3), reading(5, 4, 2, 4)]), []);
 });
 
 test('quality warning activates without critical and critical replaces warning', () => {
@@ -54,7 +61,7 @@ test('quality warning activates without critical and critical replaces warning',
 });
 
 test('dedupe keys are stable for the same canonical boundary', () => {
-  const readings = [reading(1, 0, 9, 0), reading(2, 1, 9, 1)];
+  const readings = [reading(1, 0, 9, 0), reading(2, 1, 9, 1), reading(3, 2, 9, 2), reading(4, 3, 9, 3), reading(5, 4, 9, 4)];
   const first = evaluateMonitoring(batchId, readings);
   const second = evaluateMonitoring(batchId, readings);
   assert.deepEqual(first, second);
@@ -66,7 +73,7 @@ test('evaluation is deterministic for shuffled readings', () => {
     reading(5, 4, 9, 4),
     reading(1, 0, 2, 0),
     reading(3, 2, 9, 2),
-    reading(4, 3, 3, 3),
+    reading(4, 3, 9, 3),
     reading(2, 1, 9, 1),
   ];
   const shuffled = [readings[3]!, readings[4]!, readings[0]!, readings[2]!, readings[1]!];
