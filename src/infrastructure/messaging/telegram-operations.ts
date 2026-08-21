@@ -30,6 +30,13 @@ const reportValues: Report['value'][] = ['AVAILABLE', 'UNAVAILABLE', 'INSPECTION
 export type ChatMessage = InterpretationMessage;
 export type Conversation = { pending: State | null; messages: ChatMessage[] };
 
+function formatWIB(date: Date | string | null | undefined): string {
+  if (!date) return 'never';
+  const parsed = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(parsed.getTime())) return 'never';
+  return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -160,7 +167,7 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 }
 
 function proposalText(plan: PlanView) {
-  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${step.scheduledAt}`);
+  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`);
   return [`Plan v${plan.version} proposal`, `Reason: ${plan.reason}`, ...steps].join('\n');
 }
 
@@ -216,7 +223,7 @@ export class TelegramOperations {
       return { text: parsed.question };
     }
     await this.savePending(userId, { kind: 'REPORT_CONFIRM', report: parsed.report, slots: extraction });
-    return { text: `Please confirm this report:\n${this.reportText(parsed.report)}\nOccurrence: ${parsed.report.occurredAt}`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
+    return { text: `Please confirm this report:\n${this.reportText(parsed.report)}\nOccurrence: ${formatWIB(parsed.report.occurredAt)}`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
   }
 
   private async resolvePlan(userId: bigint, reference: string) {
@@ -243,7 +250,7 @@ export class TelegramOperations {
       const list = await this.plans.list(userId);
       const matches = list.activePlans;
       if (!matches.length) return { text: 'No active plans.' };
-      const lines = matches.flatMap((plan) => [`Plan v${plan.version} ACTIVE: ${plan.reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${step.scheduledAt}`)]);
+      const lines = matches.flatMap((plan) => [`Plan v${plan.version} ACTIVE: ${plan.reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)]);
       return { text: lines.join('\n') };
     }
     const planReference = extraction.planRef;
@@ -256,7 +263,7 @@ export class TelegramOperations {
     const sensor = extraction.entityType === 'sensor' ? sensors.find((item) => item.code.toLowerCase() === lowered) : undefined;
     if (sensor) {
       const session = sensor.sessions[0];
-      return { text: `${sensor.code}: ${sensor.status}, ${sensor.provisioningStatus}\nBatch: ${session?.batch.code ?? 'unassigned'}\nLast seen: ${sensor.lastSeenAt?.toISOString() ?? 'never'}\nLast synced: ${session?.lastSyncedAt?.toISOString() ?? 'never'}` };
+      return { text: `${sensor.code}: ${sensor.status}, ${sensor.provisioningStatus}\nBatch: ${session?.batch.code ?? 'unassigned'}\nLast seen: ${formatWIB(sensor.lastSeenAt)}\nLast synced: ${formatWIB(session?.lastSyncedAt)}` };
     }
     if (extraction.entityType === 'vehicle' || extraction.entityType === 'storage' || extraction.entityType === 'destination') {
       const [vehicles, storages, destinations] = await Promise.all([
@@ -285,8 +292,8 @@ export class TelegramOperations {
 
   private async queryRows(userId: bigint, kind: QueryKind): Promise<string[]> {
     if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, ${item.remainingQualityWindowDays.toFixed(1)} days remaining`}`));
-    if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${item.lastSeenAt?.toISOString() ?? 'never'}`));
-    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, occurredAt: true } }).then((items) => items.map((item) => `${item.type}: ${item.rawMessage ?? 'active'} (${item.occurredAt.toISOString()})`));
+    if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${formatWIB(item.lastSeenAt)}`));
+    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, occurredAt: true } }).then((items) => items.map((item) => `${item.type}: ${item.rawMessage ?? 'active'} (${formatWIB(item.occurredAt)})`));
     if (kind === 'resources') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
@@ -298,7 +305,7 @@ export class TelegramOperations {
     const list = await this.plans.list(userId);
     const plans = [...list.activePlans, ...list.proposedPlans];
     if (kind === 'plans') return plans.map((plan) => `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${plan.reason}`);
-    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${step.scheduledAt}`)).sort();
+    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {

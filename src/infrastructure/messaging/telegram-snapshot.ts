@@ -9,6 +9,13 @@ function bounded(value: string | null) {
   return value.length <= textLimit ? value : `${value.slice(0, textLimit - 3)}...`;
 }
 
+export function formatWIB(date: Date | string | null | undefined): string {
+  if (!date) return 'never';
+  const parsed = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(parsed.getTime())) return 'never';
+  return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+}
+
 export async function loadTelegramOperationalSnapshot(database: Database, plans: PlanService, userId: bigint) {
   const [planList, batches, vehicles, storages, destinations, sensors, alerts] = await Promise.all([
     plans.list(userId),
@@ -31,14 +38,14 @@ export async function loadTelegramOperationalSnapshot(database: Database, plans:
       version: plan.version,
       status: plan.status,
       batches: plan.batches.map(({ code }) => code),
-      upcomingSteps: plan.steps.filter(({ status }) => status === 'UPCOMING').slice(0, 20).map((step) => ({ sequence: step.sequence, action: step.actionType, batch: step.batch.code, resource: step.resource ? bounded(step.resource.name) : null, scheduledAt: step.scheduledAt })),
+      upcomingSteps: plan.steps.filter(({ status }) => status === 'UPCOMING').slice(0, 20).map((step) => ({ sequence: step.sequence, action: step.actionType, batch: step.batch.code, resource: step.resource ? bounded(step.resource.name) : null, scheduledAt: formatWIB(step.scheduledAt) })),
     })),
     batches: batches.map((batch) => ({ code: batch.code, status: batch.status, temperatureC: batch.currentTemperatureC, qualityRemainingDays: batch.remainingQualityWindowDays, sensor: batch.sensorSessions[0]?.sensor.code ?? null })),
     vehicles: vehicles.map((vehicle) => ({ code: vehicle.code, status: vehicle.operationalStatus, delayMinutes: vehicle.delayMinutes, capacityKg: vehicle.capacityKg })),
     storages: storages.map((storage) => ({ name: storage.name, status: storage.operationalStatus, capacityKg: storage.capacityKg, availableCapacityKg: storage.availableCapacityKg })),
     destinations: destinations.map((destination) => ({ name: destination.name, status: destination.status, travelMinutes: destination.travelMinutes })),
     sensors: sensors.map((sensor) => ({ code: sensor.code, status: sensor.status, batch: sensor.sessions[0]?.batch.code ?? null })),
-    alerts: alerts.map((alert) => ({ type: alert.type, summary: bounded(alert.rawMessage), occurredAt: alert.occurredAt.toISOString() })),
+    alerts: alerts.map((alert) => ({ type: alert.type, summary: bounded(alert.rawMessage), occurredAt: formatWIB(alert.occurredAt) })),
     truncation: { collections: collectionLimit, alerts: 20, upcomingStepsPerPlan: 20, textCharacters: textLimit },
   };
 }
