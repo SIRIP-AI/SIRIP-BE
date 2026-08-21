@@ -9,7 +9,7 @@ const system = 'Write a concise plain-text Telegram answer using only the suppli
 export async function composeTelegramQueryResponse(model: () => TelegramInterpretationModel, question: string, facts: unknown, fallback: string) {
   try {
     const raw = messageText(await model().invoke([new SystemMessage(system), new HumanMessage(JSON.stringify({ question: question.slice(0, 2000), validatedFacts: facts }))]));
-    const text = normalizePlanResponse(raw).trim();
+    const text = normalizePlanResponse(raw).replace(/[^\w]*skipped:[\s\S]*/i, '').trim();
     if (!text || text.length > maximumResponseCharacters) throw new Error('Composed response is invalid');
     console.info('[AI Telegram response composed]', { output: text });
     return text;
