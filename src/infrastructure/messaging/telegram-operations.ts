@@ -168,7 +168,8 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 
 function proposalText(plan: PlanView) {
   const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`);
-  return [`Plan v${plan.version} proposal`, `Reason: ${plan.reason}`, ...steps].join('\n');
+  const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...steps].join('\n');
 }
 
 export class TelegramOperations {
@@ -250,7 +251,10 @@ export class TelegramOperations {
       const list = await this.plans.list(userId);
       const matches = list.activePlans;
       if (!matches.length) return { text: 'No active plans.' };
-      const lines = matches.flatMap((plan) => [`Plan v${plan.version} ACTIVE: ${plan.reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)]);
+      const lines = matches.flatMap((plan) => {
+        const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+      });
       return { text: lines.join('\n') };
     }
     const planReference = extraction.planRef;
@@ -304,7 +308,10 @@ export class TelegramOperations {
     }
     const list = await this.plans.list(userId);
     const plans = [...list.activePlans, ...list.proposedPlans];
-    if (kind === 'plans') return plans.map((plan) => `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${plan.reason}`);
+    if (kind === 'plans') return plans.map((plan) => {
+      const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+      return `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
+    });
     return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
