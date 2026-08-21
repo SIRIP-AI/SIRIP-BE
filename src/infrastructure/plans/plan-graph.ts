@@ -80,13 +80,13 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     try {
       const sanitizedOutput = (state.rawOutput ?? '').replace(/"scheduledAt"\s*:\s*"([^"]+)"/g, (match, p1) => `"scheduledAt":"${p1.substring(0, 19)}Z"`);
       const result = parseAiPlanResult(normalizePlanResponse(sanitizedOutput));
+      const isoRegex = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
+      const replacer = (m: string) => {
+        const d = new Date(m);
+        return Number.isNaN(d.getTime()) ? m : d.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+      };
+      result.reason = result.reason.replace(isoRegex, replacer);
       if (result.status === 'FEASIBLE') {
-        const isoRegex = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
-        const replacer = (m: string) => {
-          const d = new Date(m);
-          return Number.isNaN(d.getTime()) ? m : d.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
-        };
-        result.reason = result.reason.replace(isoRegex, replacer);
         for (const step of result.steps) {
           if (step.notes) step.notes = step.notes.replace(isoRegex, replacer);
         }

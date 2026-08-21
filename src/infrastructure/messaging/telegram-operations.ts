@@ -475,7 +475,11 @@ export class TelegramOperations {
 
   private async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint): Promise<TelegramReply> {
     const result = await this.plans.revise(userId, planId, instruction, triggerEventId);
-    if (result.status === 'INFEASIBLE') { await this.clearPending(userId); return { text: `No feasible revision: ${result.reason}` }; }
+    if (result.status === 'INFEASIBLE') { 
+      await this.plans.dismiss(userId, planId);
+      await this.clearPending(userId); 
+      return { text: `No feasible revision: ${result.reason}\n\nThe active plan has been dismissed.` }; 
+    }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
     return { text: `${proposalText(result.proposal)}\n\nReply with a natural-language edit, or use an action below.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
   }
