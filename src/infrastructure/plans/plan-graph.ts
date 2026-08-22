@@ -64,12 +64,6 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     try {
       const response = await model().invoke(planningMessages(state.generationContext, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors));
       const rawOutput = messageText(response);
-      console.info('[AI plan output]', {
-        planId: state.planId,
-        parserRepair: state.parserRepairCount ?? 0,
-        validationRepair: state.validationRepairCount ?? 0,
-        output: rawOutput,
-      });
       return { rawOutput, result: null };
     } catch (error) {
       if (error instanceof RequestError) throw error;

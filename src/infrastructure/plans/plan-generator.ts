@@ -85,8 +85,31 @@ function errorChain(error: unknown): unknown[] {
   return values;
 }
 
+function providerErrorLog(error: unknown) {
+  const chain = errorChain(error);
+  const records = chain.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object');
+  const providerError = records.map((value) => value.error).find((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object');
+  const status = records.map((value) => value.status).find((value): value is number => typeof value === 'number');
+  const message = providerError?.message ?? chain.find((value) => value instanceof Error)?.message;
+  let provider: string | undefined;
+  try {
+    provider = new URL(process.env.AI_API_URL ?? '').hostname || undefined;
+  } catch {
+    provider = undefined;
+  }
+  console.error('[AI provider request failed]', {
+    provider,
+    model: process.env.AI_MODEL?.trim() || undefined,
+    status,
+    code: typeof providerError?.code === 'string' ? providerError.code : undefined,
+    type: typeof providerError?.type === 'string' ? providerError.type : undefined,
+    message: typeof message === 'string' ? message.replace(/([?&](?:key|api_key)=)[^&\s]+/gi, '$1[REDACTED]').slice(0, 2_000) : 'Unknown provider error',
+  });
+}
+
 export function planningProviderError(error: unknown) {
   const chain = errorChain(error);
+  providerErrorLog(error);
   if (chain.some((value) => value instanceof Error && value.message.includes(oversizedResponseMarker))) return new RequestError('AI provider returned an invalid response', 502);
   if (chain.some((value) => value instanceof SyntaxError)) return new RequestError('AI provider returned an invalid response', 502);
   if (chain.some((value) => value && typeof value === 'object' && typeof (value as { status?: unknown }).status === 'number')) return new RequestError('AI provider request failed', 502);
