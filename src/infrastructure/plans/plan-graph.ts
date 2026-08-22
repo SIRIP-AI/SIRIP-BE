@@ -61,7 +61,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   const generate = async (state: typeof PlanGraphState.State) => {
     if (!state.generationContext) throw new Error('Planning context is unavailable');
     try {
-      const response = await model().invoke(planningMessages(state.generationContext, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors));
+      const response = await model().invoke(planningMessages(state.generationContext, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors, state.rawOutput ?? undefined));
       const rawOutput = messageText(response);
       return { rawOutput, result: null };
     } catch (error) {
@@ -99,9 +99,6 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     const validationErrors = changed ? ['Current plan changed during generation'] : state.result.status === 'NO_VALID_PROPOSAL_FOUND' ? [] : validate(state.result, state.freshContext);
     if (validationErrors.length) {
       console.warn('[AI plan validation rejected]', { planId: state.planId, errors: validationErrors });
-      try {
-        require('fs').appendFileSync('d:/Code/compfest/SIRIP-BE/sirip-ai-debug.log', JSON.stringify({ rawOutput: state.rawOutput, result: state.result, errors: validationErrors }, null, 2) + '\n\n');
-      } catch (e) {}
     }
     return { validationErrors };
   };
@@ -112,7 +109,6 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const prepareRepair = (state: typeof PlanGraphState.State) => ({
     generationContext: state.freshContext,
-    rawOutput: null,
     result: null,
     parserError: null,
     parserRepairCount: 0,

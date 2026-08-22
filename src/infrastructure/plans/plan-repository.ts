@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { generatedPlanActionTypes, planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
+import { generatedPlanActionTypes, planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
 import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
@@ -159,9 +159,41 @@ function completedFacts(steps: Array<{
 
 type PlanningClient = Pick<Prisma.TransactionClient, 'batch' | 'coldStorage' | 'vehicle' | 'destination' | 'plan'>;
 
+function resourceOccupancies(plans: Array<{
+  id: bigint;
+  steps: Array<{ actionType: PlanActionType; batchId: bigint; coldStorageId: bigint | null; vehicleId: bigint | null; destinationId: bigint | null; scheduledAt: Date; status: PlanningPlanStep['status']; batch: { weightKg: number } }>;
+}>, predecessorId: bigint | undefined, travelMinutes: Map<string, number>): PlanningResourceOccupancy[] {
+  const occupancies: PlanningResourceOccupancy[] = [];
+  for (const plan of plans) {
+    const states = new Map<string, { storage?: { resourceId: string; start: string }; vehicle?: { resourceId: string; start: string; weightKg: number } }>();
+    for (const step of plan.steps) {
+      if (step.status === 'CANCELED' || (plan.id === predecessorId && step.status !== 'COMPLETED')) continue;
+      const batchId = step.batchId.toString();
+      const state = states.get(batchId) ?? {};
+      if (step.actionType === 'STORE' && step.coldStorageId) state.storage = { resourceId: step.coldStorageId.toString(), start: step.scheduledAt.toISOString() };
+      if (step.actionType === 'LOAD' && step.vehicleId) {
+        if (state.storage) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: state.storage.resourceId, batchId, weightKg: step.batch.weightKg, start: state.storage.start, end: step.scheduledAt.toISOString() });
+        state.storage = undefined;
+        state.vehicle = { resourceId: step.vehicleId.toString(), start: step.scheduledAt.toISOString(), weightKg: step.batch.weightKg };
+      }
+      if (step.actionType === 'DISPATCH' && step.destinationId && state.vehicle) {
+        const travel = travelMinutes.get(step.destinationId.toString());
+        if (travel !== undefined) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: new Date(step.scheduledAt.getTime() + travel * 60_000).toISOString() });
+        state.vehicle = undefined;
+      }
+      states.set(batchId, state);
+    }
+    for (const [batchId, state] of states) {
+      if (state.storage) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: state.storage.resourceId, batchId, weightKg: plan.steps.find((step) => step.batchId.toString() === batchId)!.batch.weightKg, start: state.storage.start, end: null });
+      if (state.vehicle) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: null });
+    }
+  }
+  return occupancies;
+}
+
 async function loadPlanningContext(client: PlanningClient, userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext> {
   const now = new Date();
-  const [batches, coldStorages, vehicles, destinations, currentPlan] = await Promise.all([
+  const [batches, coldStorages, vehicles, destinations, currentPlan, activePlans] = await Promise.all([
     client.batch.findMany({
       where: { id: { in: batchIds }, userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
       orderBy: { code: 'asc' },
@@ -201,6 +233,10 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
         deadline: true,
         steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true } },
       },
+    }),
+    client.plan.findMany({
+      where: { userId, status: 'ACTIVE' },
+      select: { id: true, steps: { orderBy: { sequence: 'asc' }, select: { actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, batch: { select: { weightKg: true } } } } },
     }),
   ]);
   return {
@@ -262,6 +298,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       deadline: currentPlan.deadline?.toISOString() ?? null,
       steps: currentPlan.steps.map(planningStep),
     } : null,
+    resourceOccupancies: resourceOccupancies(activePlans, planId, new Map(destinations.map((destination) => [destination.id.toString(), destination.travelMinutes]))),
   };
 }
 

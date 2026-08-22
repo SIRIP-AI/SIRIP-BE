@@ -62,6 +62,59 @@ test('TR-01, 30 minutes extraction produces delay 30 and correction replaces del
   assert.equal(pending?.kind === 'REPORT_CONFIRM' ? pending.report.value : null, 30);
 });
 
+test('Indonesian TR-02 delay extracts to preview, confirms mutation, and flags its active plan', async () => {
+  const memory = memoryDatabase();
+  let delayMinutes = 0;
+  const events: Record<string, unknown>[] = [];
+  const database = memory.database as unknown as {
+    vehicle: { findMany: () => Promise<Array<{ id: bigint; code: string }>> };
+    plan: { findMany: () => Promise<Array<{ id: bigint; version: number }>> };
+    $transaction: (operation: (transaction: unknown) => Promise<unknown>) => Promise<unknown>;
+  };
+  database.vehicle.findMany = async () => [{ id: 2n, code: 'TR-02' }];
+  database.plan = { findMany: async () => [{ id: 30n, version: 3 }] };
+  database.$transaction = async (operation) => operation({
+    vehicle: { update: async ({ data }: { data: { delayMinutes: number } }) => { delayMinutes = data.delayMinutes; } },
+    operationalEvent: { create: async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: 41n }; } },
+  });
+  const operations = new TelegramOperations(memory.database, emptyPlans, model({ intent: 'REPORT', entityType: 'vehicle', entityCode: 'TR-02', delayMinutes: 90, status: 'DELAYED' }));
+
+  const preview = await operations.handle(1n, 'TR-02 telat 90 menit', null, new Date('2026-08-21T10:00:00.000Z'));
+  assert.match(preview.text, /TR-02 delayed 90 minutes/);
+  assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPORT_CONFIRM');
+
+  const confirmed = await operations.handle(1n, null, 'report:confirm', new Date('2026-08-21T10:01:00.000Z'));
+  assert.equal(delayMinutes, 90);
+  assert.equal(events[0]?.source, 'TELEGRAM');
+  assert.match(confirmed.text, /Active plan v3/);
+  assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPLAN');
+});
+
+test('truck count scopes rows and pagination to vehicles', async () => {
+  const memory = memoryDatabase();
+  const database = memory.database as unknown as {
+    vehicle: { findMany: () => Promise<unknown[]> };
+    coldStorage: { findMany: () => Promise<unknown[]> };
+    destination: { findMany: () => Promise<unknown[]> };
+  };
+  database.vehicle.findMany = async () => [
+    { id: 1n, code: 'TR-01', capacityKg: 450, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
+    { id: 2n, code: 'TR-02', capacityKg: 250, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
+    { id: 3n, code: 'TR-03', capacityKg: 300, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
+  ];
+  database.coldStorage.findMany = async () => [{ id: 4n, name: 'CR-01', operationalStatus: 'AVAILABLE', availableCapacityKg: 600 }];
+  database.destination.findMany = async () => [{ id: 5n, name: 'Processor A', status: 'AVAILABLE' }];
+  let calls = 0;
+  const queryModel = () => ({ invoke: async () => new AIMessage(calls++ === 0
+    ? JSON.stringify({ ...base, intent: 'QUERY', queryKind: 'resources', entityType: 'vehicle' })
+    : '{"text":"You have 3 trucks."}') }) as unknown as TelegramInterpretationModel;
+
+  const reply = await new TelegramOperations(memory.database, emptyPlans, queryModel).handle(1n, 'how many trucks do i have', null);
+
+  assert.equal(reply.text, 'You have 3 trucks.');
+  assert.equal(reply.buttons, undefined);
+});
+
 test('semantic callback history never stores callback payload', async () => {
   const memory = memoryDatabase({ pending: { kind: 'REPORT_CONFIRM', report: { kind: 'VEHICLE_DELAY', entityId: '1', entityName: 'TR-01', value: 30, occurredAt: '2026-08-21T10:00:00.000Z', rawMessage: 'delay' } }, messages: [] });
   await new TelegramOperations(memory.database, emptyPlans).handle(1n, null, 'report:cancel', new Date('2026-08-21T10:01:00.000Z'));

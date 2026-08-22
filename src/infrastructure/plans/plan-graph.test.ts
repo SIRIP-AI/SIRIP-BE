@@ -46,7 +46,11 @@ test('LangGraph repairs parser and validation failures without dropping the revi
   assert.ok(prompts.every((prompt) => prompt.includes('Move dispatch later')));
   assert.ok(prompts.every((prompt) => prompt.includes('2026-08-25T12:00:00.000Z')));
   assert.match(prompts[1]!, /strict JSON contract/);
+  assert.match(prompts[1]!, /Rejected response to repair:\nnot json/);
   assert.match(prompts[2]!, /Use a feasible schedule/);
+  assert.match(prompts[2]!, /\"summary\":\"Invalid\"/);
+  assert.match(prompts[0]!, /Deterministic planning hints/);
+  assert.match(prompts[0]!, /eligibleVehicles/);
 });
 
 test('LangGraph returns no valid proposal without validating a partial proposal', async () => {

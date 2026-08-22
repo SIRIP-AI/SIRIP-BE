@@ -69,7 +69,7 @@ const responseSchema = {
                 coldStorageId: { type: ['string', 'null'] },
                 vehicleId: { type: ['string', 'null'] },
                 destinationId: { type: ['string', 'null'] },
-                rationale: { type: 'string' },
+                rationale: { type: 'string', minLength: 1, maxLength: 500 },
               },
               required: ['actionType', 'batchId', 'scheduledAt', 'coldStorageId', 'vehicleId', 'destinationId', 'rationale'],
             },
@@ -195,16 +195,44 @@ export function planningProviderError(error: unknown) {
   return new RequestError('AI provider request failed', 502);
 }
 
-export function planningMessages(context: PlanningContext, instruction?: string, parserError?: string, validationErrors: string[] = []) {
+function planningHints(context: PlanningContext) {
+  const destination = context.destinations.find(({ id }) => id === context.selectedDestinationId);
+  return {
+    batches: context.batches.map((batch) => ({
+      batchId: batch.id,
+      code: batch.code,
+      weightKg: batch.weightKg,
+      eligibleVehicles: context.vehicles
+        .filter((vehicle) => vehicle.operationalStatus === 'AVAILABLE' && vehicle.capacityKg >= batch.weightKg)
+        .map((vehicle) => ({ vehicleId: vehicle.id, code: vehicle.code, capacityKg: vehicle.capacityKg, availabilityIntervals: vehicle.availabilityIntervals })),
+      eligibleColdStorage: context.coldStorages
+        .filter((storage) => storage.operationalStatus === 'AVAILABLE' && storage.availableCapacityKg >= batch.weightKg)
+        .map((storage) => ({ coldStorageId: storage.id, name: storage.name, availableCapacityKg: storage.availableCapacityKg })),
+    })),
+    selectedDestination: destination ? {
+      destinationId: destination.id,
+      name: destination.name,
+      travelMinutes: destination.travelMinutes,
+      receivingIntervals: destination.receivingIntervals,
+      dispatchIntervals: destination.receivingIntervals.map(({ start, end }) => ({
+        start: new Date(Date.parse(start) - destination.travelMinutes * 60_000).toISOString(),
+        end: new Date(Date.parse(end) - destination.travelMinutes * 60_000).toISOString(),
+      })),
+    } : null,
+  };
+}
+
+export function planningMessages(context: PlanningContext, instruction?: string, parserError?: string, validationErrors: string[] = [], rejectedOutput?: string) {
   const repair = parserError
     ? `Your previous answer violated the strict JSON contract. Return only the corrected JSON object without Markdown fences or commentary. Parser error: ${parserError.slice(0, 300)}`
     : validationErrors.length
       ? `Repair the plan using these deterministic validation errors: ${JSON.stringify(validationErrors.slice(0, 20).map((error) => error.slice(0, 300)))}`
       : null;
+  const rejected = repair && rejectedOutput ? `\nRejected response to repair:\n${rejectedOutput.slice(0, 20_000)}` : '';
   const task = instruction
-    ? `Revise future operations according to this operator instruction: ${JSON.stringify(instruction)}${repair ? `\n${repair}` : ''}`
-    : repair ?? 'Generate a feasible plan for future operations.';
-  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nCurrent plan and operational context:\n${JSON.stringify(context)}`)];
+    ? `Revise future operations according to this operator instruction: ${JSON.stringify(instruction)}${repair ? `\n${repair}${rejected}` : ''}`
+    : repair ? `${repair}${rejected}` : 'Generate a feasible plan for future operations.';
+  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning hints:\n${JSON.stringify(planningHints(context))}\nCurrent plan and operational context:\n${JSON.stringify(context)}`)];
 }
 
 export function messageText(message: BaseMessage) {

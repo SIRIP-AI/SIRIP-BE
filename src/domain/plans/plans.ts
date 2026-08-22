@@ -97,6 +97,15 @@ export type PlanningActivePlan = {
   steps: PlanningPlanStep[];
 };
 
+export type PlanningResourceOccupancy = {
+  resourceType: 'COLD_STORAGE' | 'VEHICLE';
+  resourceId: string;
+  batchId: string;
+  weightKg: number;
+  start: string;
+  end: string | null;
+};
+
 export type PlanningContext = {
   now: string;
   selectedDestinationId: string | null;
@@ -106,6 +115,7 @@ export type PlanningContext = {
   vehicles: PlanningVehicle[];
   destinations: PlanningDestination[];
   currentPlan: PlanningActivePlan | null;
+  resourceOccupancies?: PlanningResourceOccupancy[];
 };
 
 export function planSnapshot(plan: PlanningActivePlan | null) {
@@ -277,13 +287,28 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   const vehicles = new Map(context.vehicles.map((resource) => [resource.id, resource]));
   const destinations = new Map(context.destinations.map((resource) => [resource.id, resource]));
   const covered = new Set<string>();
-  const storageAssignments = new Map<string, Set<string>>();
-  const vehicleAssignments = new Map<string, Set<string>>();
+  const occupancies = (context.resourceOccupancies ?? []).map((occupancy) => ({ ...occupancy }));
   const selectedDestination = context.selectedDestinationId ? destinations.get(context.selectedDestinationId) : undefined;
   const deadline = context.deadline ? new Date(context.deadline) : null;
   const dispatched = new Set<string>();
   const loadedVehicle = new Map<string, string>();
+  const storedAt = new Map<string, { resourceId: string; start: string }>();
+  const loadedAt = new Map<string, { resourceId: string; start: string }>();
   let previousTime = Number.NEGATIVE_INFINITY;
+
+  for (const step of context.currentPlan?.steps.filter((candidate) => candidate.status === 'COMPLETED') ?? []) {
+    if (step.actionType === 'STORE' && step.coldStorageId) storedAt.set(step.batchId, { resourceId: step.coldStorageId, start: step.scheduledAt });
+    if (step.actionType === 'LOAD' && step.vehicleId) {
+      storedAt.delete(step.batchId);
+      loadedVehicle.set(step.batchId, step.vehicleId);
+      loadedAt.set(step.batchId, { resourceId: step.vehicleId, start: step.scheduledAt });
+    }
+    if (step.actionType === 'DISPATCH') {
+      loadedVehicle.delete(step.batchId);
+      loadedAt.delete(step.batchId);
+      dispatched.add(step.batchId);
+    }
+  }
 
   if (!proposal.summary.trim() || proposal.summary.length > 1000) errors.push('Plan summary is invalid');
   if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Plan must contain 1 to 100 future steps');
@@ -293,9 +318,9 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} has no quality state`);
 
   proposal.steps.forEach((step, index) => {
-    const label = `Step ${index + 1}`;
     const scheduledAt = new Date(step.scheduledAt);
     const batch = batches.get(step.batchId);
+    const label = `Step ${index + 1} (${step.actionType} ${batch?.code ?? `batch ${step.batchId}`})`;
     if (!positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} references an inactive or unconfigured batch`);
     else covered.add(batch.id);
     if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= now.getTime()) errors.push(`${label} must be scheduled in the future`);
@@ -309,28 +334,27 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     if (step.coldStorageId && (!positiveId.test(step.coldStorageId) || !coldStorage)) errors.push(`${label} references an unconfigured cold storage`);
     if (step.actionType === 'STORE' && coldStorage) {
       if (coldStorage.operationalStatus !== 'AVAILABLE' || coldStorage.availableCapacityKg <= 0) errors.push(`${label} uses unavailable cold storage`);
-      if (batch && batch.weightKg > coldStorage.availableCapacityKg) errors.push(`${label} exceeds cold-storage capacity for the batch`);
-      if (batch) {
-        const assigned = storageAssignments.get(coldStorage.id) ?? new Set<string>();
-        assigned.add(batch.id);
-        storageAssignments.set(coldStorage.id, assigned);
-      }
+      if (batch && batch.weightKg > coldStorage.availableCapacityKg) errors.push(`${label} weighs ${batch.weightKg} kg but ${coldStorage.name} has ${coldStorage.availableCapacityKg} kg available`);
+      if (batch && storedAt.has(batch.id)) errors.push(`${label} stores a batch more than once`);
+      else if (batch) storedAt.set(batch.id, { resourceId: coldStorage.id, start: step.scheduledAt });
     }
 
     const vehicle = step.vehicleId ? vehicles.get(step.vehicleId) : undefined;
     if (step.vehicleId && (!positiveId.test(step.vehicleId) || !vehicle)) errors.push(`${label} references an unconfigured vehicle`);
     if ((step.actionType === 'LOAD' || step.actionType === 'DISPATCH') && vehicle) {
       if (vehicle.operationalStatus !== 'AVAILABLE') errors.push(`${label} uses an unavailable vehicle`);
-      if (batch && batch.weightKg > vehicle.capacityKg) errors.push(`${label} exceeds vehicle capacity for the batch`);
+      if (batch && batch.weightKg > vehicle.capacityKg) errors.push(`${label} weighs ${batch.weightKg} kg but ${vehicle.code} carries ${vehicle.capacityKg} kg`);
       if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < now.getTime() + vehicle.delayMinutes * 60_000) errors.push(`${label} does not account for vehicle delay`);
-      if (!Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} is outside vehicle availability`);
-      if (batch) {
-        const assigned = vehicleAssignments.get(vehicle.id) ?? new Set<string>();
-        assigned.add(batch.id);
-        vehicleAssignments.set(vehicle.id, assigned);
-        if (step.actionType === 'LOAD') {
-          if (loadedVehicle.has(batch.id)) errors.push(`${label} loads a batch more than once`);
+      if (!Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} at ${scheduledAt.toISOString()} is outside ${vehicle.code} availability ${JSON.stringify(vehicle.availabilityIntervals)}`);
+      if (batch && step.actionType === 'LOAD') {
+        if (loadedVehicle.has(batch.id)) errors.push(`${label} loads a batch more than once`);
+        else {
           loadedVehicle.set(batch.id, vehicle.id);
+          loadedAt.set(batch.id, { resourceId: vehicle.id, start: step.scheduledAt });
+          const stored = storedAt.get(batch.id);
+          const physical = occupancies.find((occupancy) => occupancy.resourceType === 'COLD_STORAGE' && occupancy.batchId === batch.id && occupancy.end === null);
+          if (physical) physical.end = step.scheduledAt;
+          else if (stored) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: stored.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: stored.start, end: step.scheduledAt });
         }
       }
     }
@@ -340,9 +364,15 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     if (step.actionType === 'DISPATCH' && destination) {
       if (destination.status !== 'AVAILABLE') errors.push(`${label} uses an unavailable destination`);
       const arrival = new Date(scheduledAt.getTime() + destination.travelMinutes * 60_000);
-      if (!Number.isNaN(arrival.getTime()) && !inIntervals(arrival, destination.receivingIntervals)) errors.push(`${label} arrives outside the destination receiving window`);
+      if (!Number.isNaN(arrival.getTime()) && !inIntervals(arrival, destination.receivingIntervals)) errors.push(`${label} arrives at ${arrival.toISOString()}, outside ${destination.name} receiving intervals ${JSON.stringify(destination.receivingIntervals)}`);
       if (step.actionType === 'DISPATCH' && batch) {
-        if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId) errors.push(`${label} must use the vehicle from the preceding load`);
+        const load = loadedAt.get(batch.id);
+        if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !load) errors.push(`${label} must use the vehicle from the preceding load, which must be unmatched`);
+        else {
+          const physical = occupancies.find((occupancy) => occupancy.resourceType === 'VEHICLE' && occupancy.batchId === batch.id && occupancy.end === null);
+          if (physical) physical.end = arrival.toISOString();
+          else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: arrival.toISOString() });
+        }
         if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
         else dispatched.add(batch.id);
         if (batch.quality && !Number.isNaN(arrival.getTime())) {
@@ -354,15 +384,22 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     }
   });
 
-  for (const [resourceId, assigned] of storageAssignments) {
-    const resource = coldStorages.get(resourceId);
-    const assignedWeight = [...assigned].reduce((total, batchId) => total + (batches.get(batchId)?.weightKg ?? 0), 0);
-    if (resource && assignedWeight > resource.availableCapacityKg) errors.push(`Cold storage ${resourceId} is overbooked`);
-  }
-  for (const [resourceId, assigned] of vehicleAssignments) {
-    const resource = vehicles.get(resourceId);
-    const assignedWeight = [...assigned].reduce((total, batchId) => total + (batches.get(batchId)?.weightKg ?? 0), 0);
-    if (resource && assignedWeight > resource.capacityKg) errors.push(`Vehicle ${resourceId} is overbooked`);
+  for (const resourceType of ['COLD_STORAGE', 'VEHICLE'] as const) {
+    const resourceIds = new Set(occupancies.filter((occupancy) => occupancy.resourceType === resourceType).map((occupancy) => occupancy.resourceId));
+    for (const resourceId of resourceIds) {
+      const capacity = resourceType === 'COLD_STORAGE' ? coldStorages.get(resourceId)?.availableCapacityKg : vehicles.get(resourceId)?.capacityKg;
+      if (capacity === undefined) continue;
+      const events = occupancies.filter((occupancy) => occupancy.resourceType === resourceType && occupancy.resourceId === resourceId).flatMap((occupancy) => {
+        const start = Date.parse(occupancy.start);
+        const end = occupancy.end === null ? Number.POSITIVE_INFINITY : Date.parse(occupancy.end);
+        return Number.isFinite(start) && end > start ? [{ at: start, delta: occupancy.weightKg }, { at: end, delta: -occupancy.weightKg }] : [];
+      }).sort((left, right) => left.at - right.at || left.delta - right.delta);
+      let occupiedKg = 0;
+      if (events.some((event) => (occupiedKg += event.delta) > capacity)) {
+        const name = resourceType === 'COLD_STORAGE' ? coldStorages.get(resourceId)?.name : vehicles.get(resourceId)?.code;
+        errors.push(`${resourceType === 'COLD_STORAGE' ? 'Cold storage' : 'Vehicle'} ${name ?? resourceId} exceeds its ${capacity} kg concurrent capacity`);
+      }
+    }
   }
   for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
   if (context.selectedDestinationId) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(`Active batch ${batch.id} is not dispatched to the selected destination`);

@@ -53,3 +53,48 @@ test('requires dispatch to use the preceding load vehicle without forcing storag
   ] }, context);
   assert.ok(mismatched.some((error) => error.includes('vehicle from the preceding load')));
 });
+
+test('allows sequential resource reuse and rejects concurrent reserved weight', () => {
+  const batches = [
+    context.batches[0]!,
+    { ...context.batches[0]!, id: '8', code: 'B-8', weightKg: 60 },
+  ];
+  const shared = { ...context, batches, vehicles: [{ ...context.vehicles[0]!, capacityKg: 60 }] };
+  const proposal = { summary: 'Sequential trips', steps: [
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    { actionType: 'LOAD' as const, batchId: '8', vehicleId: '2', scheduledAt: '2026-08-20T14:15:00.000Z', rationale: 'Reuse after arrival.' },
+    { actionType: 'DISPATCH' as const, batchId: '8', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T14:30:00.000Z', rationale: 'Dispatch.' },
+  ] };
+  assert.deepEqual(validatePlanProposal(proposal, shared), []);
+  const reserved = { ...shared, resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 55, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z' }] };
+  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('Vehicle Truck exceeds its 60 kg concurrent capacity')));
+});
+
+test('releases storage on load and enforces one store and load per batch', () => {
+  const valid = validatePlanProposal({ summary: 'Stored journey', steps: [
+    { actionType: 'STORE', batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store.' },
+    { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Release storage.' },
+    { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+  ] }, { ...context, resourceOccupancies: [{ resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '99', weightKg: 95, start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T14:00:00.000Z' }] });
+  assert.deepEqual(valid, []);
+
+  const duplicate = validatePlanProposal({ summary: 'Duplicates', steps: [
+    { actionType: 'STORE', batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:15:00.000Z', rationale: 'Store.' },
+    { actionType: 'STORE', batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store again.' },
+    { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:05:00.000Z', rationale: 'Load again.' },
+    { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+  ] }, context);
+  assert.ok(duplicate.some((error) => error.includes('stores a batch more than once')));
+  assert.ok(duplicate.some((error) => error.includes('loads a batch more than once')));
+});
+
+test('uses a completed predecessor load as the unmatched load for dispatch', () => {
+  const revised = { ...context, currentPlan: { id: '20', version: 1, summary: 'Old', destinationId: '3', deadline: context.deadline, steps: [
+    { sequence: 1, actionType: 'LOAD' as const, batchId: '7', coldStorageId: null, vehicleId: '2', destinationId: null, scheduledAt: '2026-08-20T11:00:00.000Z', status: 'COMPLETED' as const, completedAt: '2026-08-20T11:05:00.000Z', rationale: null },
+  ] }, resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '7', weightKg: 10, start: '2026-08-20T11:00:00.000Z', end: null }] };
+  assert.deepEqual(validatePlanProposal({ summary: 'Dispatch loaded batch', steps: [
+    { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Continue the journey.' },
+  ] }, revised), []);
+});
