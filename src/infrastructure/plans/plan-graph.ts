@@ -78,7 +78,19 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const parse = (state: typeof PlanGraphState.State) => {
     try {
-      const result = parseAiPlanResult(normalizePlanResponse(state.rawOutput ?? ''));
+      const sanitizedOutput = (state.rawOutput ?? '').replace(/"scheduledAt"\s*:\s*"([^"]+)"/g, (match, p1) => `"scheduledAt":"${p1.substring(0, 19)}Z"`);
+      const result = parseAiPlanResult(normalizePlanResponse(sanitizedOutput));
+      const isoRegex = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
+      const replacer = (m: string) => {
+        const d = new Date(m);
+        return Number.isNaN(d.getTime()) ? m : d.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+      };
+      result.reason = result.reason.replace(isoRegex, replacer);
+      if (result.status === 'FEASIBLE') {
+        for (const step of result.steps) {
+          if (step.notes) step.notes = step.notes.replace(isoRegex, replacer);
+        }
+      }
       return { result: result.status === 'FEASIBLE' ? { status: 'FEASIBLE' as const, ...orderPlanProposal(result) } : result, parserError: null };
     } catch (error) {
       if (!(error instanceof InvalidPlanProposalError)) throw error;
@@ -104,7 +116,12 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     const changed = planSnapshot(state.generationContext.currentPlan) !== planSnapshot(state.freshContext.currentPlan);
     if (changed && (state.validationRepairCount ?? 0) > 0) throw new ConflictError('Current plan changed during generation');
     const validationErrors = changed ? ['Current plan changed during generation'] : state.result.status === 'INFEASIBLE' ? [] : validate(state.result, state.freshContext);
-    if (validationErrors.length) console.warn('[AI plan validation rejected]', { planId: state.planId, errors: validationErrors });
+    if (validationErrors.length) {
+      console.warn('[AI plan validation rejected]', { planId: state.planId, errors: validationErrors });
+      try {
+        require('fs').appendFileSync('d:/Code/compfest/SIRIP-BE/sirip-ai-debug.log', JSON.stringify({ rawOutput: state.rawOutput, result: state.result, errors: validationErrors }, null, 2) + '\n\n');
+      } catch (e) {}
+    }
     return { validationErrors };
   };
   const afterValidation = (state: typeof PlanGraphState.State) => {

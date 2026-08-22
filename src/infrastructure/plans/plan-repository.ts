@@ -432,7 +432,7 @@ export class PlanRepository implements PlanRepositoryPort {
       await lockUser(transaction, userId);
       const proposal = await transaction.plan.findFirst({ where: { id: planId, userId } });
       if (!proposal) throw new NotFoundError('Plan');
-      if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
+      if (proposal.status !== 'PROPOSED' && proposal.status !== 'ACTIVE') throw new ConflictError('Plan is not a proposal or active');
       return serializePlan(await transaction.plan.update({ where: { id: planId }, data: { status: 'DISMISSED' }, include: planInclude }));
     });
   }
