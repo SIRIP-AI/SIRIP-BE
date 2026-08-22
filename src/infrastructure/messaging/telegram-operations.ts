@@ -13,6 +13,7 @@ const maximumHistoryText = 2000;
 
 export type TelegramReply = { text: string; buttons?: Array<Array<{ text: string; callback_data: string }>> };
 type QueryKind = 'batches' | 'plans' | 'steps' | 'alerts' | 'sensors' | 'resources';
+type ResourceScope = 'vehicle' | 'storage' | 'destination';
 type ReportKind = 'VEHICLE_DELAY' | 'VEHICLE_STATUS' | 'STORAGE_STATUS' | 'DESTINATION_STATUS' | 'BATCH_STATUS' | 'SENSOR_STATUS';
 type Report = { kind: ReportKind; entityId: string; entityName: string; value: number | 'AVAILABLE' | 'UNAVAILABLE' | 'INSPECTION_HOLD' | 'ACTIVE' | 'ERROR'; occurredAt: string; rawMessage: string; planRef?: string };
 type State =
@@ -167,8 +168,8 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 }
 
 function proposalText(plan: PlanView) {
-  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`);
-  const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
+  const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
   return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...steps].join('\n');
 }
 
@@ -214,7 +215,8 @@ export class TelegramOperations {
         const exact = await this.exactQuery(userId, input, extraction);
         if (exact) return { ...exact, text: await composeTelegramQueryResponse(this.model, input, { answer: exact.text }, exact.text) };
       }
-      return this.query(userId, broad as QueryKind, 0, input);
+      const resourceScope = broad === 'resources' && (extraction.entityType === 'vehicle' || extraction.entityType === 'storage' || extraction.entityType === 'destination') ? extraction.entityType : undefined;
+      return this.query(userId, broad as QueryKind, 0, input, resourceScope);
     }
     const reportReceivedAt = current?.kind === 'CLARIFY' ? new Date(current.receivedAt) : receivedAt;
     if (extraction.intent !== 'REPORT') return { text: 'I can query operations, record supported reports, or revise an existing plan.' };
@@ -252,8 +254,8 @@ export class TelegramOperations {
       const matches = list.activePlans;
       if (!matches.length) return { text: 'No active plans.' };
       const lines = matches.flatMap((plan) => {
-        const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+        const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
       });
       return { text: lines.join('\n') };
     }
@@ -285,16 +287,17 @@ export class TelegramOperations {
     return null;
   }
 
-  private async query(userId: bigint, kind: QueryKind, page: number, question: string): Promise<TelegramReply> {
-    const rows = await this.queryRows(userId, kind);
+  private async query(userId: bigint, kind: QueryKind, page: number, question: string, resourceScope?: ResourceScope): Promise<TelegramReply> {
+    const rows = await this.queryRows(userId, kind, resourceScope);
     const start = page * pageSize;
     const shown = rows.slice(start, start + pageSize);
     const text = shown.length ? `${kind[0]?.toUpperCase()}${kind.slice(1)} (${start + 1}-${start + shown.length} of ${rows.length})\n${shown.join('\n')}` : `No ${kind} found.`;
     const composed = await composeTelegramQueryResponse(this.model, question, { kind, range: shown.length ? { from: start + 1, to: start + shown.length, total: rows.length } : null, rows: shown }, text);
-    return { text: composed, ...(start + pageSize < rows.length ? { buttons: [[{ text: 'Show more', callback_data: `more:${kind}:${page + 1}` }]] } : {}) };
+    const scopeSuffix = kind === 'resources' && resourceScope ? `:${resourceScope}` : '';
+    return { text: composed, ...(start + pageSize < rows.length ? { buttons: [[{ text: 'Show more', callback_data: `more:${kind}:${page + 1}${scopeSuffix}` }]] } : {}) };
   }
 
-  private async queryRows(userId: bigint, kind: QueryKind): Promise<string[]> {
+  private async queryRows(userId: bigint, kind: QueryKind, resourceScope?: ResourceScope): Promise<string[]> {
     if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, ${item.remainingQualityWindowDays.toFixed(1)} days remaining`}`));
     if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${formatWIB(item.lastSeenAt)}`));
     if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, occurredAt: true } }).then((items) => items.map((item) => `${item.type}: ${item.rawMessage ?? 'active'} (${formatWIB(item.occurredAt)})`));
@@ -304,15 +307,20 @@ export class TelegramOperations {
         this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
         this.database.destination.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
       ]);
-      return [...vehicles.map((item) => `Truck ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, delayed ${item.delayMinutes}m` : ''}`), ...storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${item.availableCapacityKg}kg free`), ...destinations.map((item) => `Destination ${item.name}: ${item.status}`)];
+      const rows = {
+        vehicle: vehicles.map((item) => `Truck ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, delayed ${item.delayMinutes}m` : ''}`),
+        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${item.availableCapacityKg}kg free`),
+        destination: destinations.map((item) => `Destination ${item.name}: ${item.status}`),
+      };
+      return resourceScope ? rows[resourceScope] : [...rows.vehicle, ...rows.storage, ...rows.destination];
     }
     const list = await this.plans.list(userId);
     const plans = [...list.activePlans, ...list.proposedPlans];
     if (kind === 'plans') return plans.map((plan) => {
-      const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+      const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
       return `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
     });
-    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
+    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {
@@ -411,8 +419,8 @@ export class TelegramOperations {
   }
 
   private async callback(userId: bigint, callback: string, current: State | null): Promise<TelegramReply> {
-    const more = /^more:(batches|plans|steps|alerts|sensors|resources):(\d+)$/.exec(callback);
-    if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Show more');
+    const more = /^more:(batches|plans|steps|alerts|sensors|resources):(\d+)(?::(vehicle|storage|destination))?$/.exec(callback);
+    if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Show more', more[3] as ResourceScope | undefined);
     if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Report canceled. No operational state changed.' }; }
     if (callback === 'report:confirm' && current?.kind === 'REPORT_CONFIRM') return this.confirmReport(userId, current.report);
     if (callback === 'replan:cancel' || callback === 'edit:cancel') { await this.clearPending(userId); return { text: 'Canceled. No planner request was made.' }; }
@@ -475,10 +483,9 @@ export class TelegramOperations {
 
   private async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint): Promise<TelegramReply> {
     const result = await this.plans.revise(userId, planId, instruction, triggerEventId);
-    if (result.status === 'INFEASIBLE') { 
-      await this.plans.dismiss(userId, planId);
-      await this.clearPending(userId); 
-      return { text: `No feasible revision: ${result.reason}\n\nThe active plan has been dismissed.` }; 
+    if (result.status === 'NO_VALID_PROPOSAL_FOUND') {
+      await this.clearPending(userId);
+      return { text: `No valid revision proposal was found: ${result.reason}\n\nThe active plan remains unchanged.` };
     }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
     return { text: `${proposalText(result.proposal)}\n\nReply with a natural-language edit, or use an action below.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };

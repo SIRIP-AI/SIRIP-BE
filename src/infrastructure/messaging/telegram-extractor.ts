@@ -2,7 +2,7 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 
-import { createPlanningModel, messageText, normalizePlanResponse } from '../plans/plan-generator';
+import { createTelegramModel, messageText, normalizePlanResponse } from '../plans/plan-generator';
 import type { TelegramOperationalSnapshot } from './telegram-snapshot';
 
 const intent = z.enum(['QUERY', 'REPORT', 'REPLAN', 'PROPOSAL_EDIT', 'CONFIRM', 'CANCEL', 'UNKNOWN']);
@@ -33,7 +33,7 @@ Fields: intent, queryKind, entityType, entityCode, entityName, planRef, delayMin
 intent: QUERY, REPORT, REPLAN, PROPOSAL_EDIT, CONFIRM, CANCEL, UNKNOWN.
 queryKind: batches, plans, steps, alerts, sensors, resources, batch_detail, plan_detail, sensor_detail, resource_detail.
 entityType: vehicle, storage, destination, batch, sensor, plan. status: UNAVAILABLE, RECOVERED, ISSUE, DELAYED.
-SIRIP terms: mission means plan. V2 means display version 2, never database ID 2. Factual incidents are REPORT even when they mention a plan, such as "for plan v2, truck is delayed". Use REPLAN only for explicit replan/revise/change-plan language. REPORT covers vehicle delay/unavailable/recovery, storage or destination unavailable/recovery, batch issue/recovery, and sensor issue/recovery. A delayed vehicle uses status DELAYED; preserve planRef as an optional report hint. If delayed and vehicle is absent, mark entity missing; if duration is absent, mark delayMinutes missing. Delay recovery has delayMinutes 0. Preserve exact entity codes/names. A number inside an entity code is never delayMinutes: for "TR-01, 30 minutes", entityCode is "TR-01" and delayMinutes is 30. REPLAN requires planRef and instruction. PROPOSAL_EDIT carries instruction. CONFIRM means only an explicit confirmation of the currently pending preview; incident wording is never confirmation. Typed cancel uses CANCEL. Put required absent slots in missingFields. Do not invent values.`;
+SIRIP terms: mission means plan. V2 means display version 2, never database ID 2. Factual incidents are REPORT even when they mention a plan, such as "for plan v2, truck is delayed". Use REPLAN only for explicit replan/revise/change-plan language. REPORT covers vehicle delay/unavailable/recovery, storage or destination unavailable/recovery, batch issue/recovery, and sensor issue/recovery. A delayed vehicle uses status DELAYED; preserve planRef as an optional report hint. If delayed and vehicle is absent, mark entity missing; if duration is absent, mark delayMinutes missing. Delay recovery has delayMinutes 0. Preserve exact entity codes/names. A number inside an entity code is never delayMinutes: for "TR-01, 30 minutes", entityCode is "TR-01" and delayMinutes is 30; for "TR-02 telat 90 menit", entityCode is "TR-02", status is DELAYED, and delayMinutes is 90. REPLAN requires planRef and instruction. PROPOSAL_EDIT carries instruction. CONFIRM means only an explicit confirmation of the currently pending preview; incident wording is never confirmation. Typed cancel uses CANCEL. Put required absent slots in missingFields. Do not invent values.`;
 
 export function extractionMessages(snapshot: TelegramOperationalSnapshot, history: InterpretationMessage[], pending: InterpretationPending, text: string, repair?: string) {
   const context = {
@@ -70,4 +70,4 @@ export async function extractTelegramRequest(model: () => TelegramInterpretation
   return null;
 }
 
-export const createTelegramInterpretationModel = createPlanningModel;
+export const createTelegramInterpretationModel = createTelegramModel;

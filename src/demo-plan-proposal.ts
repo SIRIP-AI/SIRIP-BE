@@ -84,12 +84,12 @@ function mockAiServer() {
       const base = Date.parse(context.now);
       const scheduledAt = (minutes: number) => new Date(base + minutes * 60_000).toISOString();
       const proposal = {
-        status: 'FEASIBLE',
-        reason: 'Store, load, and dispatch the monitored demo batch.',
+        status: 'PROPOSAL',
+        summary: 'Store, load, and dispatch the monitored demo batch.',
         steps: [
-          { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60) },
-          { actionType: 'LOAD', batchId: batch.id, vehicleId: vehicle.id, scheduledAt: scheduledAt(120) },
-          { actionType: 'DISPATCH', batchId: batch.id, destinationId: destination.id, scheduledAt: scheduledAt(180) },
+          { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60), rationale: 'Hold until the vehicle is ready.' },
+          { actionType: 'LOAD', batchId: batch.id, vehicleId: vehicle.id, scheduledAt: scheduledAt(120), rationale: 'Load the available vehicle.' },
+          { actionType: 'DISPATCH', batchId: batch.id, vehicleId: vehicle.id, destinationId: destination.id, scheduledAt: scheduledAt(180), rationale: 'Dispatch within the receiving window.' },
         ],
       };
       calls += 1;
@@ -182,8 +182,8 @@ async function run() {
     assert.deepEqual(readiness, { ...readiness, ready: true, completedSteps: 4 });
 
     const deadline = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
-    const generated = (await request<{ status: 'FEASIBLE'; proposal: PlanView }>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id], destinationId: destination.id, deadline }, cookie, 201)).data;
-    assert.equal(generated.status, 'FEASIBLE');
+    const generated = (await request<{ status: 'PROPOSAL'; proposal: PlanView }>(baseUrl, '/plans/proposals', 'POST', { batchIds: [batch.id], destinationId: destination.id, deadline }, cookie, 201)).data;
+    assert.equal(generated.status, 'PROPOSAL');
     const proposal = generated.proposal;
     assert.equal(mock.calls(), 1);
     assert.equal(proposal.version, 1);
@@ -192,7 +192,7 @@ async function run() {
     assert.equal(proposal.completedAt, null);
     assert.equal(proposal.deadline, deadline);
     assert.deepEqual(proposal.steps.map(({ actionType }) => actionType), ['STORE', 'LOAD', 'DISPATCH']);
-    assert.deepEqual(proposal.steps.map(({ resource }) => resource?.id), [coldStorage.id, vehicle.id, destination.id]);
+    assert.deepEqual(proposal.steps.map(({ resources }) => resources.map(({ id }) => id)), [[coldStorage.id], [vehicle.id], [vehicle.id, destination.id]]);
     const plans = (await request<PlanList>(baseUrl, '/plans', 'GET', undefined, cookie)).data;
     assert.deepEqual(plans.activePlans, []);
     assert.deepEqual(plans.proposedPlans.map(({ id }) => id), [proposal.id]);

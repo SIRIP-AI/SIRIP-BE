@@ -13,7 +13,7 @@ export function createDemoRouter(service: DemoService) {
   const router = Router();
   router.post('/demo', async (_request, response) => {
     const { user } = response.locals as AuthLocals;
-    response.json(await service.generate(BigInt(user.id)));
+    response.json(await service.load(user));
   });
   router.post('/demo/reset', async (_request, response) => {
     const { user } = response.locals as AuthLocals;
@@ -22,6 +22,10 @@ export function createDemoRouter(service: DemoService) {
   router.post('/demo/sensors/:id/excursion', async (request, response) => {
     const { user } = response.locals as AuthLocals;
     response.json(await service.simulateExcursion(BigInt(user.id), id(request.params.id ?? '')));
+  });
+  router.post('/demo/sensors/:id/recovery', async (request, response) => {
+    const { user } = response.locals as AuthLocals;
+    response.json(await service.simulateRecovery(BigInt(user.id), id(request.params.id ?? '')));
   });
   return router;
 }

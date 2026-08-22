@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { normalizePlanResponse, planningProviderError } from './plan-generator';
 
-const plan = '{"status":"INFEASIBLE","reason":"No route"}';
+const plan = '{"status":"NO_VALID_PROPOSAL_FOUND","reason":"No route"}';
 
 test('normalizes raw and singly fenced plan responses', () => {
   assert.equal(normalizePlanResponse(`  ${plan}\n`), plan);
