@@ -38,7 +38,7 @@ export async function loadTelegramOperationalSnapshot(database: Database, plans:
       version: plan.version,
       status: plan.status,
       batches: plan.batches.map(({ code }) => code),
-      upcomingSteps: plan.steps.filter(({ status }) => status === 'UPCOMING').slice(0, 20).map((step) => ({ sequence: step.sequence, action: step.actionType, batch: step.batch.code, resource: step.resource ? bounded(step.resource.name) : null, scheduledAt: formatWIB(step.scheduledAt) })),
+      upcomingSteps: plan.steps.filter(({ status }) => status === 'UPCOMING').slice(0, 20).map((step) => ({ sequence: step.sequence, action: step.actionType, batch: step.batch.code, resources: step.resources.map((resource) => bounded(resource.name)), scheduledAt: formatWIB(step.scheduledAt) })),
     })),
     batches: batches.map((batch) => ({ code: batch.code, status: batch.status, temperatureC: batch.currentTemperatureC, qualityRemainingDays: batch.remainingQualityWindowDays, sensor: batch.sensorSessions[0]?.sensor.code ?? null })),
     vehicles: vehicles.map((vehicle) => ({ code: vehicle.code, status: vehicle.operationalStatus, delayMinutes: vehicle.delayMinutes, capacityKg: vehicle.capacityKg })),

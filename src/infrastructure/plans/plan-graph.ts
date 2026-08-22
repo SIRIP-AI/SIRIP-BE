@@ -45,7 +45,6 @@ function requireGenerationContext(context: PlanningContext) {
   if (!context.batches.length) throw new ConflictError('At least one active batch is required before planning');
   if (context.batches.length > 100) throw new ConflictError('At most 100 active batches can be planned at once');
   if (context.batches.some((batch) => !batch.quality)) throw new ConflictError('Every active batch requires a quality state before planning');
-  if (!context.coldStorages.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available cold storage is required before planning');
   if (!context.vehicles.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available vehicle is required before planning');
   if (!context.destinations.some((resource) => resource.status === 'AVAILABLE')) throw new ConflictError('At least one available destination is required before planning');
   if (context.selectedDestinationId && !context.destinations.some((resource) => resource.id === context.selectedDestinationId && resource.status === 'AVAILABLE')) throw new ConflictError('Selected destination must be available and owned by the user');
@@ -72,20 +71,8 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const parse = (state: typeof PlanGraphState.State) => {
     try {
-      const sanitizedOutput = (state.rawOutput ?? '').replace(/"scheduledAt"\s*:\s*"([^"]+)"/g, (match, p1) => `"scheduledAt":"${p1.substring(0, 19)}Z"`);
-      const result = parseAiPlanResult(normalizePlanResponse(sanitizedOutput));
-      const isoRegex = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
-      const replacer = (m: string) => {
-        const d = new Date(m);
-        return Number.isNaN(d.getTime()) ? m : d.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
-      };
-      result.reason = result.reason.replace(isoRegex, replacer);
-      if (result.status === 'FEASIBLE') {
-        for (const step of result.steps) {
-          if (step.notes) step.notes = step.notes.replace(isoRegex, replacer);
-        }
-      }
-      return { result: result.status === 'FEASIBLE' ? { status: 'FEASIBLE' as const, ...orderPlanProposal(result) } : result, parserError: null };
+      const result = parseAiPlanResult(normalizePlanResponse(state.rawOutput ?? ''));
+      return { result: result.status === 'PROPOSAL' ? { status: 'PROPOSAL' as const, ...orderPlanProposal(result) } : result, parserError: null };
     } catch (error) {
       if (!(error instanceof InvalidPlanProposalError)) throw error;
       const parserError = error.message.slice(0, 300);
@@ -109,7 +96,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     if (!state.result || !state.generationContext || !state.freshContext) throw new Error('Plan validation state is incomplete');
     const changed = planSnapshot(state.generationContext.currentPlan) !== planSnapshot(state.freshContext.currentPlan);
     if (changed && (state.validationRepairCount ?? 0) > 0) throw new ConflictError('Current plan changed during generation');
-    const validationErrors = changed ? ['Current plan changed during generation'] : state.result.status === 'INFEASIBLE' ? [] : validate(state.result, state.freshContext);
+    const validationErrors = changed ? ['Current plan changed during generation'] : state.result.status === 'NO_VALID_PROPOSAL_FOUND' ? [] : validate(state.result, state.freshContext);
     if (validationErrors.length) {
       console.warn('[AI plan validation rejected]', { planId: state.planId, errors: validationErrors });
       try {

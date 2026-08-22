@@ -329,6 +329,7 @@ model Destination {
   user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
+  plans             Plan[]             @relation("PlanDestination")
 
   @@unique([userId, name])
   @@map("destinations")
@@ -368,7 +369,8 @@ model Plan {
   status         PlanStatus
   previousPlanId BigInt?           @map("previous_plan_id")
   triggerEventId BigInt?           @map("trigger_event_id")
-  reason         String
+  destinationId  BigInt?           @map("destination_id")
+  summary        String
   deadline       DateTime?         @db.Timestamptz
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
@@ -377,6 +379,7 @@ model Plan {
   previousPlan   Plan?             @relation("PlanVersions", fields: [previousPlanId], references: [id])
   revisions      Plan[]            @relation("PlanVersions")
   triggerEvent   OperationalEvent? @relation(fields: [triggerEventId], references: [id])
+  destination    Destination?      @relation("PlanDestination", fields: [destinationId], references: [id], onDelete: Restrict)
   user           User?             @relation("OwnedPlans", fields: [userId], references: [id], onDelete: Cascade)
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
@@ -385,6 +388,7 @@ model Plan {
   @@unique([userId, version])
   @@index([userId, status, createdAt])
   @@index([previousPlanId, status])
+  @@index([destinationId])
   @@map("plans")
 }
 
@@ -411,7 +415,7 @@ model PlanStep {
   scheduledAt   DateTime       @map("scheduled_at") @db.Timestamptz
   status        PlanStepStatus
   completedAt   DateTime?      @map("completed_at") @db.Timestamptz
-  notes         String?
+  rationale     String?
   plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
   batch         Batch          @relation(fields: [batchId], references: [id])
   coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)

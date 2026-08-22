@@ -36,9 +36,12 @@ Core domain rules include:
 - Telemetry ingestion is idempotent.
 - Completed plan steps are historical facts and cannot be replanned.
 - AI proposals require deterministic validation and human approval before activation.
-- Initial planning is scoped to selected batches and one selected destination; every scoped batch must be dispatched there within its current deterministic remaining quality window.
+- Routine landing intake, weighing, grading, sensor association, and deterministic quality assessment happen before AI planning. The planner chooses future logistics only.
+- Initial planning is scoped to selected batches and one persisted destination; revisions inherit that destination and every scoped batch must be loaded then dispatched there within its deterministic remaining quality window.
 - New initial plans require one persisted plan-level arrival deadline. Revisions inherit it, and dispatch arrival must satisfy both that deadline and each batch's quality deadline.
-- AI planning may return a transient infeasible result with a reason. Infeasible results are never persisted as plans.
+- AI planning returns either a `PROPOSAL` or transient `NO_VALID_PROPOSAL_FOUND`; the latter means the model run produced no valid proposal, not proof of mathematical infeasibility, and is never persisted.
+- Generated actions are `STORE`, `LOAD`, `DISPATCH`, and conditional `INSPECT`. Direct `LOAD -> DISPATCH` is preferred when feasible; storage is not mandatory. Dispatch uses the same vehicle as the preceding load and one selected destination. `HANDOVER` and `OTHER` remain readable only as legacy history.
+- Generated step rationale is explanatory only. Deadlines and quality limits are structured backend-owned values, never extracted from model prose.
 - Only configured resources may be used in a plan.
 - Completing the final upcoming step atomically completes the active plan and releases its batch scope.
 - A completed plan cannot be revised. Direct pending revisions are dismissed when their predecessor completes.
@@ -46,7 +49,7 @@ Core domain rules include:
 - A plan has explicit batch scope. Multiple plans may be active for one user, but a batch may belong to at most one active plan.
 - Active-scope overlap is enforced transactionally during approval under a per-user PostgreSQL advisory lock; PostgreSQL cannot express the cross-table status constraint as a simple partial index.
 - Initial plan creation remains web-only. Linked Telegram operators may query operational state and may report supported operational facts only after preview and explicit confirmation.
-- A confirmed Telegram report atomically creates a `TELEGRAM` operational event and updates the authoritative fact. Replanning, revision approval, and dismissal remain separate explicit decisions; approval requires final confirmation.
+- A confirmed Telegram report atomically creates a `TELEGRAM` operational event and updates the authoritative fact. Replanning, revision approval, and dismissal remain separate explicit decisions; approval requires final confirmation. An unsuccessful revision leaves the active plan unchanged.
 - Telegram conversations persist a runtime-validated pending-state envelope and the newest 10 visible messages with rolling 30-minute expiry; legacy direct pending JSON is normalized without a migration. Clarification and report-correction slots merge deterministically, with newly supplied non-null values taking precedence. Webhook update IDs are replay-protected, and callback queries use bounded inline actions.
 
 Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep transport DTOs out of the domain and do not expose secrets or private operator data in logs or errors.
@@ -62,7 +65,7 @@ Validate all HTTP, sensor, WhatsApp, and LLM data at their boundaries. Keep tran
 
 Telegram development uses an HTTPS webhook at `${PUBLIC_BASE_URL}/api/integrations/telegram/webhook`. Point ngrok at backend port `3000`, configure `TELEGRAM_BOT_TOKEN` and a random `TELEGRAM_WEBHOOK_SECRET`, then restart the backend to register the current URL. Operators permanently link their chat from the Overview page using a single-use token that expires after 10 minutes.
 
-Plan generation and natural-language revision run through LangGraph. Graph nodes load context, invoke the LangChain chat model, parse feasible or infeasible output, refresh context, and route up to two deterministic validation repairs. Prisma remains authoritative for feasible proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
+Plan generation and natural-language revision run through LangGraph. Graph nodes load context with concrete UTC resource windows, invoke the LangChain chat model with a structured response schema, parse `PROPOSAL` or `NO_VALID_PROPOSAL_FOUND`, refresh context, and route up to two deterministic validation repairs. Prisma remains authoritative for proposal persistence, approval, completed-step history, and concurrency; graph execution does not save or activate plans.
 
 Before Telegram intent/slot extraction, the backend loads a compact user-scoped snapshot of every active/proposed plan plus bounded current batches, resources, sensors, and active alerts. Extraction receives that snapshot, pending structured state, the newest 10 total visible messages, and the current message, with one bounded repair and no regex fallback. Incident facts remain reports unless the operator explicitly requests replanning; `V2` is a display version, not a database ID.
 

@@ -1,14 +1,27 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { planSnapshot, type AiPlanProposal, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
+import { generatedPlanActionTypes, planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep } from '../../domain/plans/plans';
 import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
 const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
 const maximumListedPlans = 50;
 const recentReadingsPerBatch = 24;
+const jakartaOffsetMilliseconds = 7 * 60 * 60_000;
+
+function dailyIntervals(now: Date, start: Date, end: Date) {
+  const local = new Date(now.getTime() + jakartaOffsetMilliseconds);
+  const startMinute = start.getUTCHours() * 60 + start.getUTCMinutes();
+  const endMinute = end.getUTCHours() * 60 + end.getUTCMinutes();
+  return [0, 1, 2].map((day) => {
+    const startAt = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day, start.getUTCHours() - 7, start.getUTCMinutes()));
+    const endAt = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day + (endMinute < startMinute ? 1 : 0), end.getUTCHours() - 7, end.getUTCMinutes()));
+    return { start: startAt.toISOString(), end: endAt.toISOString() };
+  }).filter(({ end }) => new Date(end) > now).slice(0, 2);
+}
 
 const planInclude = {
+  destination: { select: { id: true, name: true } },
   batches: { orderBy: { batchId: 'asc' as const }, select: { batch: { select: { id: true, code: true } } } },
   triggerEvent: { select: { id: true, type: true, source: true, rawMessage: true, structuredData: true, occurredAt: true } },
   steps: {
@@ -41,7 +54,8 @@ function serializePlan(plan: StoredPlan): PlanView {
     version: plan.version,
     status: plan.status,
     previousPlanId: plan.previousPlanId?.toString() ?? null,
-    reason: plan.reason,
+    summary: plan.summary,
+    destinationId: plan.destinationId?.toString() ?? null,
     deadline: plan.deadline?.toISOString() ?? null,
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
@@ -55,13 +69,11 @@ function serializePlan(plan: StoredPlan): PlanView {
       occurredAt: plan.triggerEvent.occurredAt.toISOString(),
     } : null,
     steps: plan.steps.map((step) => {
-      const resource = step.actionType === 'STORE' && step.coldStorage
-        ? { type: 'COLD_STORAGE' as const, id: step.coldStorage.id.toString(), name: step.coldStorage.name }
-        : step.actionType === 'LOAD' && step.vehicle
-          ? { type: 'VEHICLE' as const, id: step.vehicle.id.toString(), name: step.vehicle.code }
-          : (step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && step.destination
-            ? { type: 'DESTINATION' as const, id: step.destination.id.toString(), name: step.destination.name }
-            : null;
+      const resources = [
+        ...(step.coldStorage ? [{ type: 'COLD_STORAGE' as const, id: step.coldStorage.id.toString(), name: step.coldStorage.name }] : []),
+        ...(step.vehicle ? [{ type: 'VEHICLE' as const, id: step.vehicle.id.toString(), name: step.vehicle.code }] : []),
+        ...(step.destination ? [{ type: 'DESTINATION' as const, id: step.destination.id.toString(), name: step.destination.name }] : []),
+      ];
       return {
         id: step.id.toString(),
         sequence: step.sequence,
@@ -69,9 +81,9 @@ function serializePlan(plan: StoredPlan): PlanView {
         scheduledAt: step.scheduledAt.toISOString(),
         status: step.status,
         completedAt: step.completedAt?.toISOString() ?? null,
-        notes: step.notes,
+        rationale: step.rationale,
         batch: { id: step.batch.id.toString(), code: step.batch.code },
-        resource,
+        resources,
       };
     }),
   };
@@ -87,7 +99,7 @@ function planningStep(step: {
   scheduledAt: Date;
   status: PlanningPlanStep['status'];
   completedAt: Date | null;
-  notes: string | null;
+  rationale: string | null;
 }): PlanningPlanStep {
   return {
     sequence: step.sequence,
@@ -99,7 +111,7 @@ function planningStep(step: {
     scheduledAt: step.scheduledAt.toISOString(),
     status: step.status,
     completedAt: step.completedAt?.toISOString() ?? null,
-    notes: step.notes,
+    rationale: step.rationale,
   };
 }
 
@@ -117,7 +129,7 @@ function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {
     destinationId: step.destinationId ? BigInt(step.destinationId) : null,
     scheduledAt: new Date(step.scheduledAt),
     status: 'UPCOMING' as const,
-    notes: step.notes ?? null,
+    rationale: step.rationale,
   };
 }
 
@@ -130,7 +142,7 @@ function completedFacts(steps: Array<{
   destinationId: bigint | null;
   scheduledAt: Date;
   completedAt: Date | null;
-  notes: string | null;
+  rationale: string | null;
 }>) {
   return JSON.stringify(steps.map((step) => [
     step.sequence,
@@ -141,13 +153,14 @@ function completedFacts(steps: Array<{
     step.destinationId?.toString() ?? null,
     step.scheduledAt.toISOString(),
     step.completedAt?.toISOString() ?? null,
-    step.notes,
+    step.rationale,
   ]));
 }
 
 type PlanningClient = Pick<Prisma.TransactionClient, 'batch' | 'coldStorage' | 'vehicle' | 'destination' | 'plan'>;
 
 async function loadPlanningContext(client: PlanningClient, userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext> {
+  const now = new Date();
   const [batches, coldStorages, vehicles, destinations, currentPlan] = await Promise.all([
     client.batch.findMany({
       where: { id: { in: batchIds }, userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
@@ -183,16 +196,17 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       select: {
         id: true,
         version: true,
-        reason: true,
+        summary: true,
+        destinationId: true,
         deadline: true,
-        steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, notes: true } },
+        steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true } },
       },
     }),
   ]);
   return {
-    now: new Date().toISOString(),
-    selectedDestinationId: null,
-    deadline: null,
+    now: now.toISOString(),
+    selectedDestinationId: currentPlan?.destinationId?.toString() ?? null,
+    deadline: currentPlan?.deadline?.toISOString() ?? null,
     batches: batches.map((batch) => {
       const quality = batch.equivalentQualityAgeDays !== null && batch.remainingQualityWindowDays !== null && batch.qualityEstimateStartedAt && batch.currentTemperatureC !== null ? {
         equivalentQualityAgeDays: batch.equivalentQualityAgeDays,
@@ -229,23 +243,22 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       delayMinutes: resource.delayMinutes,
       delayPersistent: resource.delayPersistent,
       restriction: resource.restriction,
-      availabilityStart: resource.availabilityStart?.toISOString().slice(11, 16) ?? null,
-      availabilityEnd: resource.availabilityEnd?.toISOString().slice(11, 16) ?? null,
+      availabilityIntervals: resource.availabilityStart && resource.availabilityEnd ? dailyIntervals(now, resource.availabilityStart, resource.availabilityEnd) : null,
     })),
     destinations: destinations.map((resource) => ({
       id: resource.id.toString(),
       name: resource.name,
       address: resource.address,
       travelMinutes: resource.travelMinutes,
-      receivingStart: resource.receivingStart.toISOString().slice(11, 16),
-      receivingEnd: resource.receivingEnd.toISOString().slice(11, 16),
+      receivingIntervals: dailyIntervals(now, resource.receivingStart, resource.receivingEnd),
       status: resource.status,
       notes: resource.notes,
     })),
     currentPlan: currentPlan ? {
       id: currentPlan.id.toString(),
       version: currentPlan.version,
-      reason: currentPlan.reason,
+      summary: currentPlan.summary,
+      destinationId: currentPlan.destinationId?.toString() ?? null,
       deadline: currentPlan.deadline?.toISOString() ?? null,
       steps: currentPlan.steps.map(planningStep),
     } : null,
@@ -253,27 +266,28 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
 }
 
 function storedProposal(plan: {
-  reason: string;
+  summary: string;
   steps: Array<{
-    actionType: AiPlanProposal['steps'][number]['actionType'];
+    actionType: PlanActionType;
     batchId: bigint;
     coldStorageId: bigint | null;
     vehicleId: bigint | null;
     destinationId: bigint | null;
     scheduledAt: Date;
-    notes: string | null;
+    rationale: string | null;
   }>;
 }): AiPlanProposal {
+  if (plan.steps.some((step) => !generatedPlanActionTypes.includes(step.actionType as typeof generatedPlanActionTypes[number]))) throw new ConflictError('Legacy proposal uses unsupported actions');
   return {
-    reason: plan.reason,
+    summary: plan.summary,
     steps: plan.steps.map((step) => ({
-      actionType: step.actionType,
+      actionType: step.actionType as typeof generatedPlanActionTypes[number],
       batchId: step.batchId.toString(),
       scheduledAt: step.scheduledAt.toISOString(),
       ...(step.coldStorageId ? { coldStorageId: step.coldStorageId.toString() } : {}),
       ...(step.vehicleId ? { vehicleId: step.vehicleId.toString() } : {}),
       ...(step.destinationId ? { destinationId: step.destinationId.toString() } : {}),
-      ...(step.notes ? { notes: step.notes } : {}),
+      rationale: step.rationale ?? 'Historical step',
     })),
   };
 }
@@ -317,7 +331,7 @@ export class PlanRepository implements PlanRepositoryPort {
     return loadPlanningContext(this.database, userId, batchIds, planId);
   }
 
-  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
+  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationId: bigint, deadline: string | null, expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
       if (options.triggerEventId !== undefined) {
@@ -331,23 +345,26 @@ export class PlanRepository implements PlanRepositoryPort {
           status: true,
           previousPlanId: true,
           version: true,
-          reason: true,
+          summary: true,
+          destinationId: true,
           deadline: true,
           steps: {
             orderBy: { sequence: 'asc' },
-            select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, notes: true },
+            select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true },
           },
         },
       }) : null;
       const currentSnapshot = currentPlan ? {
         id: currentPlan.id.toString(),
         version: currentPlan.version,
-        reason: currentPlan.reason,
+        summary: currentPlan.summary,
+        destinationId: currentPlan.destinationId?.toString() ?? null,
         deadline: currentPlan.deadline?.toISOString() ?? null,
         steps: currentPlan.steps.map(planningStep),
       } : null;
       if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Current plan changed while generating the proposal');
       if (currentSnapshot && deadline !== currentSnapshot.deadline) throw new ConflictError('Plan deadline changed while generating the proposal');
+      if (currentSnapshot && currentSnapshot.destinationId !== destinationId.toString()) throw new ConflictError('Plan destination changed while generating the proposal');
       if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Proposal changed while generating its replacement');
       if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Active plan changed while generating its revision');
       const latest = await transaction.plan.aggregate({ where: { userId }, _max: { version: true } });
@@ -360,7 +377,8 @@ export class PlanRepository implements PlanRepositoryPort {
           status: 'PROPOSED',
           previousPlanId: currentPlan?.status === 'PROPOSED' ? currentPlan.previousPlanId : currentPlan?.id ?? null,
           triggerEventId: options.triggerEventId ?? null,
-          reason: proposal.reason,
+          summary: proposal.summary,
+          destinationId,
           deadline: deadline ? new Date(deadline) : null,
           batches: { create: batchIds.map((batchId) => ({ batchId })) },
           steps: {
@@ -385,10 +403,11 @@ export class PlanRepository implements PlanRepositoryPort {
         select: {
           status: true,
           previousPlanId: true,
-          reason: true,
+          summary: true,
+          destinationId: true,
           deadline: true,
           batches: { select: { batchId: true } },
-          steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, notes: true } },
+          steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, rationale: true } },
         },
       });
       if (!proposal) throw new NotFoundError('Plan');
@@ -396,8 +415,9 @@ export class PlanRepository implements PlanRepositoryPort {
       const scope = proposal.batches.map(({ batchId }) => batchId);
       if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
       const loadedContext = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
-      const context = { ...loadedContext, deadline: proposal.deadline?.toISOString() ?? null };
-      const errors = validate(storedProposal({ reason: proposal.reason, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
+      const context = { ...loadedContext, selectedDestinationId: proposal.destinationId?.toString() ?? null, deadline: proposal.deadline?.toISOString() ?? null };
+      if (!context.selectedDestinationId) throw new ConflictError('Plan proposal has no selected destination');
+      const errors = validate(storedProposal({ summary: proposal.summary, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
       if (errors.length) throw new ConflictError('Plan proposal is no longer feasible');
       if (proposal.previousPlanId && !context.currentPlan) throw new ConflictError('Plan proposal is stale');
       if (context.currentPlan && context.currentPlan.id !== proposal.previousPlanId?.toString()) throw new ConflictError('Plan proposal is stale');
@@ -432,7 +452,7 @@ export class PlanRepository implements PlanRepositoryPort {
       await lockUser(transaction, userId);
       const proposal = await transaction.plan.findFirst({ where: { id: planId, userId } });
       if (!proposal) throw new NotFoundError('Plan');
-      if (proposal.status !== 'PROPOSED' && proposal.status !== 'ACTIVE') throw new ConflictError('Plan is not a proposal or active');
+      if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
       return serializePlan(await transaction.plan.update({ where: { id: planId }, data: { status: 'DISMISSED' }, include: planInclude }));
     });
   }

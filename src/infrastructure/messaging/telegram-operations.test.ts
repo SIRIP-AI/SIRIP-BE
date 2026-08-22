@@ -111,7 +111,7 @@ test('typed confirmation starts the final approval confirmation for a proposal',
 });
 
 function plan(status: PlanView['status'] = 'ACTIVE'): PlanView {
-  return { id: '30', version: 3, status, previousPlanId: null, reason: 'Current route', deadline: null, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
+  return { id: '30', version: 3, status, previousPlanId: null, summary: 'Current route', destinationId: '3', deadline: null, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
 }
 
 test('direct replanning remains preview-only until confirmation', async () => {
@@ -121,6 +121,19 @@ test('direct replanning remains preview-only until confirmation', async () => {
   const reply = await new TelegramOperations(memory.database, plans, model({ intent: 'REPLAN', planRef: '3', instruction: 'use another truck' })).handle(1n, 'replan plan 3 because use another truck', null, new Date('2026-08-21T10:00:00.000Z'));
   assert.match(reply.text, /Generate a proposal/);
   assert.equal(revisions, 0);
+});
+
+test('unsuccessful replanning keeps the active plan unchanged', async () => {
+  const memory = memoryDatabase({ pending: { kind: 'REPLAN_CONFIRM', planId: '30', instruction: 'use another truck' }, messages: [] });
+  let dismissals = 0;
+  const plans = {
+    revise: async () => ({ status: 'NO_VALID_PROPOSAL_FOUND' as const, reason: 'No replacement truck is available.' }),
+    dismiss: async () => { dismissals += 1; return plan('DISMISSED'); },
+  } as unknown as PlanService;
+  const reply = await new TelegramOperations(memory.database, plans).handle(1n, null, 'replan:confirm', new Date());
+  assert.match(reply.text, /remains unchanged/);
+  assert.equal(dismissals, 0);
+  assert.equal(parseConversation(memory.get()!.state)!.pending, null);
 });
 
 test('report occurrence and recovery helpers preserve deterministic behavior', () => {

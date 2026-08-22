@@ -167,8 +167,8 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 }
 
 function proposalText(plan: PlanView) {
-  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`);
-  const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
+  const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
   return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...steps].join('\n');
 }
 
@@ -252,8 +252,8 @@ export class TelegramOperations {
       const matches = list.activePlans;
       if (!matches.length) return { text: 'No active plans.' };
       const lines = matches.flatMap((plan) => {
-        const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+        const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
       });
       return { text: lines.join('\n') };
     }
@@ -309,10 +309,10 @@ export class TelegramOperations {
     const list = await this.plans.list(userId);
     const plans = [...list.activePlans, ...list.proposedPlans];
     if (kind === 'plans') return plans.map((plan) => {
-      const reason = plan.reason.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
+      const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
       return `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
     });
-    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resource ? ` -> ${step.resource.name}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
+    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {
@@ -475,10 +475,9 @@ export class TelegramOperations {
 
   private async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint): Promise<TelegramReply> {
     const result = await this.plans.revise(userId, planId, instruction, triggerEventId);
-    if (result.status === 'INFEASIBLE') { 
-      await this.plans.dismiss(userId, planId);
-      await this.clearPending(userId); 
-      return { text: `No feasible revision: ${result.reason}\n\nThe active plan has been dismissed.` }; 
+    if (result.status === 'NO_VALID_PROPOSAL_FOUND') {
+      await this.clearPending(userId);
+      return { text: `No valid revision proposal was found: ${result.reason}\n\nThe active plan remains unchanged.` };
     }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
     return { text: `${proposalText(result.proposal)}\n\nReply with a natural-language edit, or use an action below.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };

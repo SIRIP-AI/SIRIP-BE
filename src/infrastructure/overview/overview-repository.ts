@@ -31,12 +31,12 @@ function alertMetadata(value: Prisma.JsonValue): AlertMetadata | null {
   };
 }
 
-function resource(step: {
+function resources(step: {
   coldStorage: { name: string } | null;
   vehicle: { code: string } | null;
   destination: { name: string } | null;
 }) {
-  return step.coldStorage?.name ?? step.vehicle?.code ?? step.destination?.name ?? null;
+  return [step.coldStorage?.name, step.vehicle?.code, step.destination?.name].filter((value): value is string => Boolean(value));
 }
 
 export class OverviewRepository {
@@ -117,7 +117,7 @@ export class OverviewRepository {
           id: true,
           version: true,
           status: true,
-          reason: true,
+          summary: true,
           steps: {
             where: { status: { in: ['UPCOMING', 'COMPLETED'] }, batch: { deletedAt: null } },
             orderBy: { sequence: 'asc' },
@@ -188,7 +188,7 @@ export class OverviewRepository {
         id: activePlan.id.toString(),
         version: activePlan.version,
         status: activePlan.status,
-        reason: activePlan.reason,
+        summary: activePlan.summary,
         steps: activePlan.steps.map((step) => ({
           id: step.id.toString(),
           sequence: step.sequence,
@@ -196,7 +196,7 @@ export class OverviewRepository {
           scheduledAt: step.scheduledAt.toISOString(),
           status: step.status,
           batchCode: step.batch.code,
-          resource: resource(step),
+          resources: resources(step),
         })),
       } : null,
       alerts,

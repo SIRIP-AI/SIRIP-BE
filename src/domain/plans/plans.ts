@@ -1,29 +1,31 @@
 export const planActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'HANDOVER', 'INSPECT', 'OTHER'] as const;
+export const generatedPlanActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'INSPECT'] as const;
 export const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
 
 export type PlanActionType = typeof planActionTypes[number];
+export type GeneratedPlanActionType = typeof generatedPlanActionTypes[number];
 export type ActiveBatchStatus = typeof activeBatchStatuses[number];
 export type PlanStatus = 'PROPOSED' | 'ACTIVE' | 'COMPLETED' | 'SUPERSEDED' | 'DISMISSED';
 export type PlanStepStatus = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
 export type AiPlanStep = {
-  actionType: PlanActionType;
+  actionType: GeneratedPlanActionType;
   batchId: string;
   scheduledAt: string;
   coldStorageId?: string;
   vehicleId?: string;
   destinationId?: string;
-  notes?: string;
+  rationale: string;
 };
 
 export type AiPlanProposal = {
-  reason: string;
+  summary: string;
   steps: AiPlanStep[];
 };
 
 export type AiPlanResult =
-  | ({ status: 'FEASIBLE' } & AiPlanProposal)
-  | { status: 'INFEASIBLE'; reason: string };
+  | ({ status: 'PROPOSAL' } & AiPlanProposal)
+  | { status: 'NO_VALID_PROPOSAL_FOUND'; reason: string };
 
 export type PlanningBatch = {
   id: string;
@@ -60,8 +62,7 @@ export type PlanningVehicle = {
   delayMinutes: number;
   delayPersistent: boolean;
   restriction: string | null;
-  availabilityStart: string | null;
-  availabilityEnd: string | null;
+  availabilityIntervals: Array<{ start: string; end: string }> | null;
 };
 
 export type PlanningDestination = {
@@ -69,8 +70,7 @@ export type PlanningDestination = {
   name: string;
   address: string;
   travelMinutes: number;
-  receivingStart: string;
-  receivingEnd: string;
+  receivingIntervals: Array<{ start: string; end: string }>;
   status: 'AVAILABLE' | 'UNAVAILABLE';
   notes: string | null;
 };
@@ -85,13 +85,14 @@ export type PlanningPlanStep = {
   scheduledAt: string;
   status: PlanStepStatus;
   completedAt: string | null;
-  notes: string | null;
+  rationale: string | null;
 };
 
 export type PlanningActivePlan = {
   id: string;
   version: number;
-  reason: string;
+  summary: string;
+  destinationId: string | null;
   deadline: string | null;
   steps: PlanningPlanStep[];
 };
@@ -111,7 +112,8 @@ export function planSnapshot(plan: PlanningActivePlan | null) {
   return JSON.stringify(plan ? [
     plan.id,
     plan.version,
-    plan.reason,
+    plan.summary,
+    plan.destinationId,
     plan.deadline,
     plan.steps.map((step) => [
       step.sequence,
@@ -123,7 +125,7 @@ export function planSnapshot(plan: PlanningActivePlan | null) {
       step.scheduledAt,
       step.status,
       step.completedAt,
-      step.notes,
+      step.rationale,
     ]),
   ] : null);
 }
@@ -139,7 +141,8 @@ export type PlanView = {
   version: number;
   status: PlanStatus;
   previousPlanId: string | null;
-  reason: string;
+  summary: string;
+  destinationId: string | null;
   deadline: string | null;
   createdAt: string;
   approvedAt: string | null;
@@ -159,9 +162,9 @@ export type PlanView = {
     scheduledAt: string;
     status: PlanStepStatus;
     completedAt: string | null;
-    notes: string | null;
+    rationale: string | null;
     batch: { id: string; code: string };
-    resource: PlanResource | null;
+    resources: PlanResource[];
   }>;
 };
 
@@ -176,7 +179,7 @@ export class InvalidPlanProposalError extends Error {}
 
 const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const positiveId = /^[1-9]\d*$/;
-const stepFields = new Set(['actionType', 'batchId', 'scheduledAt', 'coldStorageId', 'vehicleId', 'destinationId', 'notes']);
+const stepFields = new Set(['actionType', 'batchId', 'scheduledAt', 'coldStorageId', 'vehicleId', 'destinationId', 'rationale']);
 
 function invalid(message: string): never {
   throw new InvalidPlanProposalError(message);
@@ -205,21 +208,21 @@ function optionalId(value: unknown, label: string) {
 function parseStep(value: unknown, index: number): AiPlanStep {
   const step = object(value, `steps[${index}]`);
   exactFields(step, stepFields, `steps[${index}]`);
-  if (typeof step.actionType !== 'string' || !planActionTypes.includes(step.actionType as PlanActionType)) invalid(`steps[${index}].actionType is invalid`);
+  if (typeof step.actionType !== 'string' || !generatedPlanActionTypes.includes(step.actionType as GeneratedPlanActionType)) invalid(`steps[${index}].actionType is invalid`);
   if (typeof step.scheduledAt !== 'string' || !isoDateTime.test(step.scheduledAt) || !Number.isFinite(Date.parse(step.scheduledAt))) invalid(`steps[${index}].scheduledAt must be an ISO datetime`);
-  const notes = step.notes === undefined || step.notes === null ? undefined : typeof step.notes === 'string' ? step.notes.trim() : invalid(`steps[${index}].notes must be text`);
-  if (notes !== undefined && (!notes || notes.length > 500)) invalid(`steps[${index}].notes must contain 1 to 500 characters`);
+  const rationale = typeof step.rationale === 'string' ? step.rationale.trim() : invalid(`steps[${index}].rationale must be text`);
+  if (!rationale || rationale.length > 500) invalid(`steps[${index}].rationale must contain 1 to 500 characters`);
   const coldStorageId = optionalId(step.coldStorageId, `steps[${index}].coldStorageId`);
   const vehicleId = optionalId(step.vehicleId, `steps[${index}].vehicleId`);
   const destinationId = optionalId(step.destinationId, `steps[${index}].destinationId`);
   return {
-    actionType: step.actionType as PlanActionType,
+    actionType: step.actionType as GeneratedPlanActionType,
     batchId: id(step.batchId, `steps[${index}].batchId`),
     scheduledAt: new Date(step.scheduledAt).toISOString(),
     ...(coldStorageId ? { coldStorageId } : {}),
     ...(vehicleId ? { vehicleId } : {}),
     ...(destinationId ? { destinationId } : {}),
-    ...(notes ? { notes } : {}),
+    rationale,
   };
 }
 
@@ -231,43 +234,30 @@ export function parseAiPlanResult(content: string): AiPlanResult {
     invalid('AI proposal must be valid JSON');
   }
   const proposal = object(parsed, 'proposal');
-  if (proposal.status !== 'FEASIBLE' && proposal.status !== 'INFEASIBLE') invalid('proposal.status must be FEASIBLE or INFEASIBLE');
-  const reason = typeof proposal.reason === 'string' ? proposal.reason.trim() : '';
-  if (!reason || reason.length > 1000) invalid('proposal.reason must contain 1 to 1000 characters');
-  if (proposal.status === 'INFEASIBLE') {
+  if (proposal.status !== 'PROPOSAL' && proposal.status !== 'NO_VALID_PROPOSAL_FOUND') invalid('proposal.status must be PROPOSAL or NO_VALID_PROPOSAL_FOUND');
+  if (proposal.status === 'NO_VALID_PROPOSAL_FOUND') {
+    const reason = typeof proposal.reason === 'string' ? proposal.reason.trim() : '';
+    if (!reason || reason.length > 1000) invalid('proposal.reason must contain 1 to 1000 characters');
     exactFields(proposal, new Set(['status', 'reason']), 'proposal');
-    return { status: 'INFEASIBLE', reason };
+    return { status: 'NO_VALID_PROPOSAL_FOUND', reason };
   }
-  exactFields(proposal, new Set(['status', 'reason', 'steps']), 'proposal');
+  const summary = typeof proposal.summary === 'string' ? proposal.summary.trim() : '';
+  if (!summary || summary.length > 1000) invalid('proposal.summary must contain 1 to 1000 characters');
+  exactFields(proposal, new Set(['status', 'summary', 'steps']), 'proposal');
   if (!Array.isArray(proposal.steps) || proposal.steps.length < 1 || proposal.steps.length > 100) invalid('proposal.steps must contain 1 to 100 steps');
-  return { status: 'FEASIBLE', reason, steps: proposal.steps.map(parseStep) };
+  return { status: 'PROPOSAL', summary, steps: proposal.steps.map(parseStep) };
 }
 
-function minute(value: string | null) {
-  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
-  const [hour, minutes] = value.split(':').map(Number);
-  if (hour === undefined || minutes === undefined || hour > 23 || minutes > 59) return null;
-  return hour * 60 + minutes;
-}
-
-function utcMinute(value: Date) {
-  return value.getUTCHours() * 60 + value.getUTCMinutes();
-}
-
-function inWindow(value: Date, start: string | null, end: string | null) {
-  const startMinute = minute(start);
-  const endMinute = minute(end);
-  if (startMinute === null && endMinute === null) return true;
-  if (startMinute === null || endMinute === null) return false;
-  const current = utcMinute(value);
-  return current >= startMinute && current <= endMinute;
+function inIntervals(value: Date, intervals: Array<{ start: string; end: string }> | null) {
+  if (intervals === null) return true;
+  return intervals.some(({ start, end }) => value >= new Date(start) && value <= new Date(end));
 }
 
 function resourceCombination(step: AiPlanStep) {
   const present = [step.coldStorageId !== undefined, step.vehicleId !== undefined, step.destinationId !== undefined];
   if (step.actionType === 'STORE') return present[0] && !present[1] && !present[2];
   if (step.actionType === 'LOAD') return !present[0] && present[1] && !present[2];
-  if (step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') return !present[0] && !present[1] && present[2];
+  if (step.actionType === 'DISPATCH') return !present[0] && present[1] && present[2];
   return !present[0] && !present[1] && !present[2];
 }
 
@@ -292,9 +282,10 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   const selectedDestination = context.selectedDestinationId ? destinations.get(context.selectedDestinationId) : undefined;
   const deadline = context.deadline ? new Date(context.deadline) : null;
   const dispatched = new Set<string>();
+  const loadedVehicle = new Map<string, string>();
   let previousTime = Number.NEGATIVE_INFINITY;
 
-  if (!proposal.reason.trim() || proposal.reason.length > 1000) errors.push('Plan reason is invalid');
+  if (!proposal.summary.trim() || proposal.summary.length > 1000) errors.push('Plan summary is invalid');
   if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Plan must contain 1 to 100 future steps');
   if (Number.isNaN(now.getTime())) errors.push('Planning context time is invalid');
   if (deadline && (Number.isNaN(deadline.getTime()) || deadline.getTime() <= now.getTime())) errors.push('Plan deadline must be a valid future datetime');
@@ -311,6 +302,8 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < previousTime) errors.push(`${label} is not in chronological order`);
     if (!Number.isNaN(scheduledAt.getTime())) previousTime = scheduledAt.getTime();
     if (!resourceCombination(step)) errors.push(`${label} has an illegal action/resource combination`);
+    if (dispatched.has(step.batchId)) errors.push(`${label} schedules work after dispatch`);
+    if (step.actionType === 'INSPECT' && batch?.status !== 'INSPECTION_HOLD') errors.push(`${label} invents an inspection requirement`);
 
     const coldStorage = step.coldStorageId ? coldStorages.get(step.coldStorageId) : undefined;
     if (step.coldStorageId && (!positiveId.test(step.coldStorageId) || !coldStorage)) errors.push(`${label} references an unconfigured cold storage`);
@@ -326,25 +319,30 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
 
     const vehicle = step.vehicleId ? vehicles.get(step.vehicleId) : undefined;
     if (step.vehicleId && (!positiveId.test(step.vehicleId) || !vehicle)) errors.push(`${label} references an unconfigured vehicle`);
-    if (step.actionType === 'LOAD' && vehicle) {
+    if ((step.actionType === 'LOAD' || step.actionType === 'DISPATCH') && vehicle) {
       if (vehicle.operationalStatus !== 'AVAILABLE') errors.push(`${label} uses an unavailable vehicle`);
       if (batch && batch.weightKg > vehicle.capacityKg) errors.push(`${label} exceeds vehicle capacity for the batch`);
       if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < now.getTime() + vehicle.delayMinutes * 60_000) errors.push(`${label} does not account for vehicle delay`);
-      if (!Number.isNaN(scheduledAt.getTime()) && !inWindow(scheduledAt, vehicle.availabilityStart, vehicle.availabilityEnd)) errors.push(`${label} is outside vehicle availability`);
+      if (!Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} is outside vehicle availability`);
       if (batch) {
         const assigned = vehicleAssignments.get(vehicle.id) ?? new Set<string>();
         assigned.add(batch.id);
         vehicleAssignments.set(vehicle.id, assigned);
+        if (step.actionType === 'LOAD') {
+          if (loadedVehicle.has(batch.id)) errors.push(`${label} loads a batch more than once`);
+          loadedVehicle.set(batch.id, vehicle.id);
+        }
       }
     }
 
     const destination = step.destinationId ? destinations.get(step.destinationId) : undefined;
     if (step.destinationId && (!positiveId.test(step.destinationId) || !destination)) errors.push(`${label} references an unconfigured destination`);
-    if ((step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && destination) {
+    if (step.actionType === 'DISPATCH' && destination) {
       if (destination.status !== 'AVAILABLE') errors.push(`${label} uses an unavailable destination`);
-      const arrival = new Date(scheduledAt.getTime() + (step.actionType === 'DISPATCH' ? destination.travelMinutes * 60_000 : 0));
-      if (!Number.isNaN(arrival.getTime()) && !inWindow(arrival, destination.receivingStart, destination.receivingEnd)) errors.push(`${label} arrives outside the destination receiving window`);
+      const arrival = new Date(scheduledAt.getTime() + destination.travelMinutes * 60_000);
+      if (!Number.isNaN(arrival.getTime()) && !inIntervals(arrival, destination.receivingIntervals)) errors.push(`${label} arrives outside the destination receiving window`);
       if (step.actionType === 'DISPATCH' && batch) {
+        if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId) errors.push(`${label} must use the vehicle from the preceding load`);
         if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
         else dispatched.add(batch.id);
         if (batch.quality && !Number.isNaN(arrival.getTime())) {

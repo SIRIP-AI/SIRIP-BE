@@ -4,13 +4,13 @@ import type { AiPlanProposal, AiPlanResult, PlanList, PlanningActivePlan, Planni
 export type PlanValidator = (proposal: AiPlanProposal, context: PlanningContext) => string[];
 export type PlanWorkflowInput = { userId: bigint; batchIds: bigint[]; destinationId?: bigint; deadline: string | null; planId?: bigint; instruction?: string };
 export type PlanWorkflow = (input: PlanWorkflowInput) => Promise<{ result: AiPlanResult; context: PlanningContext }>;
-export type PlanGenerationResult = { status: 'FEASIBLE'; proposal: PlanView } | { status: 'INFEASIBLE'; reason: string };
+export type PlanGenerationResult = { status: 'PROPOSAL'; proposal: PlanView } | { status: 'NO_VALID_PROPOSAL_FOUND'; reason: string };
 
 export type PlanRepositoryPort = {
   list(userId: bigint): Promise<PlanList>;
   get(userId: bigint, planId: bigint): Promise<PlanView>;
   loadContext(userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext>;
-  saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options?: { triggerEventId?: bigint; replaceProposalId?: bigint }): Promise<PlanView>;
+  saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationId: bigint, deadline: string | null, expectedPlan: PlanningActivePlan | null, options?: { triggerEventId?: bigint; replaceProposalId?: bigint }): Promise<PlanView>;
   activateProposal(userId: bigint, planId: bigint, validate: PlanValidator): Promise<PlanView>;
   dismissProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   completeStep(userId: bigint, planId: bigint, stepId: bigint): Promise<PlanView>;
@@ -38,19 +38,21 @@ export class PlanService {
   async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint) {
     const plan = await this.repository.get(userId, planId);
     if (plan.status !== 'ACTIVE' && plan.status !== 'PROPOSED') throw new ConflictError('Only active or proposed plans can be revised');
-    return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), undefined, plan.deadline, planId, instruction, triggerEventId, plan.status === 'PROPOSED' ? planId : undefined);
+    if (!plan.destinationId) throw new ConflictError('Legacy plan has no selected destination');
+    return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), BigInt(plan.destinationId), plan.deadline, planId, instruction, triggerEventId, plan.status === 'PROPOSED' ? planId : undefined);
   }
 
   private async generateAndSave(userId: bigint, batchIds: bigint[], destinationId: bigint | undefined, deadline: string | null, planId?: bigint, instruction?: string, triggerEventId?: bigint, replaceProposalId?: bigint): Promise<PlanGenerationResult> {
     const { result, context } = await this.workflow({ userId, batchIds, destinationId, deadline, ...(planId !== undefined ? { planId } : {}), ...(instruction ? { instruction } : {}) });
-    if (result.status === 'INFEASIBLE') return result;
-    const proposal = { reason: result.reason, steps: result.steps };
+    if (result.status === 'NO_VALID_PROPOSAL_FOUND') return result;
+    if (destinationId === undefined) throw new ConflictError('Plan destination is required');
+    const proposal = { summary: result.summary, steps: result.steps };
     const validationErrors = this.validate(proposal, context);
     if (validationErrors.length) {
-      console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors, proposal });
-      throw new RequestError('AI generated an infeasible plan', 502);
+      console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors });
+      throw new RequestError('AI generated an invalid plan', 502);
     }
-    return { status: 'FEASIBLE', proposal: await this.repository.saveProposal(userId, proposal, batchIds, deadline, context.currentPlan, { ...(triggerEventId !== undefined ? { triggerEventId } : {}), ...(replaceProposalId !== undefined ? { replaceProposalId } : {}) }) };
+    return { status: 'PROPOSAL', proposal: await this.repository.saveProposal(userId, proposal, batchIds, destinationId, deadline, context.currentPlan, { ...(triggerEventId !== undefined ? { triggerEventId } : {}), ...(replaceProposalId !== undefined ? { replaceProposalId } : {}) }) };
   }
 
   approve(userId: bigint, planId: bigint) {

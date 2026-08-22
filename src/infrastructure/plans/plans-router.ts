@@ -55,12 +55,12 @@ export function createPlansRouter(service: PlanService) {
   router.post('/proposals', async (request, response) => {
     const input = proposalRequest(request.body);
     const result = await service.generateProposal(userId(response.locals), input.batchIds, input.destinationId, input.deadline, input.triggerEventId);
-    response.status(result.status === 'FEASIBLE' ? 201 : 200).json(result);
+    response.status(result.status === 'PROPOSAL' ? 201 : 200).json(result);
   });
   router.get('/:id', async (request, response) => response.json(await service.get(userId(response.locals), id(request.params.id, 'Plan ID'))));
   router.post('/:id/revisions', async (request, response) => {
     const result = await service.revise(userId(response.locals), id(request.params.id, 'Plan ID'), revisionInstruction(request.body));
-    response.status(result.status === 'FEASIBLE' ? 201 : 200).json(result);
+    response.status(result.status === 'PROPOSAL' ? 201 : 200).json(result);
   });
   router.post('/:id/approve', async (request, response) => response.json(await service.approve(userId(response.locals), id(request.params.id, 'Plan ID'))));
   router.post('/:id/dismiss', async (request, response) => response.json(await service.dismiss(userId(response.locals), id(request.params.id, 'Plan ID'))));
