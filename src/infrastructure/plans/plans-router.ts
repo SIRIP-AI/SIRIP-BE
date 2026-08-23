@@ -32,6 +32,7 @@ function proposalRequest(body: unknown) {
   const rawDestinationIds = Array.isArray(request.destinationIds) ? request.destinationIds : request.destinationId === undefined ? [] : [request.destinationId];
   if (rawDestinationIds.length < 1 || rawDestinationIds.length > 20) throw new RequestError('destinationIds must contain 1 to 20 IDs', 400);
   const destinationIds = rawDestinationIds.map((value) => typeof value === 'string' ? id(value, 'destinationId') : (() => { throw new RequestError('destinationIds must contain positive integer strings', 400); })());
+  if (new Set(destinationIds).size !== destinationIds.length) throw new RequestError('destinationIds must be distinct', 400);
   if (typeof request.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(request.deadline)) throw new RequestError('deadline must be an ISO datetime with timezone', 400);
   const parsedDeadline = new Date(request.deadline);
   if (Number.isNaN(parsedDeadline.getTime()) || parsedDeadline.getTime() <= Date.now()) throw new RequestError('deadline must be in the future', 400);
@@ -59,7 +60,6 @@ export function createPlansRouter(service: PlanService) {
     const result = await service.generateProposal(userId(response.locals), input.batchIds, input.destinationIds, input.deadline, input.triggerEventId);
     response.status(result.status === 'PROPOSAL' ? 201 : 200).json(result);
   });
-  router.post('/options', async (request, response) => { const input = proposalRequest(request.body); response.json(await service.recommendOptions(userId(response.locals), input.batchIds, input.destinationIds, input.deadline)); });
   router.get('/:id', async (request, response) => response.json(await service.get(userId(response.locals), id(request.params.id, 'Plan ID'))));
   router.post('/:id/revisions', async (request, response) => {
     const result = await service.revise(userId(response.locals), id(request.params.id, 'Plan ID'), revisionInstruction(request.body));

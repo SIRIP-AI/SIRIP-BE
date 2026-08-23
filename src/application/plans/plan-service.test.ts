@@ -52,7 +52,7 @@ test('revising a proposal keeps its scope and requests transactional replacement
   assert.equal(generationInstruction, 'Use another truck');
   assert.equal(generationDeadline, deadline);
   assert.deepEqual(saved?.[2], [7n]);
-  assert.equal(saved?.[3], 3n);
+  assert.deepEqual(saved?.[3], [3n]);
   assert.equal(saved?.[4], deadline);
   assert.equal(saved?.[5], currentPlan);
   assert.deepEqual(saved?.[6], { replaceProposalId: 10n });

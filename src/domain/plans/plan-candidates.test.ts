@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { generatePlanCandidates } from './plan-candidates';
+import { generateMultiDestinationCandidates, generatePlanCandidates } from './plan-candidates';
 import { derivePlanningFacts, validateSensiblePlanProposal, type PlanningContext } from './plans';
 
 const context: PlanningContext = {
@@ -64,5 +64,16 @@ test('keeps a vehicle occupied for the full round trip and shares one return acr
     const previousReturn = returns.filter((step) => step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) <= Date.parse(load.scheduledAt)).at(-1);
     const previousDispatch = first.steps.filter((step) => step.actionType === 'DISPATCH' && step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) < Date.parse(load.scheduledAt)).at(-1);
     if (previousDispatch) assert.ok(previousReturn, 'a reused vehicle must have returned before its next load');
+  }
+});
+
+test('treats selected destinations as an acceptable pool', () => {
+  const multi: PlanningContext = { ...context, destinations: [...context.destinations, { ...context.destinations[0]!, id: '4', name: 'Second processor', travelMinutes: 30 }] };
+  const candidates = generateMultiDestinationCandidates(multi, ['3', '4']);
+  assert.ok(candidates.length > 0);
+  for (const candidate of candidates) {
+    const handovers = candidate.proposal.steps.filter(({ actionType }) => actionType === 'HANDOVER');
+    assert.equal(handovers.length, 1);
+    assert.ok(handovers.every(({ destinationId }) => destinationId === '3' || destinationId === '4'));
   }
 });

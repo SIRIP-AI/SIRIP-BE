@@ -1,4 +1,4 @@
-import { addReturnToBaseSteps, evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
+import { addReturnToBaseSteps, derivePlanningFacts, evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
 
 export type PlanCandidate = { id: string; proposal: AiPlanProposal };
 
@@ -75,9 +75,8 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
               timingRationale: `Loading starts ${stepMinutes} minutes before the selected departure so the batch is ready without avoidable waiting.`,
               latestSafeAt: new Date(latestDispatch - stepMinutes * 60_000).toISOString(),
             };
-            const storageId = batchFacts.feasibleColdStorageIds[0];
             const shouldStore = (batch.location?.type ?? 'INTAKE') === 'INTAKE' && dispatchAt - now > 30 * 60_000;
-            if (shouldStore && storageId) choices.push([{ actionType: 'STORE', batchId, coldStorageId: storageId, scheduledAt: new Date(now + 60_000).toISOString(), rationale: `Protect ${batch.code} in cold storage while it waits for dispatch.`, timingRationale: 'Dispatch is more than 30 minutes away, so storage limits avoidable intake exposure.', latestSafeAt: load.scheduledAt }, load, dispatch]);
+            if (shouldStore && batchFacts.feasibleColdStorageIds.length) for (const storageId of batchFacts.feasibleColdStorageIds) choices.push([{ actionType: 'STORE', batchId, coldStorageId: storageId, scheduledAt: new Date(now + 60_000).toISOString(), rationale: `Protect ${batch.code} in cold storage while it waits for dispatch.`, timingRationale: 'Dispatch is more than 30 minutes away, so storage limits avoidable intake exposure.', latestSafeAt: load.scheduledAt }, load, dispatch]);
             else choices.push([load, dispatch]);
           }
           vehicleChoices += 1;
@@ -131,4 +130,41 @@ export function generatePlanCandidates(context: PlanningContext, facts: Planning
     .filter((candidate) => validatePlanProposal(candidate, context).length === 0 && evaluatePlanQuality(candidate, context, facts).length === 0)
     .slice(0, maximumCandidates)
     .map((candidate, index) => ({ id: `candidate-${index + 1}`, proposal: candidate }));
+}
+
+export function generateMultiDestinationCandidates(context: PlanningContext, destinationIds: string[]): PlanCandidate[] {
+  if (destinationIds.length === 1) {
+    const scoped = { ...context, selectedDestinationId: destinationIds[0]!, acceptableDestinationIds: destinationIds };
+    return generatePlanCandidates(scoped, derivePlanningFacts(scoped));
+  }
+  let assignments: string[][] = [[]];
+  for (const _batch of context.batches) {
+    const next = assignments.flatMap((assignment) => destinationIds.map((destinationId) => [...assignment, destinationId]));
+    assignments = next.slice(0, 64);
+  }
+  const diverseAssignments = [
+    ...destinationIds.map((destinationId) => context.batches.map(() => destinationId)),
+    ...destinationIds.map((_, offset) => context.batches.map((__, index) => destinationIds[(index + offset) % destinationIds.length]!)),
+    ...assignments,
+  ];
+  assignments = [...new Map(diverseAssignments.map((assignment) => [assignment.join(':'), assignment])).values()].slice(0, 64);
+  const candidates: AiPlanProposal[] = [];
+  for (const assignment of assignments) {
+    let partials: AiPlanStep[][] = [[]];
+    let feasible = true;
+    for (const destinationId of new Set(assignment)) {
+      const batchIds = new Set(context.batches.filter((_, index) => assignment[index] === destinationId).map(({ id }) => id));
+      const scoped = { ...context, batches: context.batches.filter(({ id }) => batchIds.has(id)), selectedDestinationId: destinationId, acceptableDestinationIds: destinationIds };
+      const groupCandidates = generatePlanCandidates(scoped, derivePlanningFacts(scoped));
+      if (!groupCandidates.length) { feasible = false; break; }
+      partials = partials.flatMap((partial) => groupCandidates.map((candidate) => [...partial, ...candidate.proposal.steps])).slice(0, maximumPartialPlans);
+    }
+    if (!feasible) continue;
+    for (const steps of partials) {
+      const proposal = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic multi-destination logistics plan', steps }), { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds });
+      if (validatePlanProposal(proposal, { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds }).length === 0) candidates.push(proposal);
+    }
+  }
+  const unique = [...new Map(candidates.map((proposal) => [proposalKey(proposal), proposal])).values()].slice(0, maximumCandidates);
+  return unique.map((proposal, index) => ({ id: `candidate-${index + 1}`, proposal }));
 }

@@ -348,6 +348,7 @@ model Destination {
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
   plans             Plan[]             @relation("PlanDestination")
+  acceptedPlans     PlanDestination[]
   currentBatches    Batch[]             @relation("BatchCurrentDestination")
 
   @@unique([userId, name])
@@ -403,6 +404,7 @@ model Plan {
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
   batches        PlanBatch[]
+  acceptableDestinations PlanDestination[]
 
   @@unique([userId, version])
   @@index([userId, status, createdAt])
@@ -420,6 +422,17 @@ model PlanBatch {
   @@id([planId, batchId])
   @@index([batchId])
   @@map("plan_batches")
+}
+
+model PlanDestination {
+  planId        BigInt @map("plan_id")
+  destinationId BigInt @map("destination_id")
+  plan          Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  destination   Destination @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+
+  @@id([planId, destinationId])
+  @@index([destinationId])
+  @@map("plan_destinations")
 }
 
 model PlanStep {

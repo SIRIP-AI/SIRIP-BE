@@ -98,6 +98,7 @@ export type PlanningActivePlan = {
   version: number;
   summary: string;
   destinationId: string | null;
+  destinationIds?: string[];
   deadline: string | null;
   steps: PlanningPlanStep[];
 };
@@ -114,6 +115,7 @@ export type PlanningResourceOccupancy = {
 export type PlanningContext = {
   now: string;
   selectedDestinationId: string | null;
+  acceptableDestinationIds?: string[];
   deadline: string | null;
   batches: PlanningBatch[];
   coldStorages: PlanningColdStorage[];
@@ -154,6 +156,7 @@ export function planSnapshot(plan: PlanningActivePlan | null) {
     plan.version,
     plan.summary,
     plan.destinationId,
+    plan.destinationIds ?? [],
     plan.deadline,
     plan.steps.map((step) => [
       step.sequence,
@@ -185,6 +188,7 @@ export type PlanView = {
   previousPlanId: string | null;
   summary: string;
   destinationId: string | null;
+  destinationIds?: string[];
   deadline: string | null;
   createdAt: string;
   approvedAt: string | null;
@@ -401,6 +405,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   const covered = new Set<string>();
   const occupancies = (context.resourceOccupancies ?? []).map((occupancy) => ({ ...occupancy }));
   const selectedDestination = context.selectedDestinationId ? destinations.get(context.selectedDestinationId) : undefined;
+  const acceptableDestinationIds = new Set(context.acceptableDestinationIds ?? (context.selectedDestinationId ? [context.selectedDestinationId] : []));
   const deadline = context.deadline ? new Date(context.deadline) : null;
   const dispatched = new Set<string>();
   const departed = new Set<string>();
@@ -430,6 +435,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   if (Number.isNaN(now.getTime())) errors.push('Planning context time is invalid');
   if (deadline && (Number.isNaN(deadline.getTime()) || deadline.getTime() <= now.getTime())) errors.push('Plan deadline must be a valid future datetime');
   if (context.selectedDestinationId && (!selectedDestination || selectedDestination.status !== 'AVAILABLE')) errors.push('Selected destination is unavailable or unconfigured');
+  for (const destinationId of acceptableDestinationIds) if (destinations.get(destinationId)?.status !== 'AVAILABLE') errors.push(`Acceptable destination ${destinationId} is unavailable or unconfigured`);
   for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} has no quality state`);
 
   proposal.steps.forEach((step, index) => {
@@ -498,6 +504,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
           else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: occupiedUntil });
         }
         if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
+        if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} does not use an acceptable destination`);
         else { departed.add(batch.id); if (!requiresHandover) dispatched.add(batch.id); }
         if (batch.quality && !Number.isNaN(arrival.getTime())) {
           const deadline = now.getTime() + batch.quality.remainingQualityWindowDays * 86_400_000;
@@ -511,6 +518,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
       const dispatch = proposal.steps.find((candidate) => candidate.actionType === 'DISPATCH' && candidate.batchId === batch.id && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId);
       if (!dispatch || Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 60_000 !== scheduledAt.getTime()) errors.push(`${label} must occur at destination arrival`);
       if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
+      if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} does not use an acceptable destination`);
       else dispatched.add(batch.id);
     }
     if (step.actionType === 'RETURN_TO_BASE') {
@@ -542,7 +550,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     }
   }
   for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
-  if (context.selectedDestinationId) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(`Active batch ${batch.id} is not dispatched to the selected destination`);
+  if (context.selectedDestinationId || acceptableDestinationIds.size) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(context.selectedDestinationId ? `Active batch ${batch.id} is not dispatched to the selected destination` : `Active batch ${batch.id} is not handed over to an acceptable destination`);
   return errors;
 }
 

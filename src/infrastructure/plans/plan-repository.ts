@@ -23,6 +23,7 @@ function dailyIntervals(now: Date, start: Date, end: Date) {
 const planInclude = {
   destination: { select: { id: true, name: true } },
   batches: { orderBy: { batchId: 'asc' as const }, select: { batch: { select: { id: true, code: true } } } },
+  acceptableDestinations: { orderBy: { destinationId: 'asc' as const }, select: { destination: { select: { id: true, name: true } } } },
   triggerEvent: { select: { id: true, type: true, source: true, rawMessage: true, structuredData: true, occurredAt: true } },
   steps: {
     orderBy: { sequence: 'asc' as const },
@@ -56,6 +57,7 @@ function serializePlan(plan: StoredPlan): PlanView {
     previousPlanId: plan.previousPlanId?.toString() ?? null,
     summary: plan.summary,
     destinationId: plan.destinationId?.toString() ?? null,
+    destinationIds: (plan.acceptableDestinations ?? []).map(({ destination }) => destination.id.toString()),
     deadline: plan.deadline?.toISOString() ?? null,
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
@@ -255,6 +257,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
         version: true,
         summary: true,
         destinationId: true,
+        acceptableDestinations: { select: { destinationId: true } },
         deadline: true,
         steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
       },
@@ -267,6 +270,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
   return {
     now: now.toISOString(),
     selectedDestinationId: currentPlan?.destinationId?.toString() ?? null,
+    acceptableDestinationIds: currentPlan?.acceptableDestinations?.map(({ destinationId }) => destinationId.toString()) ?? [],
     deadline: currentPlan?.deadline?.toISOString() ?? null,
     batches: batches.map((batch) => {
       const quality = batch.equivalentQualityAgeDays !== null && batch.remainingQualityWindowDays !== null && batch.qualityEstimateStartedAt && batch.currentTemperatureC !== null ? {
@@ -321,6 +325,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
       version: currentPlan.version,
       summary: currentPlan.summary,
       destinationId: currentPlan.destinationId?.toString() ?? null,
+      destinationIds: currentPlan.acceptableDestinations?.map(({ destinationId }) => destinationId.toString()) ?? (currentPlan.destinationId ? [currentPlan.destinationId.toString()] : []),
       deadline: currentPlan.deadline?.toISOString() ?? null,
       steps: currentPlan.steps.map(planningStep),
     } : null,
@@ -402,7 +407,7 @@ export class PlanRepository implements PlanRepositoryPort {
     return loadPlanningContext(this.database, userId, batchIds, planId);
   }
 
-  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationId: bigint, deadline: string | null, expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
+  async saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options: { triggerEventId?: bigint; replaceProposalId?: bigint } = {}) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
       if (options.triggerEventId !== undefined) {
@@ -418,6 +423,7 @@ export class PlanRepository implements PlanRepositoryPort {
           version: true,
           summary: true,
           destinationId: true,
+          acceptableDestinations: { select: { destinationId: true } },
           deadline: true,
           steps: {
             orderBy: { sequence: 'asc' },
@@ -430,17 +436,19 @@ export class PlanRepository implements PlanRepositoryPort {
         version: currentPlan.version,
         summary: currentPlan.summary,
         destinationId: currentPlan.destinationId?.toString() ?? null,
+        destinationIds: currentPlan.acceptableDestinations?.map(({ destinationId }) => destinationId.toString()) ?? (currentPlan.destinationId ? [currentPlan.destinationId.toString()] : []),
         deadline: currentPlan.deadline?.toISOString() ?? null,
         steps: currentPlan.steps.map(planningStep),
       } : null;
       if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Current plan changed while generating the proposal');
       if (currentSnapshot && deadline !== currentSnapshot.deadline) throw new ConflictError('Plan deadline changed while generating the proposal');
-      if (currentSnapshot && currentSnapshot.destinationId !== destinationId.toString()) throw new ConflictError('Plan destination changed while generating the proposal');
+      if (currentSnapshot && JSON.stringify(currentSnapshot.destinationIds) !== JSON.stringify(destinationIds.map(String))) throw new ConflictError('Plan destination scope changed while generating the proposal');
       if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Proposal changed while generating its replacement');
       if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Active plan changed while generating its revision');
       const latest = await transaction.plan.aggregate({ where: { userId }, _max: { version: true } });
       const completed = currentPlan?.steps.filter((step) => step.status === 'COMPLETED') ?? [];
       const nextSequence = completed.reduce((maximum, step) => Math.max(maximum, step.sequence), 0) + 1;
+      const usedDestinations = [...new Set(proposal.steps.flatMap((step) => step.actionType === 'HANDOVER' && step.destinationId ? [step.destinationId] : []))];
       const saved = await transaction.plan.create({
         data: {
           userId,
@@ -449,9 +457,10 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: currentPlan?.status === 'PROPOSED' ? currentPlan.previousPlanId : currentPlan?.id ?? null,
           triggerEventId: options.triggerEventId ?? null,
           summary: proposal.summary,
-          destinationId,
+          destinationId: usedDestinations.length === 1 ? BigInt(usedDestinations[0]!) : null,
           deadline: deadline ? new Date(deadline) : null,
           batches: { create: batchIds.map((batchId) => ({ batchId })) },
+          acceptableDestinations: { create: destinationIds.map((destinationId) => ({ destinationId })) },
           steps: {
             create: [
               ...completed.map((step) => ({ ...step, status: 'COMPLETED' as const })),
@@ -476,6 +485,7 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: true,
           summary: true,
           destinationId: true,
+          acceptableDestinations: { select: { destinationId: true } },
           deadline: true,
           batches: { select: { batchId: true } },
           steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
@@ -486,8 +496,10 @@ export class PlanRepository implements PlanRepositoryPort {
       const scope = proposal.batches.map(({ batchId }) => batchId);
       if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
       const loadedContext = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
-      const context = { ...loadedContext, selectedDestinationId: proposal.destinationId?.toString() ?? null, deadline: proposal.deadline?.toISOString() ?? null };
-      if (!context.selectedDestinationId) throw new ConflictError('Plan proposal has no selected destination');
+      const destinationIds = proposal.acceptableDestinations.map(({ destinationId }) => destinationId.toString());
+      const scopeDestinations = destinationIds.length ? destinationIds : proposal.destinationId ? [proposal.destinationId.toString()] : [];
+      const context = { ...loadedContext, selectedDestinationId: scopeDestinations.length === 1 ? scopeDestinations[0]! : null, acceptableDestinationIds: scopeDestinations, deadline: proposal.deadline?.toISOString() ?? null };
+      if (!context.acceptableDestinationIds.length) throw new ConflictError('Plan proposal has no destination scope');
       const errors = validate(storedProposal({ summary: proposal.summary, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
       if (errors.length) throw new ConflictError('Plan proposal is no longer feasible');
       if (proposal.previousPlanId && !context.currentPlan) throw new ConflictError('Plan proposal is stale');

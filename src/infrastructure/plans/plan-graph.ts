@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { PlanRepositoryPort, PlanValidator, PlanWorkflow, PlanWorkflowInput } from '../../application/plans/plan-service';
 import { ConflictError } from '../../domain/errors';
-import { generatePlanCandidates, type PlanCandidate } from '../../domain/plans/plan-candidates';
+import { generateMultiDestinationCandidates, type PlanCandidate } from '../../domain/plans/plan-candidates';
 import { derivePlanningFacts, planSnapshot, type AiPlanResult, type PlanningContext, type PlanningFacts } from '../../domain/plans/plans';
 import { createPlanningModel, messageText, parsePlanSelection, planningMessages, type PlanningModel } from './plan-generator';
 
@@ -11,6 +11,7 @@ const PlanGraphState = Annotation.Root({
   userId: Annotation<string>(),
   batchIds: Annotation<string[]>(),
   destinationId: Annotation<string | null>(),
+  destinationIds: Annotation<string[]>(),
   deadline: Annotation<string | null>(),
   planId: Annotation<string | null>(),
   instruction: Annotation<string | null>(),
@@ -27,13 +28,14 @@ const PlanGraphInputSchema = z.object({
   userId: positiveId,
   batchIds: z.array(positiveId).min(1).max(100),
   destinationId: positiveId.nullable(),
+  destinationIds: z.array(positiveId).max(20).default([]),
   deadline: z.string().datetime({ offset: true }).nullable(),
   planId: positiveId.nullable(),
   instruction: z.string().trim().min(1).max(2000).nullable(),
 });
 const PlanGraphOutputSchema = z.object({ result: z.any(), freshContext: z.any() });
 
-export type PlanGraphInput = Pick<typeof PlanGraphState.State, 'userId' | 'batchIds' | 'destinationId' | 'deadline' | 'planId' | 'instruction'>;
+export type PlanGraphInput = Pick<typeof PlanGraphState.State, 'userId' | 'batchIds' | 'destinationId' | 'destinationIds' | 'deadline' | 'planId' | 'instruction'>;
 export type PlanGraphDependencies = {
   repository: Pick<PlanRepositoryPort, 'loadContext'>;
   validate: PlanValidator;
@@ -47,6 +49,7 @@ function requireGenerationContext(context: PlanningContext) {
   if (!context.vehicles.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available vehicle is required before planning');
   if (!context.destinations.some((resource) => resource.status === 'AVAILABLE')) throw new ConflictError('At least one available destination is required before planning');
   if (context.selectedDestinationId && !context.destinations.some((resource) => resource.id === context.selectedDestinationId && resource.status === 'AVAILABLE')) throw new ConflictError('Selected destination must be available and owned by the user');
+  if (context.acceptableDestinationIds?.some((destinationId) => !context.destinations.some((resource) => resource.id === destinationId && resource.status === 'AVAILABLE'))) throw new ConflictError('Every acceptable destination must be available and owned by the user');
 }
 
 function noCandidateResult(): AiPlanResult {
@@ -54,9 +57,10 @@ function noCandidateResult(): AiPlanResult {
 }
 
 export function createPlanGraph({ repository, validate, model = createPlanningModel }: PlanGraphDependencies) {
+  const destinationScope = (state: typeof PlanGraphState.State) => state.destinationIds.length ? state.destinationIds : state.destinationId ? [state.destinationId] : [];
   const loadContext = async (state: typeof PlanGraphState.State) => {
     const loaded = await repository.loadContext(BigInt(state.userId), state.batchIds.map(BigInt), state.planId ? BigInt(state.planId) : undefined);
-    const context = { ...loaded, selectedDestinationId: state.destinationId, deadline: state.deadline };
+    const destinationIds = destinationScope(state); const context = { ...loaded, selectedDestinationId: destinationIds.length === 1 ? destinationIds[0]! : null, acceptableDestinationIds: destinationIds, deadline: state.deadline };
     if (context.batches.length !== state.batchIds.length) throw new ConflictError('Every selected batch must be active and owned by the user');
     requireGenerationContext(context);
     return { generationContext: context, generationFacts: null, candidates: [], freshContext: null, freshFacts: null, result: null };
@@ -67,7 +71,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const generateCandidates = (state: typeof PlanGraphState.State) => {
     if (!state.generationContext || !state.generationFacts) throw new Error('Planning context is unavailable');
-    return { candidates: generatePlanCandidates(state.generationContext, state.generationFacts) };
+    return { candidates: generateMultiDestinationCandidates(state.generationContext, state.generationContext.acceptableDestinationIds ?? []) };
   };
   const selectCandidate = async (state: typeof PlanGraphState.State) => {
     if (!state.generationContext || !state.generationFacts) throw new Error('Planning context is unavailable');
@@ -83,7 +87,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const refreshContext = async (state: typeof PlanGraphState.State) => {
     const loaded = await repository.loadContext(BigInt(state.userId), state.batchIds.map(BigInt), state.planId ? BigInt(state.planId) : undefined);
-    const context = { ...loaded, selectedDestinationId: state.destinationId, deadline: state.deadline };
+    const destinationIds = destinationScope(state); const context = { ...loaded, selectedDestinationId: destinationIds.length === 1 ? destinationIds[0]! : null, acceptableDestinationIds: destinationIds, deadline: state.deadline };
     if (context.batches.length !== state.batchIds.length) throw new ConflictError('Selected batch scope changed during generation');
     requireGenerationContext(context);
     return { freshContext: context };
@@ -98,7 +102,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     const changed = planSnapshot(state.generationContext.currentPlan) !== planSnapshot(state.freshContext.currentPlan);
     const errors = changed ? ['Current plan changed during generation'] : validate(state.result, state.freshContext);
     if (!errors.length) return {};
-    const freshCandidates = generatePlanCandidates(state.freshContext, state.freshFacts);
+    const freshCandidates = generateMultiDestinationCandidates(state.freshContext, state.freshContext.acceptableDestinationIds ?? []);
     console.warn('[Selected plan became invalid; using fresh deterministic candidate]', { planId: state.planId, errors, candidates: freshCandidates.length });
     return { result: freshCandidates.length ? { status: 'PROPOSAL' as const, ...freshCandidates[0]!.proposal } : noCandidateResult() };
   };
@@ -127,7 +131,8 @@ export function createPlanWorkflow(graph: ReturnType<typeof createPlanGraph>): P
     const result = await graph.invoke({
       userId: input.userId.toString(),
       batchIds: input.batchIds.map(String),
-      destinationId: input.destinationId?.toString() ?? null,
+      destinationId: null,
+      destinationIds: input.destinationIds.map(String),
       deadline: input.deadline,
       planId: input.planId?.toString() ?? null,
       instruction: input.instruction ?? null,
