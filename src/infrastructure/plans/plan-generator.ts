@@ -3,7 +3,7 @@ import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/m
 import { ChatOpenAI } from '@langchain/openai';
 
 import { RequestError } from '../../domain/errors';
-import type { PlanningContext } from '../../domain/plans/plans';
+import type { PlanningContext, PlanningFacts } from '../../domain/plans/plans';
 
 const timeoutMilliseconds = 20_000;
 const maximumPlanResponseBytes = 100_000;
@@ -195,34 +195,7 @@ export function planningProviderError(error: unknown) {
   return new RequestError('AI provider request failed', 502);
 }
 
-function planningHints(context: PlanningContext) {
-  const destination = context.destinations.find(({ id }) => id === context.selectedDestinationId);
-  return {
-    batches: context.batches.map((batch) => ({
-      batchId: batch.id,
-      code: batch.code,
-      weightKg: batch.weightKg,
-      eligibleVehicles: context.vehicles
-        .filter((vehicle) => vehicle.operationalStatus === 'AVAILABLE' && vehicle.capacityKg >= batch.weightKg)
-        .map((vehicle) => ({ vehicleId: vehicle.id, code: vehicle.code, capacityKg: vehicle.capacityKg, availabilityIntervals: vehicle.availabilityIntervals })),
-      eligibleColdStorage: context.coldStorages
-        .filter((storage) => storage.operationalStatus === 'AVAILABLE' && storage.availableCapacityKg >= batch.weightKg)
-        .map((storage) => ({ coldStorageId: storage.id, name: storage.name, availableCapacityKg: storage.availableCapacityKg })),
-    })),
-    selectedDestination: destination ? {
-      destinationId: destination.id,
-      name: destination.name,
-      travelMinutes: destination.travelMinutes,
-      receivingIntervals: destination.receivingIntervals,
-      dispatchIntervals: destination.receivingIntervals.map(({ start, end }) => ({
-        start: new Date(Date.parse(start) - destination.travelMinutes * 60_000).toISOString(),
-        end: new Date(Date.parse(end) - destination.travelMinutes * 60_000).toISOString(),
-      })),
-    } : null,
-  };
-}
-
-export function planningMessages(context: PlanningContext, instruction?: string, parserError?: string, validationErrors: string[] = [], rejectedOutput?: string) {
+export function planningMessages(context: PlanningContext, facts: PlanningFacts, instruction?: string, parserError?: string, validationErrors: string[] = [], rejectedOutput?: string) {
   const repair = parserError
     ? `Your previous answer violated the strict JSON contract. Return only the corrected JSON object without Markdown fences or commentary. Parser error: ${parserError.slice(0, 300)}`
     : validationErrors.length
@@ -232,7 +205,7 @@ export function planningMessages(context: PlanningContext, instruction?: string,
   const task = instruction
     ? `Revise future operations according to this operator instruction: ${JSON.stringify(instruction)}${repair ? `\n${repair}${rejected}` : ''}`
     : repair ? `${repair}${rejected}` : 'Generate a feasible plan for future operations.';
-  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning hints:\n${JSON.stringify(planningHints(context))}\nCurrent plan and operational context:\n${JSON.stringify(context)}`)];
+  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning facts:\n${JSON.stringify(facts)}\nCurrent plan and operational context:\n${JSON.stringify(context)}`)];
 }
 
 export function messageText(message: BaseMessage) {

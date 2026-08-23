@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseAiPlanResult, validatePlanProposal, type PlanningContext } from './plans';
+import { derivePlanningFacts, evaluatePlanQuality, parseAiPlanResult, validatePlanProposal, validateSensiblePlanProposal, type PlanningContext } from './plans';
 
 const receivingIntervals = [{ start: '2026-08-20T00:00:00.000Z', end: '2026-08-22T00:00:00.000Z' }];
 
@@ -97,4 +97,41 @@ test('uses a completed predecessor load as the unmatched load for dispatch', () 
   assert.deepEqual(validatePlanProposal({ summary: 'Dispatch loaded batch', steps: [
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Continue the journey.' },
   ] }, revised), []);
+});
+
+test('derives scarcity and rejects wasting the only capable vehicle when a validated alternative exists', () => {
+  const scarceContext: PlanningContext = {
+    ...context,
+    deadline: '2026-08-22T10:00:00.000Z',
+    batches: [
+      { ...context.batches[0]!, id: '101', code: 'B-101', weightKg: 180, quality: { ...context.batches[0]!.quality!, remainingQualityWindowDays: 2 } },
+      { ...context.batches[0]!, id: '102', code: 'B-102', weightKg: 420, quality: { ...context.batches[0]!.quality!, remainingQualityWindowDays: 2 } },
+    ],
+    vehicles: [
+      { ...context.vehicles[0]!, id: '1', code: 'TR-01', capacityKg: 450 },
+      { ...context.vehicles[0]!, id: '2', code: 'TR-02', capacityKg: 250 },
+      { ...context.vehicles[0]!, id: '3', code: 'TR-03', capacityKg: 300 },
+    ],
+  };
+  const bad = { summary: 'Waste TR-01', steps: [
+    { actionType: 'LOAD' as const, batchId: '101', vehicleId: '1', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '101', vehicleId: '1', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    { actionType: 'LOAD' as const, batchId: '102', vehicleId: '1', scheduledAt: '2026-08-21T13:00:00.000Z', rationale: 'Wait.' },
+    { actionType: 'DISPATCH' as const, batchId: '102', vehicleId: '1', destinationId: '3', scheduledAt: '2026-08-21T13:15:00.000Z', rationale: 'Dispatch tomorrow.' },
+  ] };
+
+  const facts = derivePlanningFacts(scarceContext);
+  assert.equal(facts.batches.find(({ batchId }) => batchId === '102')?.resourceFlexibility, 'LOW');
+  assert.deepEqual(validatePlanProposal(bad, scarceContext), []);
+  assert.ok(evaluatePlanQuality(bad, scarceContext, facts).some(({ code }) => code === 'SCARCE_RESOURCE_MISALLOCATION'));
+  assert.ok(validateSensiblePlanProposal(bad, scarceContext).some((error) => error.includes('SCARCE_RESOURCE_MISALLOCATION')));
+});
+
+test('rejects storage when removing it leaves the plan feasible', () => {
+  const proposal = { summary: 'Unnecessary storage', steps: [
+    { actionType: 'STORE' as const, batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store.' },
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+  ] };
+  assert.ok(evaluatePlanQuality(proposal, context).some(({ code }) => code === 'UNNECESSARY_STORAGE'));
 });

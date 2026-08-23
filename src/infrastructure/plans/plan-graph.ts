@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { PlanRepositoryPort, PlanValidator, PlanWorkflow, PlanWorkflowInput } from '../../application/plans/plan-service';
 import { ConflictError, RequestError } from '../../domain/errors';
-import { InvalidPlanProposalError, orderPlanProposal, parseAiPlanResult, planSnapshot, type AiPlanResult, type PlanningContext } from '../../domain/plans/plans';
+import { derivePlanningFacts, evaluatePlanQuality, InvalidPlanProposalError, orderPlanProposal, parseAiPlanResult, planSnapshot, type AiPlanResult, type PlanningContext, type PlanningFacts } from '../../domain/plans/plans';
 import { createPlanningModel, messageText, normalizePlanResponse, planningMessages, planningProviderError, type PlanningModel } from './plan-generator';
 
 const PlanGraphState = Annotation.Root({
@@ -14,7 +14,9 @@ const PlanGraphState = Annotation.Root({
   planId: Annotation<string | null>(),
   instruction: Annotation<string | null>(),
   generationContext: Annotation<PlanningContext | null>(),
+  generationFacts: Annotation<PlanningFacts | null>(),
   freshContext: Annotation<PlanningContext | null>(),
+  freshFacts: Annotation<PlanningFacts | null>(),
   rawOutput: Annotation<string | null>(),
   result: Annotation<AiPlanResult | null>(),
   parserError: Annotation<string | null>(),
@@ -56,12 +58,16 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     const context = { ...loaded, selectedDestinationId: state.destinationId, deadline: state.deadline };
     if (context.batches.length !== state.batchIds.length) throw new ConflictError('Every selected batch must be active and owned by the user');
     requireGenerationContext(context);
-    return { generationContext: context, freshContext: null, rawOutput: null, result: null, parserError: null, parserRepairCount: 0, validationErrors: [], validationRepairCount: 0 };
+    return { generationContext: context, generationFacts: null, freshContext: null, freshFacts: null, rawOutput: null, result: null, parserError: null, parserRepairCount: 0, validationErrors: [], validationRepairCount: 0 };
+  };
+  const derive = (state: typeof PlanGraphState.State) => {
+    if (!state.generationContext) throw new Error('Planning context is unavailable');
+    return { generationFacts: derivePlanningFacts(state.generationContext) };
   };
   const generate = async (state: typeof PlanGraphState.State) => {
-    if (!state.generationContext) throw new Error('Planning context is unavailable');
+    if (!state.generationContext || !state.generationFacts) throw new Error('Planning context is unavailable');
     try {
-      const response = await model().invoke(planningMessages(state.generationContext, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors, state.rawOutput ?? undefined));
+      const response = await model().invoke(planningMessages(state.generationContext, state.generationFacts, state.instruction ?? undefined, state.parserError ?? undefined, state.validationErrors, state.rawOutput ?? undefined));
       const rawOutput = messageText(response);
       return { rawOutput, result: null };
     } catch (error) {
@@ -92,6 +98,10 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     requireGenerationContext(context);
     return { freshContext: context };
   };
+  const deriveFresh = (state: typeof PlanGraphState.State) => {
+    if (!state.freshContext) throw new Error('Fresh planning context is unavailable');
+    return { freshFacts: derivePlanningFacts(state.freshContext) };
+  };
   const validateProposal = (state: typeof PlanGraphState.State) => {
     if (!state.result || !state.generationContext || !state.freshContext) throw new Error('Plan validation state is incomplete');
     const changed = planSnapshot(state.generationContext.currentPlan) !== planSnapshot(state.freshContext.currentPlan);
@@ -102,6 +112,13 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     }
     return { validationErrors };
   };
+  const evaluateQuality = (state: typeof PlanGraphState.State) => {
+    if (!state.result || !state.freshContext || !state.freshFacts) throw new Error('Plan quality state is incomplete');
+    if (state.result.status === 'NO_VALID_PROPOSAL_FOUND' || state.validationErrors.length) return {};
+    const validationErrors = evaluatePlanQuality(state.result, state.freshContext, state.freshFacts).map((issue) => `PLAN_QUALITY ${issue.code}: ${issue.message}`);
+    if (validationErrors.length) console.warn('[AI plan quality rejected]', { planId: state.planId, errors: validationErrors });
+    return { validationErrors };
+  };
   const afterValidation = (state: typeof PlanGraphState.State) => {
     if (!state.validationErrors.length) return END;
     if ((state.validationRepairCount ?? 0) < 2) return 'prepare_validation_repair';
@@ -109,6 +126,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   };
   const prepareRepair = (state: typeof PlanGraphState.State) => ({
     generationContext: state.freshContext,
+    generationFacts: state.freshFacts,
     result: null,
     parserError: null,
     parserRepairCount: 0,
@@ -117,17 +135,23 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
 
   return new StateGraph(PlanGraphState, { input: PlanGraphInputSchema, output: PlanGraphOutputSchema })
     .addNode('load_context', load)
+    .addNode('derive_planning_facts', derive)
     .addNode('generate', generate)
     .addNode('parse', parse)
     .addNode('refresh_context', refresh)
-    .addNode('validate', validateProposal)
+    .addNode('derive_fresh_planning_facts', deriveFresh)
+    .addNode('validate_hard_constraints', validateProposal)
+    .addNode('evaluate_plan_quality', evaluateQuality)
     .addNode('prepare_validation_repair', prepareRepair)
     .addEdge(START, 'load_context')
-    .addEdge('load_context', 'generate')
+    .addEdge('load_context', 'derive_planning_facts')
+    .addEdge('derive_planning_facts', 'generate')
     .addEdge('generate', 'parse')
     .addConditionalEdges('parse', afterParse, ['generate', 'refresh_context'])
-    .addEdge('refresh_context', 'validate')
-    .addConditionalEdges('validate', afterValidation, ['prepare_validation_repair', END])
+    .addEdge('refresh_context', 'derive_fresh_planning_facts')
+    .addEdge('derive_fresh_planning_facts', 'validate_hard_constraints')
+    .addEdge('validate_hard_constraints', 'evaluate_plan_quality')
+    .addConditionalEdges('evaluate_plan_quality', afterValidation, ['prepare_validation_repair', END])
     .addEdge('prepare_validation_repair', 'generate')
     .compile();
 }

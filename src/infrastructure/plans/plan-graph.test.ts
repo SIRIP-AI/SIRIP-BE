@@ -49,8 +49,42 @@ test('LangGraph repairs parser and validation failures without dropping the revi
   assert.match(prompts[1]!, /Rejected response to repair:\nnot json/);
   assert.match(prompts[2]!, /Use a feasible schedule/);
   assert.match(prompts[2]!, /\"summary\":\"Invalid\"/);
-  assert.match(prompts[0]!, /Deterministic planning hints/);
-  assert.match(prompts[0]!, /eligibleVehicles/);
+  assert.match(prompts[0]!, /Deterministic planning facts/);
+  assert.match(prompts[0]!, /feasibleVehicleIds/);
+});
+
+test('LangGraph repairs a feasible plan that wastes a uniquely capable vehicle', async () => {
+  const scarceContext: PlanningContext = {
+    ...context,
+    currentPlan: null,
+    batches: [
+      { ...context.batches[0]!, id: '101', code: 'B-101', weightKg: 180 },
+      { ...context.batches[0]!, id: '102', code: 'B-102', weightKg: 420 },
+    ],
+    vehicles: [
+      { ...context.vehicles[0]!, id: '1', code: 'TR-01', capacityKg: 450 },
+      { ...context.vehicles[0]!, id: '2', code: 'TR-02', capacityKg: 250 },
+    ],
+  };
+  const badSteps = [
+    { actionType: 'LOAD', batchId: '101', scheduledAt: '2026-08-20T13:00:00.000Z', coldStorageId: null, vehicleId: '1', destinationId: null, rationale: 'Load.' },
+    { actionType: 'DISPATCH', batchId: '101', scheduledAt: '2026-08-20T13:15:00.000Z', coldStorageId: null, vehicleId: '1', destinationId: '3', rationale: 'Dispatch.' },
+    { actionType: 'LOAD', batchId: '102', scheduledAt: '2026-08-21T13:00:00.000Z', coldStorageId: null, vehicleId: '1', destinationId: null, rationale: 'Load tomorrow.' },
+    { actionType: 'DISPATCH', batchId: '102', scheduledAt: '2026-08-21T13:15:00.000Z', coldStorageId: null, vehicleId: '1', destinationId: '3', rationale: 'Dispatch tomorrow.' },
+  ];
+  const goodSteps = badSteps.map((step) => step.batchId === '101' ? { ...step, vehicleId: '2' } : step.batchId === '102' ? { ...step, scheduledAt: step.actionType === 'LOAD' ? '2026-08-20T13:00:00.000Z' : '2026-08-20T13:15:00.000Z' } : step);
+  const outputs = [JSON.stringify({ status: 'PROPOSAL', summary: 'Waste scarce truck', steps: badSteps }), JSON.stringify({ status: 'PROPOSAL', summary: 'Preserve scarce truck', steps: goodSteps })];
+  const prompts: string[] = [];
+  const model = { invoke: async (messages: BaseMessage[]) => {
+    prompts.push(text(messages));
+    return new AIMessage(outputs.shift()!);
+  } } as PlanningModel;
+  const graph = createPlanGraph({ repository: { loadContext: async () => scarceContext }, model: () => model, validate: () => [] });
+
+  const result = await graph.invoke({ userId: '1', batchIds: ['101', '102'], destinationId: '3', deadline: '2026-08-25T12:00:00.000Z', planId: null, instruction: null });
+
+  assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Preserve scarce truck');
+  assert.match(prompts[1]!, /SCARCE_RESOURCE_MISALLOCATION/);
 });
 
 test('LangGraph returns no valid proposal without validating a partial proposal', async () => {

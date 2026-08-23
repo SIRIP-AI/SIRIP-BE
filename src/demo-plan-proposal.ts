@@ -10,7 +10,7 @@ import { createApp } from './infrastructure/http/app';
 import { TelegramService } from './infrastructure/messaging/telegram-service';
 import { TelegramOperations } from './infrastructure/messaging/telegram-operations';
 import { PlanService } from './application/plans/plan-service';
-import { validatePlanProposal } from './domain/plans/plans';
+import { validatePlanProposal, validateSensiblePlanProposal } from './domain/plans/plans';
 import { createPlanGraph, createPlanWorkflow } from './infrastructure/plans/plan-graph';
 import { PlanRepository } from './infrastructure/plans/plan-repository';
 import { createDatabase, type Database } from './infrastructure/persistence/database';
@@ -144,7 +144,7 @@ async function run() {
     process.env.COOKIE_SECURE = 'false';
     process.env.SENSOR_API_KEY = mockSensorApiKey;
     const planRepository = new PlanRepository(database);
-    const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validatePlanProposal })), validatePlanProposal);
+    const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validatePlanProposal })), validateSensiblePlanProposal);
     apiServer = createApp(database, new TelegramService(database, new TelegramOperations(database, planService))).listen(0, '127.0.0.1');
     await once(apiServer, 'listening');
     const baseUrl = `http://127.0.0.1:${(apiServer.address() as AddressInfo).port}/api`;

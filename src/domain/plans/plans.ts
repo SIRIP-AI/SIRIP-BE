@@ -118,6 +118,31 @@ export type PlanningContext = {
   resourceOccupancies?: PlanningResourceOccupancy[];
 };
 
+export type PlanningBatchFacts = {
+  batchId: string;
+  qualityDeadlineAt: string;
+  effectiveArrivalDeadlineAt: string;
+  feasibleVehicleIds: string[];
+  feasibleColdStorageIds: string[];
+  resourceFlexibility: 'NONE' | 'LOW' | 'HIGH';
+  urgencyRank: number;
+};
+
+export type PlanningFacts = {
+  batches: PlanningBatchFacts[];
+  selectedDestination: {
+    destinationId: string;
+    travelMinutes: number;
+    receivingIntervals: Array<{ start: string; end: string }>;
+    dispatchIntervals: Array<{ start: string; end: string }>;
+  } | null;
+};
+
+export type PlanQualityIssue = {
+  code: 'SCARCE_RESOURCE_MISALLOCATION' | 'QUALITY_PRIORITY_INVERSION' | 'UNNECESSARY_STORAGE';
+  message: string;
+};
+
 export function planSnapshot(plan: PlanningActivePlan | null) {
   return JSON.stringify(plan ? [
     plan.id,
@@ -263,6 +288,46 @@ function inIntervals(value: Date, intervals: Array<{ start: string; end: string 
   return intervals.some(({ start, end }) => value >= new Date(start) && value <= new Date(end));
 }
 
+function intervalsOverlap(left: { start: string; end: string }, right: { start: string; end: string }) {
+  return Date.parse(left.start) <= Date.parse(right.end) && Date.parse(right.start) <= Date.parse(left.end);
+}
+
+export function derivePlanningFacts(context: PlanningContext): PlanningFacts {
+  const now = Date.parse(context.now);
+  const destination = context.destinations.find(({ id }) => id === context.selectedDestinationId);
+  const dispatchIntervals = destination?.receivingIntervals.map(({ start, end }) => ({
+    start: new Date(Date.parse(start) - destination.travelMinutes * 60_000).toISOString(),
+    end: new Date(Date.parse(end) - destination.travelMinutes * 60_000).toISOString(),
+  })) ?? [];
+  const batches = context.batches.map((batch) => {
+    const qualityDeadline = new Date(now + (batch.quality?.remainingQualityWindowDays ?? 0) * 86_400_000);
+    const planDeadline = context.deadline ? new Date(context.deadline) : null;
+    const effectiveDeadline = planDeadline && planDeadline < qualityDeadline ? planDeadline : qualityDeadline;
+    const reachableDispatchIntervals = dispatchIntervals.map((interval) => ({ ...interval, end: new Date(Math.min(Date.parse(interval.end), effectiveDeadline.getTime())).toISOString() }))
+      .filter((interval) => Date.parse(interval.end) >= Math.max(Date.parse(interval.start), now));
+    const feasibleVehicleIds = context.vehicles.filter((vehicle) => {
+      if (vehicle.operationalStatus !== 'AVAILABLE' || vehicle.capacityKg < batch.weightKg) return false;
+      const available = vehicle.availabilityIntervals ?? [{ start: context.now, end: effectiveDeadline.toISOString() }];
+      return reachableDispatchIntervals.some((dispatch) => available.some((interval) => intervalsOverlap(dispatch, interval) && Date.parse(dispatch.end) >= now + vehicle.delayMinutes * 60_000));
+    }).map(({ id }) => id);
+    return {
+      batchId: batch.id,
+      qualityDeadlineAt: qualityDeadline.toISOString(),
+      effectiveArrivalDeadlineAt: effectiveDeadline.toISOString(),
+      feasibleVehicleIds,
+      feasibleColdStorageIds: context.coldStorages.filter((storage) => storage.operationalStatus === 'AVAILABLE' && storage.availableCapacityKg >= batch.weightKg).map(({ id }) => id),
+      resourceFlexibility: feasibleVehicleIds.length === 0 ? 'NONE' as const : feasibleVehicleIds.length === 1 ? 'LOW' as const : 'HIGH' as const,
+      urgencyRank: 0,
+    };
+  });
+  const deadlines = [...new Set(batches.map(({ effectiveArrivalDeadlineAt }) => effectiveArrivalDeadlineAt))].sort((left, right) => Date.parse(left) - Date.parse(right));
+  const ranks = new Map(deadlines.map((deadline, index) => [deadline, index + 1]));
+  return {
+    batches: batches.map((batch) => ({ ...batch, urgencyRank: ranks.get(batch.effectiveArrivalDeadlineAt)! })),
+    selectedDestination: destination ? { destinationId: destination.id, travelMinutes: destination.travelMinutes, receivingIntervals: destination.receivingIntervals, dispatchIntervals } : null,
+  };
+}
+
 function resourceCombination(step: AiPlanStep) {
   const present = [step.coldStorageId !== undefined, step.vehicleId !== undefined, step.destinationId !== undefined];
   if (step.actionType === 'STORE') return present[0] && !present[1] && !present[2];
@@ -404,4 +469,85 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
   if (context.selectedDestinationId) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(`Active batch ${batch.id} is not dispatched to the selected destination`);
   return errors;
+}
+
+function journey(proposal: AiPlanProposal, batchId: string) {
+  const load = proposal.steps.find((step) => step.batchId === batchId && step.actionType === 'LOAD');
+  const dispatch = proposal.steps.find((step) => step.batchId === batchId && step.actionType === 'DISPATCH');
+  return load && dispatch ? { load, dispatch } : null;
+}
+
+function replaceSteps(proposal: AiPlanProposal, replace: (step: AiPlanStep) => AiPlanStep | null) {
+  return orderPlanProposal({ ...proposal, steps: proposal.steps.flatMap((step) => {
+    const replacement = replace(step);
+    return replacement ? [replacement] : [];
+  }) });
+}
+
+export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningContext, facts = derivePlanningFacts(context)): PlanQualityIssue[] {
+  const issues: PlanQualityIssue[] = [];
+
+  for (const step of proposal.steps) {
+    if (step.actionType !== 'STORE') continue;
+    const withoutStorage = replaceSteps(proposal, (candidate) => candidate === step ? null : candidate);
+    if (validatePlanProposal(withoutStorage, context).length === 0) {
+      const batch = context.batches.find(({ id }) => id === step.batchId);
+      issues.push({ code: 'UNNECESSARY_STORAGE', message: `${batch?.code ?? `Batch ${step.batchId}`} is stored even though the same load and dispatch plan is feasible without storage.` });
+    }
+  }
+
+  for (const constrained of facts.batches.filter(({ feasibleVehicleIds }) => feasibleVehicleIds.length === 1)) {
+    const constrainedJourney = journey(proposal, constrained.batchId);
+    if (!constrainedJourney) continue;
+    const scarceVehicleId = constrained.feasibleVehicleIds[0]!;
+    for (const flexible of facts.batches.filter(({ batchId, feasibleVehicleIds }) => batchId !== constrained.batchId && feasibleVehicleIds.length > 1)) {
+      const flexibleJourney = journey(proposal, flexible.batchId);
+      if (!flexibleJourney || flexibleJourney.load.vehicleId !== scarceVehicleId || Date.parse(flexibleJourney.dispatch.scheduledAt) >= Date.parse(constrainedJourney.dispatch.scheduledAt)) continue;
+      for (const alternative of flexible.feasibleVehicleIds.filter((vehicleId) => vehicleId !== scarceVehicleId)) {
+        const candidate = replaceSteps(proposal, (step) => {
+          if (step.batchId === constrained.batchId && step.actionType === 'STORE') return null;
+          if (step.batchId === constrained.batchId && step.actionType === 'LOAD') return { ...step, vehicleId: scarceVehicleId, scheduledAt: flexibleJourney.load.scheduledAt };
+          if (step.batchId === constrained.batchId && step.actionType === 'DISPATCH') return { ...step, vehicleId: scarceVehicleId, scheduledAt: flexibleJourney.dispatch.scheduledAt };
+          if (step.batchId === flexible.batchId && (step.actionType === 'LOAD' || step.actionType === 'DISPATCH')) return { ...step, vehicleId: alternative };
+          return step;
+        });
+        if (validatePlanProposal(candidate, context).length === 0) {
+          const constrainedBatch = context.batches.find(({ id }) => id === constrained.batchId);
+          const flexibleBatch = context.batches.find(({ id }) => id === flexible.batchId);
+          const scarceVehicle = context.vehicles.find(({ id }) => id === scarceVehicleId);
+          issues.push({ code: 'SCARCE_RESOURCE_MISALLOCATION', message: `${scarceVehicle?.code ?? `Vehicle ${scarceVehicleId}`} is the only feasible vehicle for ${constrainedBatch?.code ?? constrained.batchId}, but is used earlier for flexible batch ${flexibleBatch?.code ?? flexible.batchId}; a validated alternative allocation avoids that delay.` });
+          break;
+        }
+      }
+    }
+  }
+
+  for (const urgent of facts.batches) {
+    const urgentJourney = journey(proposal, urgent.batchId);
+    if (!urgentJourney) continue;
+    for (const laterPriority of facts.batches.filter(({ urgencyRank }) => urgencyRank > urgent.urgencyRank)) {
+      const otherJourney = journey(proposal, laterPriority.batchId);
+      if (!otherJourney || Date.parse(otherJourney.dispatch.scheduledAt) >= Date.parse(urgentJourney.dispatch.scheduledAt)) continue;
+      const candidate = replaceSteps(proposal, (step) => {
+        if (step.batchId === urgent.batchId && step.actionType === 'LOAD') return { ...step, scheduledAt: otherJourney.load.scheduledAt };
+        if (step.batchId === urgent.batchId && step.actionType === 'DISPATCH') return { ...step, scheduledAt: otherJourney.dispatch.scheduledAt };
+        if (step.batchId === laterPriority.batchId && step.actionType === 'LOAD') return { ...step, scheduledAt: urgentJourney.load.scheduledAt };
+        if (step.batchId === laterPriority.batchId && step.actionType === 'DISPATCH') return { ...step, scheduledAt: urgentJourney.dispatch.scheduledAt };
+        return step;
+      });
+      if (validatePlanProposal(candidate, context).length === 0) {
+        const urgentBatch = context.batches.find(({ id }) => id === urgent.batchId);
+        const otherBatch = context.batches.find(({ id }) => id === laterPriority.batchId);
+        issues.push({ code: 'QUALITY_PRIORITY_INVERSION', message: `${urgentBatch?.code ?? urgent.batchId} has an earlier effective deadline than ${otherBatch?.code ?? laterPriority.batchId}, and a validated schedule swap serves it first.` });
+      }
+    }
+  }
+
+  return issues.filter((issue, index) => issues.findIndex((candidate) => candidate.code === issue.code && candidate.message === issue.message) === index);
+}
+
+export function validateSensiblePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {
+  const hardErrors = validatePlanProposal(proposal, context);
+  if (hardErrors.length) return hardErrors;
+  return evaluatePlanQuality(proposal, context).map((issue) => `PLAN_QUALITY ${issue.code}: ${issue.message}`);
 }

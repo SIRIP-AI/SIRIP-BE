@@ -2,7 +2,7 @@ import express, { type ErrorRequestHandler } from 'express';
 
 import { PlanService } from '../../application/plans/plan-service';
 import { RequestError } from '../../domain/errors';
-import { validatePlanProposal } from '../../domain/plans/plans';
+import { validatePlanProposal, validateSensiblePlanProposal } from '../../domain/plans/plans';
 import { AuthService } from '../auth/auth-service';
 import { createPlanGraph, createPlanWorkflow } from '../plans/plan-graph';
 import { BatchRepository } from '../batches/batch-repository';
@@ -51,7 +51,7 @@ export function createApp(database: Database, telegram: TelegramService) {
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));
   const plans = new PlanRepository(database);
   const planWorkflow = createPlanWorkflow(createPlanGraph({ repository: plans, validate: validatePlanProposal }));
-  app.use('/api/plans', createPlansRouter(new PlanService(plans, planWorkflow, validatePlanProposal)));
+  app.use('/api/plans', createPlansRouter(new PlanService(plans, planWorkflow, validateSensiblePlanProposal)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {
