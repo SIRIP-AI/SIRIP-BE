@@ -151,12 +151,14 @@ function resourceOccupancies(plans: Array<{
 }>, predecessorId: bigint | undefined, travelMinutes: Map<string, number>): PlanningResourceOccupancy[] {
   const occupancies: PlanningResourceOccupancy[] = [];
   for (const plan of plans) {
-    const states = new Map<string, { storage?: { resourceId: string; start: string }; vehicle?: { resourceId: string; start: string; weightKg: number; legacyReturnAt?: string } }>();
+    const states = new Map<string, { storage?: { resourceId: string; start: string }; vehicle?: { resourceId: string; start: string; weightKg: number; destinationId?: string; dispatchAt?: string; expectedReturnAt?: string } }>();
     for (const step of plan.steps) {
       if (step.status === 'CANCELED' || (plan.id === predecessorId && step.status !== 'COMPLETED')) continue;
       if (step.actionType === 'RETURN_TO_BASE' && step.vehicleId) {
         for (const [batchId, state] of states) if (state.vehicle?.resourceId === step.vehicleId.toString()) {
-          occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: step.status === 'COMPLETED' ? (step.completedAt ?? step.scheduledAt).toISOString() : null });
+          if (step.destinationId && state.vehicle.destinationId !== step.destinationId.toString()) continue;
+          if (state.vehicle.expectedReturnAt && state.vehicle.expectedReturnAt !== step.scheduledAt.toISOString()) continue;
+          occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: (step.status === 'COMPLETED' ? step.completedAt ?? step.scheduledAt : step.scheduledAt).toISOString(), ...(state.vehicle.destinationId ? { destinationId: state.vehicle.destinationId } : {}), ...(state.vehicle.dispatchAt ? { dispatchAt: state.vehicle.dispatchAt } : {}) });
           state.vehicle = undefined;
         }
         continue;
@@ -172,13 +174,15 @@ function resourceOccupancies(plans: Array<{
       }
       if (step.actionType === 'DISPATCH' && step.destinationId && state.vehicle) {
         const travel = travelMinutes.get(step.destinationId.toString());
-        if (travel !== undefined) state.vehicle.legacyReturnAt = new Date(step.scheduledAt.getTime() + travel * 2 * 60_000).toISOString();
+        state.vehicle.destinationId = step.destinationId.toString();
+        state.vehicle.dispatchAt = step.scheduledAt.toISOString();
+        if (travel !== undefined) state.vehicle.expectedReturnAt = new Date(step.scheduledAt.getTime() + travel * 2 * 60_000).toISOString();
       }
       states.set(batchId, state);
     }
     for (const [batchId, state] of states) {
       if (state.storage) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: state.storage.resourceId, batchId, weightKg: plan.steps.find((step) => step.batchId?.toString() === batchId)!.batch!.weightKg, start: state.storage.start, end: null });
-      if (state.vehicle) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: state.vehicle.legacyReturnAt ?? null });
+      if (state.vehicle) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: state.vehicle.expectedReturnAt ?? null, ...(state.vehicle.destinationId ? { destinationId: state.vehicle.destinationId } : {}), ...(state.vehicle.dispatchAt ? { dispatchAt: state.vehicle.dispatchAt } : {}) });
     }
   }
   return occupancies;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizePlanResponse, planningProviderError } from './plan-generator';
+import { messageText, normalizePlanResponse, planningMessages, planningProviderError } from './plan-generator';
 
 const plan = '{"status":"NO_VALID_PROPOSAL_FOUND","reason":"No route"}';
 
@@ -15,6 +15,15 @@ test('leaves ambiguous or malformed fenced responses for strict parsing to rejec
   const malformed = `\`\`\`json\n${plan}`;
   assert.equal(normalizePlanResponse(multiple), multiple);
   assert.equal(normalizePlanResponse(malformed), malformed);
+});
+
+test('includes compact active resource commitments in selector context', () => {
+  const context = { currentPlan: null, resourceOccupancies: [{ resourceType: 'VEHICLE', resourceId: '2', batchId: 'private-batch', weightKg: 50, start: '2026-08-20T12:00:00Z', end: '2026-08-20T14:00:00Z', destinationId: '3', dispatchAt: '2026-08-20T12:15:00Z' }] };
+  const messages = planningMessages(context as never, { batches: [], selectedDestination: null }, []);
+  const content = messageText(messages[1]!);
+  assert.match(content, /Active resource commitments/);
+  assert.match(content, /"resourceId":"2"/);
+  assert.doesNotMatch(content, /private-batch|weightKg/);
 });
 
 test('logs sanitized Gemini provider errors while returning a safe request error', () => {

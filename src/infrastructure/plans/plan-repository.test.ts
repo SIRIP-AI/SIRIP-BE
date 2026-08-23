@@ -218,7 +218,7 @@ test('planning context reserves other active plans and only completed predecesso
         { id: 12n, steps: [
           { ...step(9n, 'COMPLETED', 'LOAD', '2026-08-20T13:00:00Z'), completedAt: new Date('2026-08-20T13:00:00Z') },
           { actionType: 'DISPATCH', batchId: 9n, coldStorageId: null, vehicleId: 2n, destinationId: 3n, scheduledAt: new Date('2026-08-20T13:15:00Z'), status: 'COMPLETED', completedAt: new Date('2026-08-20T13:15:00Z'), batch: { weightKg: 40 } },
-          { actionType: 'RETURN_TO_BASE', batchId: null, coldStorageId: null, vehicleId: 2n, destinationId: 3n, scheduledAt: new Date('2026-08-20T15:15:00Z'), status: 'COMPLETED', completedAt: new Date('2026-08-20T15:30:00Z'), batch: null },
+          { actionType: 'RETURN_TO_BASE', batchId: null, coldStorageId: null, vehicleId: 2n, destinationId: 3n, scheduledAt: new Date('2026-08-20T15:15:00Z'), status: 'UPCOMING', completedAt: null, batch: null },
           { ...step(9n, 'UPCOMING', 'LOAD', '2026-08-20T16:00:00Z'), completedAt: null },
         ] },
       ],
@@ -230,7 +230,7 @@ test('planning context reserves other active plans and only completed predecesso
     { resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '7', weightKg: 40, start: '2026-08-20T10:00:00.000Z', end: null },
     { resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '8', weightKg: 40, start: '2026-08-20T12:00:00.000Z', end: '2026-08-20T13:00:00.000Z' },
     { resourceType: 'VEHICLE', resourceId: '2', batchId: '8', weightKg: 40, start: '2026-08-20T13:00:00.000Z', end: null },
-    { resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 40, start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T15:30:00.000Z' },
+    { resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 40, start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T15:15:00.000Z', destinationId: '3', dispatchAt: '2026-08-20T13:15:00.000Z' },
     { resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 40, start: '2026-08-20T16:00:00.000Z', end: null },
   ]);
 });

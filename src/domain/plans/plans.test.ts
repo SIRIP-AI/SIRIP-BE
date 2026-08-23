@@ -87,6 +87,16 @@ test('allows sequential resource reuse and rejects concurrent reserved weight', 
   assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('Vehicle Truck exceeds its 60 kg concurrent capacity')));
 });
 
+test('rejects an overlapping vehicle commitment even when capacity is sufficient', () => {
+  const proposal = { summary: 'Conflicting trip', steps: [
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T15:15:00.000Z'),
+  ] };
+  const reserved = { ...context, vehicles: [{ ...context.vehicles[0]!, capacityKg: 1_000 }], resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 10, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z', destinationId: '9', dispatchAt: '2026-08-20T12:45:00.000Z' }] };
+  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('overlapping incompatible trips')));
+});
+
 test('releases storage on load and enforces one store and load per batch', () => {
   const valid = validatePlanProposal({ summary: 'Stored journey', steps: [
     { actionType: 'STORE', batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store.' },

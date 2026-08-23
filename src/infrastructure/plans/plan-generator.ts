@@ -151,7 +151,8 @@ export function planningProviderError(error: unknown) {
 
 export function planningMessages(context: PlanningContext, facts: PlanningFacts, candidates: PlanCandidate[], instruction?: string) {
   const task = instruction ? `Select the candidate that best follows this operator instruction: ${JSON.stringify(instruction)}` : 'Select the preferable candidate.';
-  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning facts:\n${JSON.stringify(facts)}\nCurrent plan:\n${JSON.stringify(context.currentPlan)}\nCandidates:\n${JSON.stringify(candidates)}`)];
+  const activeCommitments = (context.resourceOccupancies ?? []).map(({ resourceType, resourceId, start, end, destinationId, dispatchAt }) => ({ resourceType, resourceId, start, end, ...(destinationId ? { destinationId } : {}), ...(dispatchAt ? { dispatchAt } : {}) }));
+  return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning facts:\n${JSON.stringify(facts)}\nActive resource commitments:\n${JSON.stringify(activeCommitments)}\nCurrent plan:\n${JSON.stringify(context.currentPlan)}\nCandidates:\n${JSON.stringify(candidates)}`)];
 }
 
 export function parsePlanSelection(content: string, candidates: PlanCandidate[]) {

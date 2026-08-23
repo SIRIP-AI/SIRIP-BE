@@ -110,6 +110,8 @@ export type PlanningResourceOccupancy = {
   weightKg: number;
   start: string;
   end: string | null;
+  destinationId?: string;
+  dispatchAt?: string;
 };
 
 export type PlanningContext = {
@@ -498,7 +500,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
           if (returnSteps.length !== 1) errors.push(`${label} must have exactly one return-to-base step at ${new Date(expectedReturnAt).toISOString()}`);
           const occupiedUntil = returnStep?.scheduledAt ?? null;
           if (physical) physical.end = occupiedUntil;
-          else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: occupiedUntil });
+          else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: occupiedUntil, destinationId: destination.id, dispatchAt: step.scheduledAt });
         }
         if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
         if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} does not use an acceptable destination`);
@@ -544,6 +546,20 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
         const name = resourceType === 'COLD_STORAGE' ? coldStorages.get(resourceId)?.name : vehicles.get(resourceId)?.code;
         errors.push(`${resourceType === 'COLD_STORAGE' ? 'Cold storage' : 'Vehicle'} ${name ?? resourceId} exceeds its ${capacity} kg concurrent capacity`);
       }
+    }
+  }
+  const vehicleOccupancies = occupancies.filter((occupancy) => occupancy.resourceType === 'VEHICLE');
+  for (let leftIndex = 0; leftIndex < vehicleOccupancies.length; leftIndex += 1) {
+    const left = vehicleOccupancies[leftIndex]!;
+    for (const right of vehicleOccupancies.slice(leftIndex + 1)) {
+      if (left.resourceId !== right.resourceId || left.batchId === right.batchId) continue;
+      const overlap = Date.parse(left.start) < (right.end === null ? Number.POSITIVE_INFINITY : Date.parse(right.end))
+        && Date.parse(right.start) < (left.end === null ? Number.POSITIVE_INFINITY : Date.parse(left.end));
+      if (!overlap) continue;
+      const sharedTrip = left.destinationId !== undefined && left.destinationId === right.destinationId
+        && left.dispatchAt !== undefined && left.dispatchAt === right.dispatchAt
+        && left.end !== null && left.end === right.end;
+      if (!sharedTrip) errors.push(`Vehicle ${vehicles.get(left.resourceId)?.code ?? left.resourceId} has overlapping incompatible trips`);
     }
   }
   for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
