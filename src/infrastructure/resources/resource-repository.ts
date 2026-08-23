@@ -130,7 +130,7 @@ function sensorInclude(userId: bigint) {
 function vehicleInclude(userId: bigint) {
   return {
     planSteps: {
-      where: { status: 'UPCOMING' as const, batch: { deletedAt: null }, plan: { userId, status: 'ACTIVE' as const } },
+      where: { status: 'UPCOMING' as const, plan: { userId, status: 'ACTIVE' as const }, OR: [{ batch: { deletedAt: null } }, { actionType: 'RETURN_TO_BASE' as const, batchId: null }] },
       select: { id: true },
       take: 1,
     },
