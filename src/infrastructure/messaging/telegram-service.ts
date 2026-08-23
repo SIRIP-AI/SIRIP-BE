@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
 import type { TelegramOperations, TelegramReply } from './telegram-operations';
 import type { ChatWorkflow } from './chat-graph';
+import type { MonitoringAlert } from '../telemetry/monitoring-processor';
 
 const linkLifetimeMs = 10 * 60_000;
 
@@ -30,7 +31,7 @@ function hash(value: string) {
 export class TelegramService {
   private botUsername: string | null = null;
 
-  constructor(private readonly database: Database, private readonly operations: Pick<TelegramOperations, 'recordAssistant'>, private readonly workflow: ChatWorkflow) {}
+  constructor(private readonly database: Database, private readonly operations: Pick<TelegramOperations, 'recordAssistant' | 'monitoringImpact'>, private readonly workflow: ChatWorkflow) {}
 
   private token() {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -162,22 +163,12 @@ export class TelegramService {
     });
   }
 
-  async sendExcursion(alert: ExcursionAlert) {
+  async sendMonitoringAlert(alert: MonitoringAlert) {
     const connection = await this.database.messagingConnection.findUnique({ where: { userId_channel: { userId: alert.userId, channel: 'TELEGRAM' } } });
     if (!connection) return;
-    const text = [
-      'SIRIP - TEMPERATURE ALERT',
-      '',
-      `Sensor: ${alert.sensorCode}`,
-      `Batch: ${alert.batchCode}`,
-      `Average of latest 5 readings: ${alert.averageTemperatureC.toFixed(1)}°C`,
-      `Latest temperature: ${alert.latestTemperatureC.toFixed(1)}°C`,
-      `Excursion threshold: ${alert.thresholdC.toFixed(1)}°C`,
-      '',
-      'Please inspect the batch and cooling system immediately.',
-    ].join('\n');
-    await this.send(connection.externalChatId, text);
-    await this.operations.recordAssistant(alert.userId, text);
+    const reply = await this.operations.monitoringImpact(alert);
+    await this.sendReply(connection.externalChatId, reply);
+    await this.operations.recordAssistant(alert.userId, reply.text);
   }
 
   private send(chatId: string, text: string) {

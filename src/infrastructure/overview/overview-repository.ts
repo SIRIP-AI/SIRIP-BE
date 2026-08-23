@@ -1,5 +1,5 @@
 import type { Prisma } from '../../generated/prisma/client';
-import { evaluateStaleSensor, sensorOfflineRule } from '../../domain/monitoring/monitoring';
+import { qualityWarningWindowDays } from '../../domain/monitoring/monitoring';
 import { connectivityStatus } from '../../domain/resources/resources';
 import type { Database } from '../persistence/database';
 
@@ -42,53 +42,9 @@ function resources(step: {
 export class OverviewRepository {
   constructor(private readonly database: Database) {}
 
-  private async reconcileStaleSensors(userId: bigint, now: Date) {
-    const sessions = await this.database.sensorSession.findMany({
-      where: { status: 'ACTIVE', batch: { userId, deletedAt: null } },
-      select: { id: true, batchId: true, startedAt: true, lastSyncedAt: true },
-    });
-    const decisions = sessions.flatMap((session) => {
-      const decision = evaluateStaleSensor(session, now);
-      return decision ? [{ session, decision }] : [];
-    });
-    const existing = await this.database.operationalEvent.findMany({
-      where: { userId, dedupeKey: { contains: `:${sensorOfflineRule}:` } },
-      select: { id: true, dedupeKey: true, structuredData: true },
-    });
-    const activeKeys = new Set(decisions.map(({ decision }) => decision.dedupeKey));
-    for (const { session, decision } of decisions) {
-      await this.database.operationalEvent.upsert({
-        where: { dedupeKey: decision.dedupeKey },
-        create: {
-          dedupeKey: decision.dedupeKey,
-          userId,
-          type: decision.type,
-          source: 'SYSTEM',
-          batchId: session.batchId,
-          rawMessage: null,
-          structuredData: decision.structuredData,
-          occurredAt: decision.occurredAt,
-        },
-        update: { structuredData: decision.structuredData },
-      });
-    }
-    for (const event of existing) {
-      if (!event.dedupeKey || activeKeys.has(event.dedupeKey)) continue;
-      const data = event.structuredData;
-      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
-      const alert = data.alert;
-      if (!alert || typeof alert !== 'object' || Array.isArray(alert) || alert.active !== true) continue;
-      await this.database.operationalEvent.update({
-        where: { id: event.id },
-        data: { structuredData: { ...data, alert: { ...alert, active: false, resolvedAt: now.toISOString() } } },
-      });
-    }
-  }
-
   async overview(userId: bigint) {
     const now = new Date();
-    await this.reconcileStaleSensors(userId, now);
-    const [batches, events, activePlan] = await Promise.all([
+    const [batches, events, activeAlertCount, activePlan] = await Promise.all([
       this.database.batch.findMany({
         where: { userId, deletedAt: null, status: { in: [...activeBatchStatuses] } },
         select: {
@@ -106,11 +62,12 @@ export class OverviewRepository {
         },
       }),
       this.database.operationalEvent.findMany({
-        where: { userId, OR: [{ batchId: null }, { batch: { deletedAt: null } }] },
         orderBy: { occurredAt: 'desc' },
+        where: { userId, structuredData: { path: ['alert', 'active'], equals: true }, OR: [{ batchId: null }, { batch: { deletedAt: null } }] },
         take: 50,
         select: { id: true, batchId: true, type: true, source: true, structuredData: true, occurredAt: true },
       }),
+      this.database.operationalEvent.count({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true }, OR: [{ batchId: null }, { batch: { deletedAt: null } }] } }),
       this.database.plan.findFirst({
         where: { userId, status: 'ACTIVE' },
         select: {
@@ -161,7 +118,7 @@ export class OverviewRepository {
       const sensor = session?.sensor;
       const qualityStatus: QualityStatus = batch.status === 'INSPECTION_HOLD'
         ? 'CRITICAL'
-        : qualityByBatch.get(batch.id.toString()) ?? (batch.remainingQualityWindowDays === null ? 'UNKNOWN' : 'NORMAL');
+        : qualityByBatch.get(batch.id.toString()) ?? (batch.remainingQualityWindowDays === null ? 'UNKNOWN' : batch.remainingQualityWindowDays <= qualityWarningWindowDays ? 'WARNING' : 'NORMAL');
       return {
         code: batch.code,
         currentTemperatureC: batch.currentTemperatureC,
@@ -180,7 +137,7 @@ export class OverviewRepository {
       summary: {
         activeBatchCount: batches.length,
         atRiskBatchCount: priorityBatches.filter((batch) => batch.qualityStatus === 'WARNING' || batch.qualityStatus === 'CRITICAL').length,
-        activeAlertCount: alerts.length,
+        activeAlertCount,
         activePlanVersion: activePlan?.version ?? null,
       },
       priorityBatches,

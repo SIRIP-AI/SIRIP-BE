@@ -9,15 +9,15 @@ const hour = 60 * 60_000;
 const day = 24 * hour;
 
 export const demoTrips = [
-  { code: 'FT-101', vesselName: 'KM Demo Laut', ageHours: 216 },
-  { code: 'FT-102', vesselName: 'KM Sinar Tuna', ageHours: 204 },
-  { code: 'FT-103', vesselName: 'KM Bahari Jaya', ageHours: 192 },
+  { code: 'FT-101', vesselName: 'KM Demo Laut', ageHours: 336, landedHoursAgo: 240 },
+  { code: 'FT-102', vesselName: 'KM Sinar Tuna', ageHours: 312, landedHoursAgo: 216 },
+  { code: 'FT-103', vesselName: 'KM Bahari Jaya', ageHours: 288, landedHoursAgo: 192 },
 ] as const;
 
 export const demoActiveBatches = [
-  { code: 'B-101', tripCode: 'FT-101', sensorCode: 'SIM-S-101', weightKg: 180, grade: 'A', status: 'MONITORING', qualityWindowDays: 2.4 },
-  { code: 'B-102', tripCode: 'FT-102', sensorCode: 'SIM-S-102', weightKg: 420, grade: 'A', status: 'MONITORING', qualityWindowDays: 2.7 },
-  { code: 'B-103', tripCode: 'FT-103', sensorCode: 'SIM-S-103', weightKg: 220, grade: 'A', status: 'MONITORING', qualityWindowDays: 3 },
+  { code: 'B-101', tripCode: 'FT-101', sensorCode: 'SIM-S-101', weightKg: 180, grade: 'A', status: 'MONITORING', qualityWindowDays: 5.3 },
+  { code: 'B-102', tripCode: 'FT-102', sensorCode: 'SIM-S-102', weightKg: 420, grade: 'A', status: 'MONITORING', qualityWindowDays: 5.5 },
+  { code: 'B-103', tripCode: 'FT-103', sensorCode: 'SIM-S-103', weightKg: 220, grade: 'A', status: 'MONITORING', qualityWindowDays: 5.7 },
 ] as const;
 
 export const demoBatches = [
@@ -48,7 +48,7 @@ export function isUnsafeDemoSession(userId: bigint, reservedSensorIds: ReadonlyS
 }
 
 export class DemoService {
-  constructor(private readonly database: Database, private readonly telemetry: Pick<TelemetryRepository, 'ingestMany'>) {}
+  constructor(private readonly database: Database, private readonly telemetry: Pick<TelemetryRepository, 'ingestMany' | 'monitoring'>) {}
 
   async reset(user: AuthUser) {
     if (user.email !== seededUser.email) throw new RequestError('Demo reset is only available for the seeded account', 403);
@@ -74,8 +74,8 @@ export class DemoService {
       for (const definition of demoTrips) {
         trips.push(await transaction.fishingTrip.upsert({
           where: { userId_code: { userId, code: definition.code } },
-          create: { userId, code: definition.code, vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), endedAt: new Date(now.getTime() - 8 * hour), status: 'COMPLETED' },
-          update: { vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), endedAt: new Date(now.getTime() - 8 * hour), status: 'COMPLETED', deletedAt: null },
+          create: { userId, code: definition.code, vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), endedAt: new Date(now.getTime() - definition.landedHoursAgo * hour), status: 'COMPLETED' },
+          update: { vesselName: definition.vesselName, startedAt: new Date(now.getTime() - definition.ageHours * hour), endedAt: new Date(now.getTime() - definition.landedHoursAgo * hour), status: 'COMPLETED', deletedAt: null },
         }));
       }
       const tripsByCode = new Map(trips.map((trip) => [trip.code, trip]));
@@ -86,8 +86,8 @@ export class DemoService {
         const trip = tripsByCode.get(definition.tripCode)!;
         batches.push(await transaction.batch.upsert({
           where: { userId_code: { userId, code: definition.code } },
-          create: { userId, code: definition.code, fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: definition.status, receivedAt: new Date(now.getTime() - 8 * day), handedOverAt: definition.status === 'CLOSED' ? new Date(now.getTime() - 6 * hour) : null },
-          update: { fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: definition.status, receivedAt: new Date(now.getTime() - 8 * day), handedOverAt: definition.status === 'CLOSED' ? new Date(now.getTime() - 6 * hour) : null, deletedAt: null },
+          create: { userId, code: definition.code, fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: definition.status, receivedAt: new Date(trip.endedAt!.getTime() + hour), handedOverAt: definition.status === 'CLOSED' ? new Date(trip.endedAt!.getTime() + 8 * hour) : null },
+          update: { fishingTripId: trip.id, weightKg: definition.weightKg, grade: definition.grade, status: definition.status, receivedAt: new Date(trip.endedAt!.getTime() + hour), handedOverAt: definition.status === 'CLOSED' ? new Date(trip.endedAt!.getTime() + 8 * hour) : null, deletedAt: null },
         }));
         if (!('sensorCode' in definition)) continue;
         const deviceUid = demoDeviceUid(userId, index);
@@ -119,7 +119,7 @@ export class DemoService {
       for (const [index, batch] of activeBatches.entries()) {
         const definition = demoActiveBatches[index]!;
         const durationDays = (12 - definition.qualityWindowDays) / Math.exp(0.12 * 2);
-        await transaction.sensorSession.create({ data: { sensorId: sensors[index]!.id, batchId: batch.id, startedAt: new Date(now.getTime() - durationDays * day), status: 'ACTIVE' } });
+        await transaction.sensorSession.create({ data: { sensorId: sensors[index]!.id, batchId: batch.id, startedAt: new Date(now.getTime() - durationDays * day - 2 * day), status: 'ACTIVE' } });
       }
       return { trips, batches, sensors };
     });
@@ -132,7 +132,7 @@ export class DemoService {
         deviceUid: sensor.deviceUid,
         temperature,
         sequenceNumber: sequenceNumber + 1,
-        measuredAt: new Date(now.getTime() - durationDays * day + sequenceNumber * durationDays * day / (baselineTemperatures.length - 1)).toISOString(),
+        measuredAt: new Date(now.getTime() - 2 * day - durationDays * day + sequenceNumber * durationDays * day / (baselineTemperatures.length - 1)).toISOString(),
       }));
       const { readings } = parseTelemetryReadings({ readings: payload }, now.getTime());
       await this.telemetry.ingestMany(readings);
@@ -158,21 +158,52 @@ export class DemoService {
     };
   }
 
-  async simulateExcursion(userId: bigint, sensorId: bigint, now = new Date()) {
-    return this.simulateTelemetry(userId, sensorId, [9.2, 9.5, 9.8, 10.1, 10.3], now);
+  async simulateExcursion(user: AuthUser, sensorId: bigint, now = new Date()) {
+    return this.simulateTelemetry(user, sensorId, [9.2, 9.5, 9.8, 10.1, 10.3], now, 6 * hour);
   }
 
-  async simulateRecovery(userId: bigint, sensorId: bigint, now = new Date()) {
-    return this.simulateTelemetry(userId, sensorId, [2.1, 2, 1.9, 2, 2.1], now);
+  async simulateRecovery(user: AuthUser, sensorId: bigint, now = new Date()) {
+    return this.simulateTelemetry(user, sensorId, [2.1, 2, 1.9, 2, 2.1], now, 1000);
   }
 
-  private async simulateTelemetry(userId: bigint, sensorId: bigint, temperatures: number[], now: Date) {
+  async simulateOffline(user: AuthUser, sensorId: bigint, now = new Date()) {
+    this.assertDemoUser(user);
+    const userId = BigInt(user.id);
+    const sensor = await this.demoSensor(userId, sensorId);
+    const staleAt = new Date(now.getTime() - 31 * 60_000);
+    await this.database.$transaction([
+      this.database.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: staleAt } }),
+      this.database.sensorSession.update({ where: { id: sensor.sessions[0]!.id }, data: { lastSyncedAt: staleAt } }),
+    ]);
+    await this.telemetry.monitoring.sweepStaleSensors(now);
+    return { sensorId: sensor.id.toString(), lastSeenAt: staleAt.toISOString(), lastSyncedAt: staleAt.toISOString(), processedAt: now.toISOString() };
+  }
+
+  async simulateQualityRisk(user: AuthUser, batchId: bigint, now = new Date()) {
+    this.assertDemoUser(user);
+    const batch = await this.database.batch.findFirst({ where: { id: batchId, userId: BigInt(user.id), code: { in: demoActiveBatches.map(({ code }) => code) }, deletedAt: null }, select: { sensorSessions: { where: { status: 'ACTIVE' }, take: 1, select: { sensorId: true } } } });
+    if (!batch?.sensorSessions[0]) throw new NotFoundError('Simulated demo batch');
+    return this.simulateTelemetry(user, batch.sensorSessions[0].sensorId, [4], now, 1000);
+  }
+
+  private assertDemoUser(user: AuthUser) {
+    if (user.email !== seededUser.email) throw new RequestError('Demo simulations are only available for the seeded account', 403);
+  }
+
+  private async demoSensor(userId: bigint, sensorId: bigint) {
     const sensor = await this.database.sensor.findFirst({
-      where: { id: sensorId, userId, deletedAt: null },
+      where: { id: sensorId, userId, code: { in: demoActiveBatches.map(({ sensorCode }) => sensorCode) }, deviceUid: { startsWith: `sirip-demo-device:${userId}:` }, deletedAt: null },
       include: { sessions: { where: { status: 'ACTIVE' }, take: 1 } },
     });
-    if (!sensor) throw new NotFoundError('Sensor');
+    if (!sensor) throw new NotFoundError('Simulated demo sensor');
     if (sensor.provisioningStatus !== 'PROVISIONED' || !sensor.sessions[0]) throw new ConflictError('Sensor must be provisioned and assigned before simulating telemetry');
+    return sensor;
+  }
+
+  private async simulateTelemetry(user: AuthUser, sensorId: bigint, temperatures: number[], now: Date, spacingMs: number) {
+    this.assertDemoUser(user);
+    const userId = BigInt(user.id);
+    const sensor = await this.demoSensor(userId, sensorId);
     const maximum = await this.database.temperatureReading.aggregate({ where: { sensorSessionId: sensor.sessions[0].id }, _max: { sequenceNumber: true } });
     const firstSequence = Number(maximum._max.sequenceNumber ?? -1n) + 1;
     if (!Number.isSafeInteger(firstSequence + 4)) throw new ConflictError('Sensor sequence number is too large to simulate telemetry');
@@ -181,7 +212,7 @@ export class DemoService {
       deviceUid: sensor.deviceUid,
       temperature,
       sequenceNumber: firstSequence + index,
-      measuredAt: new Date(now.getTime() - (temperatures.length - 1 - index) * 1000).toISOString(),
+      measuredAt: new Date(now.getTime() - (temperatures.length - 1 - index) * spacingMs).toISOString(),
     }));
     const { readings } = parseTelemetryReadings({ readings: payload }, now.getTime());
     await this.telemetry.ingestMany(readings);

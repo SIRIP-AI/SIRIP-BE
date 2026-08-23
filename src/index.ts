@@ -10,6 +10,7 @@ import { PlanRepository } from './infrastructure/plans/plan-repository';
 import { createPlanGraph, createPlanWorkflow } from './infrastructure/plans/plan-graph';
 import { PlanService } from './application/plans/plan-service';
 import { validateApprovablePlanProposal } from './domain/plans/plans';
+import { MonitoringProcessor } from './infrastructure/telemetry/monitoring-processor';
 
 if (existsSync('.env')) loadEnvFile('.env');
 
@@ -18,6 +19,7 @@ const planRepository = new PlanRepository(database);
 const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validateApprovablePlanProposal })), validateApprovablePlanProposal);
 const telegramOperations = new TelegramOperations(database, planService);
 const telegram = new TelegramService(database, telegramOperations, createChatWorkflow(createChatGraph(telegramOperations)));
+const monitoring = new MonitoringProcessor(database, telegram);
 const app = createApp(database, telegram);
 const port = Number(process.env.PORT ?? 3000);
 
@@ -25,11 +27,31 @@ const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${port}`);
   void telegram.initialize().then((initialized) => console.log(initialized ? 'Telegram integration initialized' : 'Telegram integration disabled')).catch((error) => console.error('Telegram initialization failed', error instanceof Error ? error.message : 'Unknown error'));
 });
+let stopping = false;
+let activeSweep: Promise<void> | null = null;
+const sweep = () => {
+  if (activeSweep || stopping) return;
+  activeSweep = monitoring.sweepStaleSensors()
+    .then(() => undefined)
+    .catch((error) => console.error('Stale sensor sweep failed', error instanceof Error ? error.message : 'Unknown error'))
+    .finally(() => { activeSweep = null; });
+};
+sweep();
+const staleSweep = setInterval(sweep, 60_000);
+staleSweep.unref();
 
 async function shutdown() {
-  server.close();
+  if (stopping) return;
+  stopping = true;
+  clearInterval(staleSweep);
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await activeSweep;
   await database.$disconnect();
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+const handleShutdown = () => void shutdown().catch((error) => {
+  console.error('Shutdown failed', error instanceof Error ? error.message : 'Unknown error');
+  process.exitCode = 1;
+});
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);

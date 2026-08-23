@@ -91,6 +91,26 @@ test('Indonesian TR-02 delay extracts to preview, confirms mutation, and flags i
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPLAN');
 });
 
+test('adverse monitoring impact requires explicit replan permission and carries trigger event', async () => {
+  const memory = memoryDatabase();
+  (memory.database as unknown as { plan: { findMany: () => Promise<Array<{ id: bigint; version: number }>> } }).plan = { findMany: async () => [{ id: 30n, version: 3 }] };
+  let revisions = 0;
+  const plans = { ...emptyPlans, assess: async () => ['quality deadline missed'], revise: async () => { revisions += 1; throw new Error('not expected'); } } as unknown as PlanService;
+  const operations = new TelegramOperations(memory.database, plans);
+  const reply = await operations.monitoringImpact({ eventId: 41n, userId: 1n, batchId: 7n, batchCode: 'B-101', sensorCode: 'SIM-S-101', type: 'QUALITY_WINDOW', severity: 'WARNING', title: 'Quality window warning', description: '3.8 days remain.' });
+  assert.equal(revisions, 0);
+  assert.match(reply.text, /No proposal will be created unless you choose Replan/);
+  assert.deepEqual(parseConversation(memory.get()!.state)!.pending, { kind: 'REPLAN', eventId: '41', planIds: ['30'], instruction: 'Revise future steps to account for monitoring alert 41: Quality window warning for batch B-101.' });
+  assert.equal(reply.buttons?.at(-1)?.[0]?.text, 'Keep current plan');
+});
+
+test('stale monitoring cancel callback cannot clear a newer pending action', async () => {
+  const memory = memoryDatabase({ pending: { kind: 'PROPOSAL', planId: '31' }, messages: [] });
+  const reply = await new TelegramOperations(memory.database, emptyPlans).handle(1n, null, 'replan:cancel', new Date());
+  assert.match(reply.text, /expired/i);
+  assert.deepEqual(parseConversation(memory.get()!.state)!.pending, { kind: 'PROPOSAL', planId: '31' });
+});
+
 test('truck count scopes rows and pagination to vehicles', async () => {
   const memory = memoryDatabase();
   const database = memory.database as unknown as {

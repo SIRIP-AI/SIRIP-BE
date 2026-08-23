@@ -32,6 +32,7 @@ Group files by domain capability inside each layer when needed, such as `batches
 Core domain rules include:
 
 - Quality calculations are deterministic and never delegated to the LLM.
+- Temperature, quality-window, and sensor-offline alerts share deterministic processing but reconcile independently by rule family. Telemetry resolves offline state only as an explicit connectivity recovery; a composition-root stale sweep creates offline alerts without requiring overview reads.
 - Measurement time and receipt time are distinct.
 - Telemetry ingestion is idempotent.
 - Completed plan steps are historical facts and cannot be replanned.
@@ -77,6 +78,6 @@ LangGraph Studio reads real development data for the supplied user ID and can ma
 
 The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed`, preserves the Telegram connection, current password, and authenticated sessions, and clears pending conversations and link tokens; the CLI seed also resets credentials, connections, and sessions.
 
-Loading in-app demo data first resets the account, then creates completed trips `FT-101` through `FT-103`, monitoring batches `B-101` through `B-103`, closed historical batches `B-104` through `B-106`, and three assigned sensors with baseline telemetry near 2C. Excursion and recovery simulations each ingest five one-second readings through the production parser and repository path. The provisioning seed and reset baseline remain resource-only.
+Loading in-app demo data first resets the account, then creates completed trips `FT-101` through `FT-103`, linked monitoring batches `B-101` through `B-103`, linked closed historical batches `B-104` through `B-106`, and three assigned sensors with healthy baseline telemetry near 2C and more than four quality days remaining. Demo quality-risk, excursion, and recovery simulations ingest historically timed readings through the production parser and repository path; offline simulation only backdates authoritative seen/sync timestamps before normal monitoring processing. All simulations are restricted to seeded `SIM-*` entities and the seeded account. The provisioning seed and reset baseline remain resource-only.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

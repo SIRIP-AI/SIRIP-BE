@@ -21,11 +21,19 @@ export function createDemoRouter(service: DemoService) {
   });
   router.post('/demo/sensors/:id/excursion', async (request, response) => {
     const { user } = response.locals as AuthLocals;
-    response.json(await service.simulateExcursion(BigInt(user.id), id(request.params.id ?? '')));
+    response.json(await service.simulateExcursion(user, id(request.params.id ?? '')));
   });
   router.post('/demo/sensors/:id/recovery', async (request, response) => {
     const { user } = response.locals as AuthLocals;
-    response.json(await service.simulateRecovery(BigInt(user.id), id(request.params.id ?? '')));
+    response.json(await service.simulateRecovery(user, id(request.params.id ?? '')));
+  });
+  router.post('/demo/sensors/:id/offline', async (request, response) => {
+    const { user } = response.locals as AuthLocals;
+    response.json(await service.simulateOffline(user, id(request.params.id ?? '')));
+  });
+  router.post('/demo/batches/:id/quality-risk', async (request, response) => {
+    const { user } = response.locals as AuthLocals;
+    response.json(await service.simulateQualityRisk(user, id(request.params.id ?? '')));
   });
   return router;
 }

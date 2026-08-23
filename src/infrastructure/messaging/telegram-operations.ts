@@ -7,6 +7,7 @@ import { createTelegramInterpretationModel, extractTelegramRequest, telegramExtr
 import { composeTelegramQueryResponse } from './telegram-response-composer';
 import { executeTelegramQuery } from './telegram-query';
 import { loadTelegramOperationalSnapshot } from './telegram-snapshot';
+import type { MonitoringAlert } from '../telemetry/monitoring-processor';
 
 const pageSize = 5;
 const conversationLifetimeMs = 30 * 60_000;
@@ -198,6 +199,18 @@ function proposalText(plan: PlanView) {
 export class TelegramOperations {
   constructor(private readonly database: Database, private readonly plans: PlanService, private readonly model: () => TelegramInterpretationModel = createTelegramInterpretationModel) {}
 
+  async monitoringImpact(alert: MonitoringAlert): Promise<TelegramReply> {
+    const affected = await this.database.plan.findMany({ where: { userId: alert.userId, status: 'ACTIVE', batches: { some: { batchId: alert.batchId } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
+    const heading = `<b>${html(alert.title.toUpperCase())}</b>\n\n<b>Batch</b>\n${html(alert.batchCode)}${alert.sensorCode ? ` · ${html(alert.sensorCode)}` : ''}\n\n<b>Severity</b>\n${alert.severity}\n\n${html(alert.description)}`;
+    if (!affected.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nNo active plan directly includes this batch.` };
+    const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(alert.userId, plan.id) })));
+    const impacted = assessments.filter(({ errors }) => errors.length > 0);
+    if (!impacted.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nAffected active plans remain feasible under current deterministic constraints.` };
+    const instruction = `Revise future steps to account for monitoring alert ${alert.eventId}: ${alert.title} for batch ${alert.batchCode}.`;
+    await this.savePending(alert.userId, { kind: 'REPLAN', eventId: alert.eventId.toString(), planIds: impacted.map(({ id }) => id.toString()), instruction });
+    return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\n${impacted.map(({ version }) => `V${version} is no longer valid under current operational constraints.`).join('\n')}\n\n<i>No proposal will be created unless you choose Replan.</i>`, buttons: [...impacted.map((plan) => [{ text: `Replan V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
+  }
+
   async handle(userId: bigint, text: string | null, callback: string | null, receivedAt = new Date()): Promise<TelegramReply> {
     if (callback) return this.handleCallback(userId, callback, receivedAt);
     const prepared = await this.prepareText(userId, text, receivedAt);
@@ -343,7 +356,7 @@ export class TelegramOperations {
   private async queryRows(userId: bigint, kind: QueryKind, resourceScope?: ResourceScope): Promise<string[]> {
     if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, ${item.remainingQualityWindowDays.toFixed(1)} days remaining`}`));
     if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${formatWIB(item.lastSeenAt)}`));
-    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, occurredAt: true } }).then((items) => items.map((item) => `${item.type}: ${item.rawMessage ?? 'active'} (${formatWIB(item.occurredAt)})`));
+    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, structuredData: true, occurredAt: true } }).then((items) => items.map((item) => { const data = record(item.structuredData); const alert = record(data?.alert); return `${item.type}: ${typeof alert?.description === 'string' ? alert.description : item.rawMessage ?? 'Active operational alert'} (${formatWIB(item.occurredAt)})`; }));
     if (kind === 'resources') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
@@ -464,7 +477,8 @@ export class TelegramOperations {
     if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Show more', more[3] as ResourceScope | undefined);
     if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Report canceled. No operational state changed.' }; }
     if (callback === 'report:confirm' && current?.kind === 'REPORT_CONFIRM') return this.confirmReport(userId, current.report);
-    if (callback === 'replan:cancel' || callback === 'edit:cancel') { await this.clearPending(userId); return { text: 'Canceled. No planner request was made.' }; }
+    if (callback === 'replan:cancel' && (current?.kind === 'REPLAN' || current?.kind === 'REPLAN_CONFIRM')) { await this.clearPending(userId); return { text: 'Canceled. No planner request was made.' }; }
+    if (callback === 'edit:cancel' && current?.kind === 'EDIT_CONFIRM') { await this.clearPending(userId); return { text: 'Canceled. No planner request was made.' }; }
     if (callback === 'replan:confirm' && current?.kind === 'REPLAN_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction, current.triggerEventId ? BigInt(current.triggerEventId) : undefined);
     if (callback === 'edit:confirm' && current?.kind === 'EDIT_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction);
     if (callback.startsWith('replan:') && current?.kind === 'REPLAN') {

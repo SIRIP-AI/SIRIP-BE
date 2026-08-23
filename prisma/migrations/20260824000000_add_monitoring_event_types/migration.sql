@@ -1,0 +1,2 @@
+ALTER TYPE "OperationalEventType" ADD VALUE 'QUALITY_WINDOW';
+ALTER TYPE "OperationalEventType" ADD VALUE 'SENSOR_OFFLINE';
