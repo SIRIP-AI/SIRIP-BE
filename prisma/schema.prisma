@@ -87,6 +87,7 @@ enum PlanActionType {
   STORE
   LOAD
   DISPATCH
+  RETURN_TO_BASE
   HANDOVER
   INSPECT
   OTHER
@@ -408,7 +409,7 @@ model PlanStep {
   planId        BigInt         @map("plan_id")
   sequence      Int
   actionType    PlanActionType @map("action_type")
-  batchId       BigInt         @map("batch_id")
+  batchId       BigInt?        @map("batch_id")
   coldStorageId BigInt?        @map("cold_storage_id")
   vehicleId     BigInt?        @map("vehicle_id")
   destinationId BigInt?        @map("destination_id")
@@ -417,7 +418,7 @@ model PlanStep {
   completedAt   DateTime?      @map("completed_at") @db.Timestamptz
   rationale     String?
   plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
-  batch         Batch          @relation(fields: [batchId], references: [id])
+  batch         Batch?         @relation(fields: [batchId], references: [id])
   coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
   vehicle       Vehicle?       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   destination   Destination?   @relation(fields: [destinationId], references: [id], onDelete: Restrict)

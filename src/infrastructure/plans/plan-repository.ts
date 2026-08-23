@@ -82,7 +82,7 @@ function serializePlan(plan: StoredPlan): PlanView {
         status: step.status,
         completedAt: step.completedAt?.toISOString() ?? null,
         rationale: step.rationale,
-        batch: { id: step.batch.id.toString(), code: step.batch.code },
+        batch: step.batch ? { id: step.batch.id.toString(), code: step.batch.code } : null,
         resources,
       };
     }),
@@ -92,7 +92,7 @@ function serializePlan(plan: StoredPlan): PlanView {
 function planningStep(step: {
   sequence: number;
   actionType: PlanningPlanStep['actionType'];
-  batchId: bigint;
+  batchId: bigint | null;
   coldStorageId: bigint | null;
   vehicleId: bigint | null;
   destinationId: bigint | null;
@@ -104,7 +104,7 @@ function planningStep(step: {
   return {
     sequence: step.sequence,
     actionType: step.actionType,
-    batchId: step.batchId.toString(),
+    batchId: step.batchId?.toString() ?? null,
     coldStorageId: step.coldStorageId?.toString() ?? null,
     vehicleId: step.vehicleId?.toString() ?? null,
     destinationId: step.destinationId?.toString() ?? null,
@@ -123,7 +123,7 @@ function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {
   return {
     sequence,
     actionType: step.actionType,
-    batchId: BigInt(step.batchId),
+    batchId: step.batchId ? BigInt(step.batchId) : null,
     coldStorageId: step.coldStorageId ? BigInt(step.coldStorageId) : null,
     vehicleId: step.vehicleId ? BigInt(step.vehicleId) : null,
     destinationId: step.destinationId ? BigInt(step.destinationId) : null,
@@ -136,7 +136,7 @@ function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {
 function completedFacts(steps: Array<{
   sequence: number;
   actionType: string;
-  batchId: bigint;
+  batchId: bigint | null;
   coldStorageId: bigint | null;
   vehicleId: bigint | null;
   destinationId: bigint | null;
@@ -147,7 +147,7 @@ function completedFacts(steps: Array<{
   return JSON.stringify(steps.map((step) => [
     step.sequence,
     step.actionType,
-    step.batchId.toString(),
+    step.batchId?.toString() ?? null,
     step.coldStorageId?.toString() ?? null,
     step.vehicleId?.toString() ?? null,
     step.destinationId?.toString() ?? null,
@@ -161,13 +161,21 @@ type PlanningClient = Pick<Prisma.TransactionClient, 'batch' | 'coldStorage' | '
 
 function resourceOccupancies(plans: Array<{
   id: bigint;
-  steps: Array<{ actionType: PlanActionType; batchId: bigint; coldStorageId: bigint | null; vehicleId: bigint | null; destinationId: bigint | null; scheduledAt: Date; status: PlanningPlanStep['status']; batch: { weightKg: number } }>;
+  steps: Array<{ actionType: PlanActionType; batchId: bigint | null; coldStorageId: bigint | null; vehicleId: bigint | null; destinationId: bigint | null; scheduledAt: Date; status: PlanningPlanStep['status']; completedAt: Date | null; batch: { weightKg: number } | null }>;
 }>, predecessorId: bigint | undefined, travelMinutes: Map<string, number>): PlanningResourceOccupancy[] {
   const occupancies: PlanningResourceOccupancy[] = [];
   for (const plan of plans) {
-    const states = new Map<string, { storage?: { resourceId: string; start: string }; vehicle?: { resourceId: string; start: string; weightKg: number } }>();
+    const states = new Map<string, { storage?: { resourceId: string; start: string }; vehicle?: { resourceId: string; start: string; weightKg: number; legacyReturnAt?: string } }>();
     for (const step of plan.steps) {
       if (step.status === 'CANCELED' || (plan.id === predecessorId && step.status !== 'COMPLETED')) continue;
+      if (step.actionType === 'RETURN_TO_BASE' && step.vehicleId) {
+        for (const [batchId, state] of states) if (state.vehicle?.resourceId === step.vehicleId.toString()) {
+          occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: step.status === 'COMPLETED' ? (step.completedAt ?? step.scheduledAt).toISOString() : null });
+          state.vehicle = undefined;
+        }
+        continue;
+      }
+      if (!step.batchId || !step.batch) continue;
       const batchId = step.batchId.toString();
       const state = states.get(batchId) ?? {};
       if (step.actionType === 'STORE' && step.coldStorageId) state.storage = { resourceId: step.coldStorageId.toString(), start: step.scheduledAt.toISOString() };
@@ -178,14 +186,13 @@ function resourceOccupancies(plans: Array<{
       }
       if (step.actionType === 'DISPATCH' && step.destinationId && state.vehicle) {
         const travel = travelMinutes.get(step.destinationId.toString());
-        if (travel !== undefined) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: new Date(step.scheduledAt.getTime() + travel * 60_000).toISOString() });
-        state.vehicle = undefined;
+        if (travel !== undefined) state.vehicle.legacyReturnAt = new Date(step.scheduledAt.getTime() + travel * 2 * 60_000).toISOString();
       }
       states.set(batchId, state);
     }
     for (const [batchId, state] of states) {
-      if (state.storage) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: state.storage.resourceId, batchId, weightKg: plan.steps.find((step) => step.batchId.toString() === batchId)!.batch.weightKg, start: state.storage.start, end: null });
-      if (state.vehicle) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: null });
+      if (state.storage) occupancies.push({ resourceType: 'COLD_STORAGE', resourceId: state.storage.resourceId, batchId, weightKg: plan.steps.find((step) => step.batchId?.toString() === batchId)!.batch!.weightKg, start: state.storage.start, end: null });
+      if (state.vehicle) occupancies.push({ resourceType: 'VEHICLE', resourceId: state.vehicle.resourceId, batchId, weightKg: state.vehicle.weightKg, start: state.vehicle.start, end: state.vehicle.legacyReturnAt ?? null });
     }
   }
   return occupancies;
@@ -236,7 +243,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
     }),
     client.plan.findMany({
       where: { userId, status: 'ACTIVE' },
-      select: { id: true, steps: { orderBy: { sequence: 'asc' }, select: { actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, batch: { select: { weightKg: true } } } } },
+      select: { id: true, steps: { orderBy: { sequence: 'asc' }, select: { actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, batch: { select: { weightKg: true } } } } },
     }),
   ]);
   return {
@@ -306,7 +313,7 @@ function storedProposal(plan: {
   summary: string;
   steps: Array<{
     actionType: PlanActionType;
-    batchId: bigint;
+    batchId: bigint | null;
     coldStorageId: bigint | null;
     vehicleId: bigint | null;
     destinationId: bigint | null;
@@ -319,7 +326,7 @@ function storedProposal(plan: {
     summary: plan.summary,
     steps: plan.steps.map((step) => ({
       actionType: step.actionType as typeof generatedPlanActionTypes[number],
-      batchId: step.batchId.toString(),
+      ...(step.batchId ? { batchId: step.batchId.toString() } : {}),
       scheduledAt: step.scheduledAt.toISOString(),
       ...(step.coldStorageId ? { coldStorageId: step.coldStorageId.toString() } : {}),
       ...(step.vehicleId ? { vehicleId: step.vehicleId.toString() } : {}),
@@ -467,7 +474,7 @@ export class PlanRepository implements PlanRepositoryPort {
       const completed = proposal.steps.filter((step) => step.status === 'COMPLETED');
       const activeCompleted = context.currentPlan?.steps.filter((step) => step.status === 'COMPLETED').map((step) => ({
         ...step,
-        batchId: BigInt(step.batchId),
+        batchId: step.batchId ? BigInt(step.batchId) : null,
         coldStorageId: step.coldStorageId ? BigInt(step.coldStorageId) : null,
         vehicleId: step.vehicleId ? BigInt(step.vehicleId) : null,
         destinationId: step.destinationId ? BigInt(step.destinationId) : null,
@@ -497,14 +504,26 @@ export class PlanRepository implements PlanRepositoryPort {
   async completeStep(userId: bigint, planId: bigint, stepId: bigint) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
-      await transaction.$queryRaw`SELECT ps."id" FROM "plan_steps" ps JOIN "plans" p ON p."id" = ps."plan_id" JOIN "batches" b ON b."id" = ps."batch_id" WHERE p."user_id" = ${userId} AND p."id" = ${planId} AND ps."id" = ${stepId} FOR UPDATE OF p, ps, b`;
+      await transaction.$queryRaw`SELECT ps."id" FROM "plan_steps" ps JOIN "plans" p ON p."id" = ps."plan_id" WHERE p."user_id" = ${userId} AND p."id" = ${planId} AND ps."id" = ${stepId} FOR UPDATE OF p, ps`;
       const plan = await transaction.plan.findFirst({ where: { id: planId, userId }, select: { status: true } });
       if (!plan) throw new NotFoundError('Plan');
-      const step = await transaction.planStep.findFirst({ where: { id: stepId, planId }, select: { status: true, batch: { select: { deletedAt: true } } } });
+      const step = await transaction.planStep.findFirst({ where: { id: stepId, planId }, select: { status: true, actionType: true, batchId: true, vehicleId: true, sequence: true, scheduledAt: true, batch: { select: { deletedAt: true } } } });
       if (!step) throw new NotFoundError('Plan step');
       if (plan.status !== 'ACTIVE') throw new ConflictError('Plan is not active');
       if (step.status !== 'UPCOMING') throw new ConflictError('Plan step is not upcoming');
-      if (step.batch.deletedAt) throw new ConflictError('Plan step batch is no longer active');
+      if (step.batch?.deletedAt) throw new ConflictError('Plan step batch is no longer active');
+      if (step.actionType === 'LOAD' && step.vehicleId) {
+        const pendingReturn = await transaction.planStep.findFirst({ where: { vehicleId: step.vehicleId, actionType: 'RETURN_TO_BASE', status: 'UPCOMING', scheduledAt: { lte: step.scheduledAt }, plan: { userId, status: 'ACTIVE' }, OR: [{ planId: { not: planId } }, { planId, sequence: { lt: step.sequence } }] }, select: { id: true } });
+        if (pendingReturn) throw new ConflictError('Vehicle must be marked returned before it can be loaded again');
+      }
+      if (step.actionType === 'DISPATCH' && step.batchId) {
+        const pendingLoad = await transaction.planStep.findFirst({ where: { planId, batchId: step.batchId, actionType: 'LOAD', status: 'UPCOMING', sequence: { lt: step.sequence } }, select: { id: true } });
+        if (pendingLoad) throw new ConflictError('Batch must be marked loaded before it can be dispatched');
+      }
+      if (step.actionType === 'RETURN_TO_BASE' && step.vehicleId) {
+        const pendingDispatch = await transaction.planStep.findFirst({ where: { planId, vehicleId: step.vehicleId, actionType: 'DISPATCH', status: 'UPCOMING', sequence: { lt: step.sequence } }, select: { id: true } });
+        if (pendingDispatch) throw new ConflictError('Vehicle cannot be marked returned before its dispatch is completed');
+      }
       const completedAt = new Date();
       await transaction.planStep.update({ where: { id: stepId }, data: { status: 'COMPLETED', completedAt } });
       const upcoming = await transaction.planStep.findFirst({ where: { planId, status: 'UPCOMING' }, select: { id: true } });

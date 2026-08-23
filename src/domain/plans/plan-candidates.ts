@@ -1,4 +1,4 @@
-import { evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
+import { addReturnToBaseSteps, evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
 
 export type PlanCandidate = { id: string; proposal: AiPlanProposal };
 
@@ -42,7 +42,7 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
       for (const vehicleWindow of availability) {
         const earliestLoad = Math.max(now + 60_000, Date.parse(dispatchWindow.start) - stepMinutes * 60_000, Date.parse(vehicleWindow.start), now + vehicle.delayMinutes * 60_000);
         const earliestDispatch = Math.max(earliestLoad + (state.vehicleId ? 0 : stepMinutes * 60_000), Date.parse(dispatchWindow.start), Date.parse(vehicleWindow.start));
-        const latestDispatch = Math.min(Date.parse(dispatchWindow.end), Date.parse(vehicleWindow.end), latestArrival - destination.travelMinutes * 60_000);
+        const latestDispatch = Math.min(Date.parse(dispatchWindow.end), Date.parse(vehicleWindow.end) - destination.travelMinutes * 2 * 60_000, latestArrival - destination.travelMinutes * 60_000);
         const firstDispatch = Math.ceil(earliestDispatch / (stepMinutes * 60_000)) * stepMinutes * 60_000;
         for (let dispatchAt = firstDispatch; dispatchAt <= latestDispatch && choices.length < maximumChoicesPerBatch && vehicleChoices < maximumTimesPerVehicle; dispatchAt += stepMinutes * 60_000) {
           const dispatch: AiPlanStep = {
@@ -73,8 +73,8 @@ function partialContext(context: PlanningContext, batchIds: Set<string>): Planni
   return { ...context, batches: context.batches.filter((batch) => batchIds.has(batch.id)) };
 }
 
-function proposal(steps: AiPlanStep[]): AiPlanProposal {
-  return orderPlanProposal({ summary: 'Deterministic feasible logistics plan', steps });
+function proposal(context: PlanningContext, steps: AiPlanStep[]): AiPlanProposal {
+  return addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic feasible logistics plan', steps }), context);
 }
 
 function proposalKey(value: AiPlanProposal) {
@@ -94,7 +94,7 @@ export function generatePlanCandidates(context: PlanningContext, facts: Planning
     const seen = new Set<string>();
     for (const partial of partials) {
       for (const choice of choices) {
-        const candidate = proposal([...partial, ...choice]);
+        const candidate = proposal(context, [...partial, ...choice]);
         if (validatePlanProposal(candidate, partialContext(context, included)).length) continue;
         const key = proposalKey(candidate);
         if (!seen.has(key)) {
@@ -108,7 +108,7 @@ export function generatePlanCandidates(context: PlanningContext, facts: Planning
   }
 
   return partials
-    .map(proposal)
+    .map((steps) => proposal(context, steps))
     .filter((candidate) => validatePlanProposal(candidate, context).length === 0 && evaluatePlanQuality(candidate, context, facts).length === 0)
     .slice(0, maximumCandidates)
     .map((candidate, index) => ({ id: `candidate-${index + 1}`, proposal: candidate }));

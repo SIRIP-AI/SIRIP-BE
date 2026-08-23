@@ -119,7 +119,7 @@ export class OverviewRepository {
           status: true,
           summary: true,
           steps: {
-            where: { status: { in: ['UPCOMING', 'COMPLETED'] }, batch: { deletedAt: null } },
+            where: { status: { in: ['UPCOMING', 'COMPLETED'] }, OR: [{ batchId: null }, { batch: { deletedAt: null } }] },
             orderBy: { sequence: 'asc' },
             take: 3,
             select: {
@@ -195,7 +195,7 @@ export class OverviewRepository {
           actionType: step.actionType,
           scheduledAt: step.scheduledAt.toISOString(),
           status: step.status,
-          batchCode: step.batch.code,
+          batchCode: step.batch?.code ?? null,
           resources: resources(step),
         })),
       } : null,

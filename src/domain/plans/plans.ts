@@ -1,5 +1,5 @@
-export const planActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'HANDOVER', 'INSPECT', 'OTHER'] as const;
-export const generatedPlanActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'INSPECT'] as const;
+export const planActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'RETURN_TO_BASE', 'HANDOVER', 'INSPECT', 'OTHER'] as const;
+export const generatedPlanActionTypes = ['STORE', 'LOAD', 'DISPATCH', 'RETURN_TO_BASE', 'INSPECT'] as const;
 export const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
 
 export type PlanActionType = typeof planActionTypes[number];
@@ -10,7 +10,7 @@ export type PlanStepStatus = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
 
 export type AiPlanStep = {
   actionType: GeneratedPlanActionType;
-  batchId: string;
+  batchId?: string;
   scheduledAt: string;
   coldStorageId?: string;
   vehicleId?: string;
@@ -78,7 +78,7 @@ export type PlanningDestination = {
 export type PlanningPlanStep = {
   sequence: number;
   actionType: PlanActionType;
-  batchId: string;
+  batchId: string | null;
   coldStorageId: string | null;
   vehicleId: string | null;
   destinationId: string | null;
@@ -198,7 +198,7 @@ export type PlanView = {
     status: PlanStepStatus;
     completedAt: string | null;
     rationale: string | null;
-    batch: { id: string; code: string };
+    batch: { id: string; code: string } | null;
     resources: PlanResource[];
   }>;
 };
@@ -250,9 +250,11 @@ function parseStep(value: unknown, index: number): AiPlanStep {
   const coldStorageId = optionalId(step.coldStorageId, `steps[${index}].coldStorageId`);
   const vehicleId = optionalId(step.vehicleId, `steps[${index}].vehicleId`);
   const destinationId = optionalId(step.destinationId, `steps[${index}].destinationId`);
+  const batchId = optionalId(step.batchId, `steps[${index}].batchId`);
+  if (step.actionType === 'RETURN_TO_BASE' ? batchId !== undefined : batchId === undefined) invalid(`steps[${index}].batchId is invalid for ${step.actionType}`);
   return {
     actionType: step.actionType as GeneratedPlanActionType,
-    batchId: id(step.batchId, `steps[${index}].batchId`),
+    ...(batchId ? { batchId } : {}),
     scheduledAt: new Date(step.scheduledAt).toISOString(),
     ...(coldStorageId ? { coldStorageId } : {}),
     ...(vehicleId ? { vehicleId } : {}),
@@ -333,6 +335,7 @@ function resourceCombination(step: AiPlanStep) {
   if (step.actionType === 'STORE') return present[0] && !present[1] && !present[2];
   if (step.actionType === 'LOAD') return !present[0] && present[1] && !present[2];
   if (step.actionType === 'DISPATCH') return !present[0] && present[1] && present[2];
+  if (step.actionType === 'RETURN_TO_BASE') return !present[0] && present[1] && present[2];
   return !present[0] && !present[1] && !present[2];
 }
 
@@ -342,6 +345,24 @@ export function orderPlanProposal(proposal: AiPlanProposal): AiPlanProposal {
     const rightTime = Date.parse(right.scheduledAt);
     return (Number.isFinite(leftTime) ? leftTime : Number.POSITIVE_INFINITY) - (Number.isFinite(rightTime) ? rightTime : Number.POSITIVE_INFINITY);
   }) };
+}
+
+export function addReturnToBaseSteps(proposal: AiPlanProposal, context: PlanningContext): AiPlanProposal {
+  const deliverySteps = proposal.steps.filter((step) => step.actionType !== 'RETURN_TO_BASE');
+  const returns = new Map<string, AiPlanStep>();
+  for (const dispatch of deliverySteps.filter((step) => step.actionType === 'DISPATCH')) {
+    const destination = dispatch.destinationId ? context.destinations.find(({ id }) => id === dispatch.destinationId) : undefined;
+    if (!dispatch.vehicleId || !dispatch.destinationId || !destination) continue;
+    const key = `${dispatch.vehicleId}:${dispatch.destinationId}:${dispatch.scheduledAt}`;
+    returns.set(key, {
+      actionType: 'RETURN_TO_BASE',
+      vehicleId: dispatch.vehicleId,
+      destinationId: dispatch.destinationId,
+      scheduledAt: new Date(Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 2 * 60_000).toISOString(),
+      rationale: 'Return the vehicle to base after completing the shared delivery trip.',
+    });
+  }
+  return orderPlanProposal({ ...proposal, steps: [...deliverySteps, ...returns.values()] });
 }
 
 export function validatePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {
@@ -362,16 +383,16 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   let previousTime = Number.NEGATIVE_INFINITY;
 
   for (const step of context.currentPlan?.steps.filter((candidate) => candidate.status === 'COMPLETED') ?? []) {
-    if (step.actionType === 'STORE' && step.coldStorageId) storedAt.set(step.batchId, { resourceId: step.coldStorageId, start: step.scheduledAt });
-    if (step.actionType === 'LOAD' && step.vehicleId) {
+    if (step.actionType === 'STORE' && step.batchId && step.coldStorageId) storedAt.set(step.batchId, { resourceId: step.coldStorageId, start: step.scheduledAt });
+    if (step.actionType === 'LOAD' && step.batchId && step.vehicleId) {
       storedAt.delete(step.batchId);
       loadedVehicle.set(step.batchId, step.vehicleId);
       loadedAt.set(step.batchId, { resourceId: step.vehicleId, start: step.scheduledAt });
     }
-    if (step.actionType === 'DISPATCH') {
-      loadedVehicle.delete(step.batchId);
-      loadedAt.delete(step.batchId);
-      dispatched.add(step.batchId);
+    if (step.actionType === 'DISPATCH' && step.batchId) dispatched.add(step.batchId);
+    if (step.actionType === 'RETURN_TO_BASE' && step.vehicleId) for (const [batchId, vehicleId] of loadedVehicle) if (vehicleId === step.vehicleId) {
+      loadedVehicle.delete(batchId);
+      loadedAt.delete(batchId);
     }
   }
 
@@ -384,15 +405,17 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
 
   proposal.steps.forEach((step, index) => {
     const scheduledAt = new Date(step.scheduledAt);
-    const batch = batches.get(step.batchId);
-    const label = `Step ${index + 1} (${step.actionType} ${batch?.code ?? `batch ${step.batchId}`})`;
-    if (!positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} references an inactive or unconfigured batch`);
+    const batch = step.batchId ? batches.get(step.batchId) : undefined;
+    const label = `Step ${index + 1} (${step.actionType}${batch ? ` ${batch.code}` : ''})`;
+    if (step.actionType === 'RETURN_TO_BASE') {
+      if (step.batchId !== undefined) errors.push(`${label} must be a vehicle-level step without a batch`);
+    } else if (!step.batchId || !positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} references an inactive or unconfigured batch`);
     else covered.add(batch.id);
     if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= now.getTime()) errors.push(`${label} must be scheduled in the future`);
     if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < previousTime) errors.push(`${label} is not in chronological order`);
     if (!Number.isNaN(scheduledAt.getTime())) previousTime = scheduledAt.getTime();
     if (!resourceCombination(step)) errors.push(`${label} has an illegal action/resource combination`);
-    if (dispatched.has(step.batchId)) errors.push(`${label} schedules work after dispatch`);
+    if (step.batchId && dispatched.has(step.batchId)) errors.push(`${label} schedules work after dispatch`);
     if (step.actionType === 'INSPECT' && batch?.status !== 'INSPECTION_HOLD') errors.push(`${label} invents an inspection requirement`);
 
     const coldStorage = step.coldStorageId ? coldStorages.get(step.coldStorageId) : undefined;
@@ -435,8 +458,13 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
         if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !load) errors.push(`${label} must use the vehicle from the preceding load, which must be unmatched`);
         else {
           const physical = occupancies.find((occupancy) => occupancy.resourceType === 'VEHICLE' && occupancy.batchId === batch.id && occupancy.end === null);
-          if (physical) physical.end = arrival.toISOString();
-          else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: arrival.toISOString() });
+          const expectedReturnAt = scheduledAt.getTime() + destination.travelMinutes * 2 * 60_000;
+          const returnSteps = proposal.steps.filter((candidate) => candidate.actionType === 'RETURN_TO_BASE' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && Date.parse(candidate.scheduledAt) === expectedReturnAt);
+          const returnStep = returnSteps[0];
+          if (returnSteps.length !== 1) errors.push(`${label} must have exactly one return-to-base step at ${new Date(expectedReturnAt).toISOString()}`);
+          const occupiedUntil = returnStep?.scheduledAt ?? null;
+          if (physical) physical.end = occupiedUntil;
+          else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: occupiedUntil });
         }
         if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
         else dispatched.add(batch.id);
@@ -446,6 +474,15 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
         }
         if (deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} arrives after the plan deadline`);
       }
+    }
+    if (step.actionType === 'RETURN_TO_BASE') {
+      if (!step.vehicleId || !vehicle) errors.push(`${label} references an unconfigured vehicle`);
+      if (!step.destinationId || !destination) errors.push(`${label} references an unconfigured destination`);
+      if (vehicle && !Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} is outside ${vehicle.code} availability`);
+      const matchingDispatch = proposal.steps.some((candidate) => candidate.actionType === 'DISPATCH' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && Date.parse(candidate.scheduledAt) + (destination?.travelMinutes ?? 0) * 2 * 60_000 === scheduledAt.getTime());
+      const duplicateReturns = proposal.steps.filter((candidate) => candidate.actionType === 'RETURN_TO_BASE' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && candidate.scheduledAt === step.scheduledAt).length;
+      if (!matchingDispatch) errors.push(`${label} has no matching round trip`);
+      if (duplicateReturns !== 1) errors.push(`${label} duplicates a vehicle return`);
     }
   });
 
@@ -489,7 +526,7 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
 
   for (const step of proposal.steps) {
     if (step.actionType !== 'STORE') continue;
-    const withoutStorage = replaceSteps(proposal, (candidate) => candidate === step ? null : candidate);
+    const withoutStorage = addReturnToBaseSteps(replaceSteps(proposal, (candidate) => candidate === step ? null : candidate), context);
     if (validatePlanProposal(withoutStorage, context).length === 0) {
       const batch = context.batches.find(({ id }) => id === step.batchId);
       issues.push({ code: 'UNNECESSARY_STORAGE', message: `${batch?.code ?? `Batch ${step.batchId}`} is stored even though the same load and dispatch plan is feasible without storage.` });
@@ -504,13 +541,13 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
       const flexibleJourney = journey(proposal, flexible.batchId);
       if (!flexibleJourney || flexibleJourney.load.vehicleId !== scarceVehicleId || Date.parse(flexibleJourney.dispatch.scheduledAt) >= Date.parse(constrainedJourney.dispatch.scheduledAt)) continue;
       for (const alternative of flexible.feasibleVehicleIds.filter((vehicleId) => vehicleId !== scarceVehicleId)) {
-        const candidate = replaceSteps(proposal, (step) => {
+        const candidate = addReturnToBaseSteps(replaceSteps(proposal, (step) => {
           if (step.batchId === constrained.batchId && step.actionType === 'STORE') return null;
           if (step.batchId === constrained.batchId && step.actionType === 'LOAD') return { ...step, vehicleId: scarceVehicleId, scheduledAt: flexibleJourney.load.scheduledAt };
           if (step.batchId === constrained.batchId && step.actionType === 'DISPATCH') return { ...step, vehicleId: scarceVehicleId, scheduledAt: flexibleJourney.dispatch.scheduledAt };
           if (step.batchId === flexible.batchId && (step.actionType === 'LOAD' || step.actionType === 'DISPATCH')) return { ...step, vehicleId: alternative };
           return step;
-        });
+        }), context);
         if (validatePlanProposal(candidate, context).length === 0) {
           const constrainedBatch = context.batches.find(({ id }) => id === constrained.batchId);
           const flexibleBatch = context.batches.find(({ id }) => id === flexible.batchId);
@@ -528,13 +565,13 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
     for (const laterPriority of facts.batches.filter(({ urgencyRank }) => urgencyRank > urgent.urgencyRank)) {
       const otherJourney = journey(proposal, laterPriority.batchId);
       if (!otherJourney || Date.parse(otherJourney.dispatch.scheduledAt) >= Date.parse(urgentJourney.dispatch.scheduledAt)) continue;
-      const candidate = replaceSteps(proposal, (step) => {
+      const candidate = addReturnToBaseSteps(replaceSteps(proposal, (step) => {
         if (step.batchId === urgent.batchId && step.actionType === 'LOAD') return { ...step, scheduledAt: otherJourney.load.scheduledAt };
         if (step.batchId === urgent.batchId && step.actionType === 'DISPATCH') return { ...step, scheduledAt: otherJourney.dispatch.scheduledAt };
         if (step.batchId === laterPriority.batchId && step.actionType === 'LOAD') return { ...step, scheduledAt: urgentJourney.load.scheduledAt };
         if (step.batchId === laterPriority.batchId && step.actionType === 'DISPATCH') return { ...step, scheduledAt: urgentJourney.dispatch.scheduledAt };
         return step;
-      });
+      }), context);
       if (validatePlanProposal(candidate, context).length === 0) {
         const urgentBatch = context.batches.find(({ id }) => id === urgent.batchId);
         const otherBatch = context.batches.find(({ id }) => id === laterPriority.batchId);

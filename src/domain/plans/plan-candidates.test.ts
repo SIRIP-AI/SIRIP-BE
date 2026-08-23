@@ -20,7 +20,7 @@ test('generates only sensible deterministic candidates', () => {
   assert.ok(candidates.length > 0);
   assert.ok(candidates.length <= 3);
   assert.ok(candidates.every(({ proposal }) => validateSensiblePlanProposal(proposal, context).length === 0));
-  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH']);
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH', 'RETURN_TO_BASE']);
 });
 
 test('returns no candidate when no vehicle can carry the batch', () => {
@@ -36,5 +36,19 @@ test('continues from a completed load without generating another load', () => {
   };
   const candidates = generatePlanCandidates(loaded, derivePlanningFacts(loaded));
   assert.ok(candidates.length > 0);
-  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['DISPATCH']);
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['DISPATCH', 'RETURN_TO_BASE']);
+});
+
+test('keeps a vehicle occupied for the full round trip and shares one return across a trip', () => {
+  const shared = { ...context, batches: [...context.batches, { ...context.batches[0]!, id: '8', code: 'B-8' }] };
+  const candidates = generatePlanCandidates(shared, derivePlanningFacts(shared));
+  assert.ok(candidates.length > 0);
+  const first = candidates[0]!.proposal;
+  const returns = first.steps.filter(({ actionType }) => actionType === 'RETURN_TO_BASE');
+  assert.ok(returns.length >= 1);
+  for (const load of first.steps.filter(({ actionType }) => actionType === 'LOAD')) {
+    const previousReturn = returns.filter((step) => step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) <= Date.parse(load.scheduledAt)).at(-1);
+    const previousDispatch = first.steps.filter((step) => step.actionType === 'DISPATCH' && step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) < Date.parse(load.scheduledAt)).at(-1);
+    if (previousDispatch) assert.ok(previousReturn, 'a reused vehicle must have returned before its next load');
+  }
 });
