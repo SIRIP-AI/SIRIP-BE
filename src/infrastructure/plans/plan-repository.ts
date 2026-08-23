@@ -82,6 +82,8 @@ function serializePlan(plan: StoredPlan): PlanView {
         status: step.status,
         completedAt: step.completedAt?.toISOString() ?? null,
         rationale: step.rationale,
+        timingRationale: step.timingRationale,
+        latestSafeAt: step.latestSafeAt?.toISOString() ?? null,
         batch: step.batch ? { id: step.batch.id.toString(), code: step.batch.code } : null,
         resources,
       };
@@ -100,6 +102,8 @@ function planningStep(step: {
   status: PlanningPlanStep['status'];
   completedAt: Date | null;
   rationale: string | null;
+  timingRationale?: string | null;
+  latestSafeAt?: Date | null;
 }): PlanningPlanStep {
   return {
     sequence: step.sequence,
@@ -112,6 +116,8 @@ function planningStep(step: {
     status: step.status,
     completedAt: step.completedAt?.toISOString() ?? null,
     rationale: step.rationale,
+    timingRationale: step.timingRationale,
+    latestSafeAt: step.latestSafeAt?.toISOString() ?? null,
   };
 }
 
@@ -130,6 +136,8 @@ function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {
     scheduledAt: new Date(step.scheduledAt),
     status: 'UPCOMING' as const,
     rationale: step.rationale,
+    timingRationale: step.timingRationale ?? null,
+    latestSafeAt: step.latestSafeAt ? new Date(step.latestSafeAt) : null,
   };
 }
 
@@ -143,6 +151,8 @@ function completedFacts(steps: Array<{
   scheduledAt: Date;
   completedAt: Date | null;
   rationale: string | null;
+  timingRationale: string | null;
+  latestSafeAt: Date | null;
 }>) {
   return JSON.stringify(steps.map((step) => [
     step.sequence,
@@ -154,6 +164,10 @@ function completedFacts(steps: Array<{
     step.scheduledAt.toISOString(),
     step.completedAt?.toISOString() ?? null,
     step.rationale,
+    step.timingRationale ?? null,
+    step.latestSafeAt?.toISOString() ?? null,
+    step.timingRationale,
+    step.latestSafeAt?.toISOString() ?? null,
   ]));
 }
 
@@ -238,7 +252,7 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
         summary: true,
         destinationId: true,
         deadline: true,
-        steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true } },
+        steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
       },
     }),
     client.plan.findMany({
@@ -319,6 +333,8 @@ function storedProposal(plan: {
     destinationId: bigint | null;
     scheduledAt: Date;
     rationale: string | null;
+    timingRationale: string | null;
+    latestSafeAt: Date | null;
   }>;
 }): AiPlanProposal {
   if (plan.steps.some((step) => !generatedPlanActionTypes.includes(step.actionType as typeof generatedPlanActionTypes[number]))) throw new ConflictError('Legacy proposal uses unsupported actions');
@@ -332,6 +348,8 @@ function storedProposal(plan: {
       ...(step.vehicleId ? { vehicleId: step.vehicleId.toString() } : {}),
       ...(step.destinationId ? { destinationId: step.destinationId.toString() } : {}),
       rationale: step.rationale ?? 'Historical step',
+      ...(step.timingRationale ? { timingRationale: step.timingRationale } : {}),
+      ...(step.latestSafeAt ? { latestSafeAt: step.latestSafeAt.toISOString() } : {}),
     })),
   };
 }
@@ -394,7 +412,7 @@ export class PlanRepository implements PlanRepositoryPort {
           deadline: true,
           steps: {
             orderBy: { sequence: 'asc' },
-            select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true },
+            select: { sequence: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, status: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true },
           },
         },
       }) : null;
@@ -451,7 +469,7 @@ export class PlanRepository implements PlanRepositoryPort {
           destinationId: true,
           deadline: true,
           batches: { select: { batchId: true } },
-          steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, rationale: true } },
+          steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
         },
       });
       if (!proposal) throw new NotFoundError('Plan');
@@ -480,6 +498,8 @@ export class PlanRepository implements PlanRepositoryPort {
         destinationId: step.destinationId ? BigInt(step.destinationId) : null,
         scheduledAt: new Date(step.scheduledAt),
         completedAt: step.completedAt ? new Date(step.completedAt) : null,
+        timingRationale: step.timingRationale ?? null,
+        latestSafeAt: step.latestSafeAt ? new Date(step.latestSafeAt) : null,
       })) ?? [];
       if (completedFacts(completed) !== completedFacts(activeCompleted)) throw new ConflictError('Plan proposal is stale');
       if (proposal.previousPlanId) await transaction.plan.update({ where: { id: proposal.previousPlanId }, data: { status: 'SUPERSEDED' } });

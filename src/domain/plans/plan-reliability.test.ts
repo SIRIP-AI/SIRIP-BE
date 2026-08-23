@@ -39,6 +39,9 @@ for (const scenario of scenarios) {
   test(`planning scenario: ${scenario.name}`, () => {
     const candidates = generatePlanCandidates(scenario.context, derivePlanningFacts(scenario.context));
     assert.equal(candidates.length > 0, scenario.feasible);
-    for (const candidate of candidates) assert.deepEqual(validateSensiblePlanProposal(candidate.proposal, scenario.context), []);
+    for (const candidate of candidates) {
+      assert.deepEqual(validateSensiblePlanProposal(candidate.proposal, scenario.context), []);
+      assert.ok(candidate.proposal.steps.every((step) => step.rationale && step.timingRationale && step.latestSafeAt && Date.parse(step.latestSafeAt) >= Date.parse(step.scheduledAt)));
+    }
   });
 }

@@ -21,6 +21,12 @@ test('generates only sensible deterministic candidates', () => {
   assert.ok(candidates.length <= 3);
   assert.ok(candidates.every(({ proposal }) => validateSensiblePlanProposal(proposal, context).length === 0));
   assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH', 'RETURN_TO_BASE']);
+  assert.ok(candidates[0]!.proposal.steps.every((step) => step.rationale && step.timingRationale && step.latestSafeAt && Date.parse(step.latestSafeAt) >= Date.parse(step.scheduledAt)));
+  const dispatch = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'DISPATCH');
+  const load = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'LOAD');
+  assert.equal(dispatch?.latestSafeAt, '2026-08-20T14:00:00.000Z');
+  assert.equal(load?.latestSafeAt, '2026-08-20T13:45:00.000Z');
+  assert.match(dispatch?.timingRationale ?? '', /availability and return trip/);
 });
 
 test('returns no candidate when no vehicle can carry the batch', () => {

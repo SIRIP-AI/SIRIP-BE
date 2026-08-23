@@ -42,7 +42,15 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
       for (const vehicleWindow of availability) {
         const earliestLoad = Math.max(now + 60_000, Date.parse(dispatchWindow.start) - stepMinutes * 60_000, Date.parse(vehicleWindow.start), now + vehicle.delayMinutes * 60_000);
         const earliestDispatch = Math.max(earliestLoad + (state.vehicleId ? 0 : stepMinutes * 60_000), Date.parse(dispatchWindow.start), Date.parse(vehicleWindow.start));
-        const latestDispatch = Math.min(Date.parse(dispatchWindow.end), Date.parse(vehicleWindow.end) - destination.travelMinutes * 2 * 60_000, latestArrival - destination.travelMinutes * 60_000);
+        const destinationLimit = Date.parse(dispatchWindow.end);
+        const vehicleReturnLimit = Date.parse(vehicleWindow.end) - destination.travelMinutes * 2 * 60_000;
+        const arrivalLimit = latestArrival - destination.travelMinutes * 60_000;
+        const latestDispatch = Math.min(destinationLimit, vehicleReturnLimit, arrivalLimit);
+        const bindingConstraints = [
+          ...(latestDispatch === destinationLimit ? ['the destination receiving window'] : []),
+          ...(latestDispatch === vehicleReturnLimit ? [`${vehicle.code}'s availability and return trip`] : []),
+          ...(latestDispatch === arrivalLimit ? [`${batch.code}'s quality or plan arrival deadline`] : []),
+        ];
         const firstDispatch = Math.ceil(earliestDispatch / (stepMinutes * 60_000)) * stepMinutes * 60_000;
         for (let dispatchAt = firstDispatch; dispatchAt <= latestDispatch && choices.length < maximumChoicesPerBatch && vehicleChoices < maximumTimesPerVehicle; dispatchAt += stepMinutes * 60_000) {
           const dispatch: AiPlanStep = {
@@ -51,15 +59,19 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
             vehicleId,
             destinationId: destination.destinationId,
             scheduledAt: new Date(dispatchAt).toISOString(),
-            rationale: `Dispatch ${batch.code} within its receiving and quality windows.`,
+            rationale: `Dispatch ${batch.code} directly with ${vehicle.code} to avoid unnecessary storage and handling.`,
+            timingRationale: `This departure reaches ${context.destinations.find(({ id }) => id === destination.destinationId)?.name ?? 'the destination'} within its receiving window. The latest safe departure is limited by ${bindingConstraints.join(', ')}.`,
+            latestSafeAt: new Date(latestDispatch).toISOString(),
           };
           if (state.vehicleId) choices.push([dispatch]);
           else choices.push([{
             actionType: 'LOAD',
             batchId,
-            vehicleId,
-            scheduledAt: new Date(dispatchAt - stepMinutes * 60_000).toISOString(),
-            rationale: `Load ${batch.code} for direct dispatch.`,
+              vehicleId,
+              scheduledAt: new Date(dispatchAt - stepMinutes * 60_000).toISOString(),
+              rationale: `Load ${batch.code} into ${vehicle.code}, which has sufficient capacity and supports direct dispatch.`,
+              timingRationale: `Loading starts ${stepMinutes} minutes before the selected departure so the batch is ready without avoidable waiting.`,
+              latestSafeAt: new Date(latestDispatch - stepMinutes * 60_000).toISOString(),
           }, dispatch]);
           vehicleChoices += 1;
         }

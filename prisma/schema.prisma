@@ -417,6 +417,8 @@ model PlanStep {
   status        PlanStepStatus
   completedAt   DateTime?      @map("completed_at") @db.Timestamptz
   rationale     String?
+  timingRationale String?      @map("timing_rationale")
+  latestSafeAt  DateTime?      @map("latest_safe_at") @db.Timestamptz
   plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
   batch         Batch?         @relation(fields: [batchId], references: [id])
   coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)

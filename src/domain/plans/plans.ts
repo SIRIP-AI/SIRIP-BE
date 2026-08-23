@@ -16,6 +16,8 @@ export type AiPlanStep = {
   vehicleId?: string;
   destinationId?: string;
   rationale: string;
+  timingRationale?: string;
+  latestSafeAt?: string;
 };
 
 export type AiPlanProposal = {
@@ -86,6 +88,8 @@ export type PlanningPlanStep = {
   status: PlanStepStatus;
   completedAt: string | null;
   rationale: string | null;
+  timingRationale?: string | null;
+  latestSafeAt?: string | null;
 };
 
 export type PlanningActivePlan = {
@@ -161,6 +165,8 @@ export function planSnapshot(plan: PlanningActivePlan | null) {
       step.status,
       step.completedAt,
       step.rationale,
+      step.timingRationale,
+      step.latestSafeAt,
     ]),
   ] : null);
 }
@@ -198,6 +204,8 @@ export type PlanView = {
     status: PlanStepStatus;
     completedAt: string | null;
     rationale: string | null;
+    timingRationale: string | null;
+    latestSafeAt: string | null;
     batch: { id: string; code: string } | null;
     resources: PlanResource[];
   }>;
@@ -214,7 +222,7 @@ export class InvalidPlanProposalError extends Error {}
 
 const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const positiveId = /^[1-9]\d*$/;
-const stepFields = new Set(['actionType', 'batchId', 'scheduledAt', 'coldStorageId', 'vehicleId', 'destinationId', 'rationale']);
+const stepFields = new Set(['actionType', 'batchId', 'scheduledAt', 'coldStorageId', 'vehicleId', 'destinationId', 'rationale', 'timingRationale', 'latestSafeAt']);
 
 function invalid(message: string): never {
   throw new InvalidPlanProposalError(message);
@@ -247,6 +255,9 @@ function parseStep(value: unknown, index: number): AiPlanStep {
   if (typeof step.scheduledAt !== 'string' || !isoDateTime.test(step.scheduledAt) || !Number.isFinite(Date.parse(step.scheduledAt))) invalid(`steps[${index}].scheduledAt must be an ISO datetime`);
   const rationale = typeof step.rationale === 'string' ? step.rationale.trim() : invalid(`steps[${index}].rationale must be text`);
   if (!rationale || rationale.length > 500) invalid(`steps[${index}].rationale must contain 1 to 500 characters`);
+  const timingRationale = typeof step.timingRationale === 'string' ? step.timingRationale.trim() : undefined;
+  if (timingRationale !== undefined && (!timingRationale || timingRationale.length > 1000)) invalid(`steps[${index}].timingRationale must contain 1 to 1000 characters`);
+  const latestSafeAt = step.latestSafeAt === undefined ? undefined : typeof step.latestSafeAt === 'string' && isoDateTime.test(step.latestSafeAt) && Number.isFinite(Date.parse(step.latestSafeAt)) ? new Date(step.latestSafeAt).toISOString() : invalid(`steps[${index}].latestSafeAt must be an ISO datetime`);
   const coldStorageId = optionalId(step.coldStorageId, `steps[${index}].coldStorageId`);
   const vehicleId = optionalId(step.vehicleId, `steps[${index}].vehicleId`);
   const destinationId = optionalId(step.destinationId, `steps[${index}].destinationId`);
@@ -260,6 +271,8 @@ function parseStep(value: unknown, index: number): AiPlanStep {
     ...(vehicleId ? { vehicleId } : {}),
     ...(destinationId ? { destinationId } : {}),
     rationale,
+    ...(timingRationale ? { timingRationale } : {}),
+    ...(latestSafeAt ? { latestSafeAt } : {}),
   };
 }
 
@@ -354,12 +367,20 @@ export function addReturnToBaseSteps(proposal: AiPlanProposal, context: Planning
     const destination = dispatch.destinationId ? context.destinations.find(({ id }) => id === dispatch.destinationId) : undefined;
     if (!dispatch.vehicleId || !dispatch.destinationId || !destination) continue;
     const key = `${dispatch.vehicleId}:${dispatch.destinationId}:${dispatch.scheduledAt}`;
+    const expectedReturnAt = Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 2 * 60_000;
+    const vehicle = context.vehicles.find(({ id }) => id === dispatch.vehicleId);
+    const nextLoadAt = deliverySteps.filter((step) => step.actionType === 'LOAD' && step.vehicleId === dispatch.vehicleId && Date.parse(step.scheduledAt) >= expectedReturnAt).map((step) => Date.parse(step.scheduledAt)).sort((left, right) => left - right)[0];
+    const availabilityEnd = vehicle?.availabilityIntervals?.filter(({ end }) => Date.parse(end) >= expectedReturnAt).map(({ end }) => Date.parse(end)).sort((left, right) => left - right)[0];
+    const returnLimits = [nextLoadAt, availabilityEnd].filter((value): value is number => value !== undefined);
+    const latestSafeAt = returnLimits.length ? Math.max(expectedReturnAt, Math.min(...returnLimits)) : expectedReturnAt;
     returns.set(key, {
       actionType: 'RETURN_TO_BASE',
       vehicleId: dispatch.vehicleId,
       destinationId: dispatch.destinationId,
-      scheduledAt: new Date(Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 2 * 60_000).toISOString(),
+      scheduledAt: new Date(expectedReturnAt).toISOString(),
       rationale: 'Return the vehicle to base after completing the shared delivery trip.',
+      timingRationale: `The expected return allows ${destination.travelMinutes} minutes outbound and ${destination.travelMinutes} minutes back${nextLoadAt !== undefined ? ' before the vehicle is reused' : ''}.`,
+      latestSafeAt: new Date(latestSafeAt).toISOString(),
     });
   }
   return orderPlanProposal({ ...proposal, steps: [...deliverySteps, ...returns.values()] });
@@ -412,6 +433,8 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     } else if (!step.batchId || !positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} references an inactive or unconfigured batch`);
     else covered.add(batch.id);
     if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= now.getTime()) errors.push(`${label} must be scheduled in the future`);
+    if (step.latestSafeAt && (!isoDateTime.test(step.latestSafeAt) || !Number.isFinite(Date.parse(step.latestSafeAt)) || Date.parse(step.latestSafeAt) < scheduledAt.getTime())) errors.push(`${label} has an invalid latest safe time`);
+    if (step.timingRationale !== undefined && (!step.timingRationale.trim() || step.timingRationale.length > 1000)) errors.push(`${label} has an invalid timing rationale`);
     if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < previousTime) errors.push(`${label} is not in chronological order`);
     if (!Number.isNaN(scheduledAt.getTime())) previousTime = scheduledAt.getTime();
     if (!resourceCombination(step)) errors.push(`${label} has an illegal action/resource combination`);
