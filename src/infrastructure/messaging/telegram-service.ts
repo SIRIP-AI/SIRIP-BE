@@ -130,12 +130,12 @@ export class TelegramService {
     const startToken = /^\/start(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text.trim())?.[1];
     if (startToken) {
       const linked = await this.consumeLink(startToken, externalChatId, typeof chat?.username === 'string' ? `@${chat.username}` : typeof chat?.first_name === 'string' ? chat.first_name : null);
-      await this.send(externalChatId, linked ? 'Telegram is connected to SIRIP. You will receive operational alerts here.' : 'This connection link is invalid or has expired. Generate a new link from the SIRIP Overview page.');
+      await this.send(externalChatId, linked ? '✅ Telegram is connected to SIRIP. Operational alerts will arrive here.' : '⚠️ This connection link is invalid or has expired. Please generate a new link from the SIRIP Overview page.');
       return;
     }
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
     if (!connection) {
-      await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.');
+      await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.');
       return;
     }
     await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback: null }));
@@ -143,7 +143,7 @@ export class TelegramService {
 
   private async receiveConnected(externalChatId: string, text: string | null, callback: string | null) {
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
-    if (!connection) { await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.'); return; }
+    if (!connection) { await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.'); return; }
     await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback }));
   }
 

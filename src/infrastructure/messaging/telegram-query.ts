@@ -39,6 +39,16 @@ function plural(dataset: OperationalQuery['dataset']) {
   return `${dataset}s`;
 }
 
+function metricLabel(metric: NonNullable<OperationalQuery['metric']>) {
+  if (metric === 'capacityKg') return 'capacity';
+  if (metric === 'availableCapacityKg') return 'available capacity';
+  if (metric === 'occupiedCapacityKg') return 'occupied capacity';
+  if (metric === 'delayMinutes') return 'delay';
+  if (metric === 'delayedBySeconds') return 'plan delay';
+  if (metric === 'remainingQualityWindowDays') return 'remaining quality window';
+  return 'weight';
+}
+
 async function loadRows(database: Database, userId: bigint, dataset: OperationalQuery['dataset']): Promise<QueryRow[]> {
   if (dataset === 'storage') {
     const storages = await database.coldStorage.findMany({
@@ -63,7 +73,7 @@ async function loadRows(database: Database, userId: bigint, dataset: Operational
 
 export async function executeTelegramQuery(database: Database, userId: bigint, query: OperationalQuery) {
   if (query.metric && !metricsByDataset[query.dataset].includes(query.metric)) {
-    return { facts: { error: 'unsupported_metric', dataset: query.dataset, metric: query.metric }, fallback: `That metric is not available for ${query.dataset} queries.` };
+    return { facts: { error: 'unsupported_metric', dataset: query.dataset, metric: query.metric }, fallback: `That metric is not available for ${plural(query.dataset)}.` };
   }
   let rows = await loadRows(database, userId, query.dataset);
   const status = query.status?.toUpperCase();
@@ -73,12 +83,12 @@ export async function executeTelegramQuery(database: Database, userId: bigint, q
     return value !== undefined && compare(value, query.operator!, query.threshold!);
   });
   if (query.operation === 'COUNT') {
-    const fallback = `${rows.length} ${rows.length === 1 ? query.dataset : plural(query.dataset)} found.`;
+    const fallback = rows.length === 0 ? `No matching ${plural(query.dataset)} found.` : `Found ${rows.length} ${rows.length === 1 ? query.dataset : plural(query.dataset)}.`;
     return { facts: { dataset: query.dataset, operation: query.operation, status: query.status, comparison: query.metric ? { metric: query.metric, operator: query.operator, threshold: query.threshold } : null, count: rows.length }, fallback };
   }
   if (query.operation === 'SUM' && query.metric) {
     const total = rows.reduce((sum, row) => sum + (row.metrics[query.metric!] ?? 0), 0);
-    const fallback = `Total ${query.metric}: ${quantity(total)}${unit(query.metric)}.`;
+    const fallback = `Total ${metricLabel(query.metric)}: ${quantity(total)}${unit(query.metric)}.`;
     return { facts: { dataset: query.dataset, operation: query.operation, metric: query.metric, status: query.status, total }, fallback };
   }
   const displayed = rows.slice(0, 5).map((row) => ({ label: row.label, status: row.status, ...(query.metric && row.metrics[query.metric] !== undefined ? { value: row.metrics[query.metric], metric: query.metric } : {}) }));
