@@ -4,6 +4,7 @@ import { RequestError } from '../../domain/errors';
 import { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
 import type { TelegramOperations, TelegramReply } from './telegram-operations';
+import type { ChatWorkflow } from './chat-graph';
 
 const linkLifetimeMs = 10 * 60_000;
 
@@ -29,7 +30,7 @@ function hash(value: string) {
 export class TelegramService {
   private botUsername: string | null = null;
 
-  constructor(private readonly database: Database, private readonly operations: TelegramOperations) {}
+  constructor(private readonly database: Database, private readonly operations: Pick<TelegramOperations, 'recordAssistant'>, private readonly workflow: ChatWorkflow) {}
 
   private token() {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -136,13 +137,13 @@ export class TelegramService {
       await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.');
       return;
     }
-    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, null));
+    await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback: null }));
   }
 
   private async receiveConnected(externalChatId: string, text: string | null, callback: string | null) {
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
     if (!connection) { await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.'); return; }
-    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, callback));
+    await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback }));
   }
 
   private async consumeLink(token: string, externalChatId: string, displayName: string | null) {
@@ -184,9 +185,14 @@ export class TelegramService {
   }
 
   private async sendReply(chatId: string, reply: TelegramReply) {
-    const chunks = reply.text.match(/[\s\S]{1,4000}/g) ?? [''];
+    const chunks = reply.text.split('\n\n').reduce<string[]>((result, section) => {
+      const addition = `${result.length ? '\n\n' : ''}${section}`;
+      if (!result.length || result[result.length - 1]!.length + addition.length > 4000) result.push(section);
+      else result[result.length - 1] += addition;
+      return result;
+    }, []);
     for (let index = 0; index < chunks.length; index += 1) {
-      await this.call('sendMessage', { chat_id: chatId, text: chunks[index], ...(index === chunks.length - 1 && reply.buttons ? { reply_markup: { inline_keyboard: reply.buttons } } : {}) });
+      await this.call('sendMessage', { chat_id: chatId, text: chunks[index], ...(reply.format ? { parse_mode: reply.format } : {}), ...(index === chunks.length - 1 && reply.buttons ? { reply_markup: { inline_keyboard: reply.buttons } } : {}) });
     }
   }
 }

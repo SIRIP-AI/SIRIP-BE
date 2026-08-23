@@ -1,4 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
+import { ConflictError } from '../../domain/errors';
 import type { PlanService } from '../../application/plans/plan-service';
 import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
@@ -11,7 +12,7 @@ const conversationLifetimeMs = 30 * 60_000;
 const historyLimit = 10;
 const maximumHistoryText = 2000;
 
-export type TelegramReply = { text: string; buttons?: Array<Array<{ text: string; callback_data: string }>> };
+export type TelegramReply = { text: string; format?: 'HTML'; buttons?: Array<Array<{ text: string; callback_data: string }>> };
 type QueryKind = 'batches' | 'plans' | 'steps' | 'alerts' | 'sensors' | 'resources';
 type ResourceScope = 'vehicle' | 'storage' | 'destination';
 type ReportKind = 'VEHICLE_DELAY' | 'VEHICLE_STATUS' | 'STORAGE_STATUS' | 'DESTINATION_STATUS' | 'BATCH_STATUS' | 'SENSOR_STATUS';
@@ -36,6 +37,10 @@ function formatWIB(date: Date | string | null | undefined): string {
   const parsed = typeof date === 'string' ? new Date(date) : date;
   if (Number.isNaN(parsed.getTime())) return 'never';
   return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+}
+
+function html(value: unknown) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -200,14 +205,14 @@ export class TelegramOperations {
     if (extraction.intent === 'CONFIRM') return this.typedConfirm(userId, current);
     if (current?.kind === 'PROPOSAL' && extraction.intent === 'PROPOSAL_EDIT' && extraction.instruction) {
       await this.savePending(userId, { kind: 'EDIT_CONFIRM', planId: current.planId, instruction: extraction.instruction });
-      return { text: `Preview plan edit:\n${extraction.instruction}\n\nGenerate a replacement proposal?`, buttons: [[{ text: 'Confirm edit', callback_data: 'edit:confirm' }, { text: 'Cancel', callback_data: 'edit:cancel' }]] };
+      return { format: 'HTML', text: `<b>PLAN EDIT PREVIEW</b>\n\n<b>Requested change</b>\n${html(extraction.instruction)}\n\n<i>No plan has changed yet.</i>`, buttons: [[{ text: 'Confirm edit', callback_data: 'edit:confirm' }, { text: 'Cancel', callback_data: 'edit:cancel' }]] };
     }
     if (extraction.intent === 'REPLAN') {
       if (!extraction.planRef || !extraction.instruction) return this.clarify(userId, extraction, receivedAt, 'Include the active plan ID/version or exact batch code and the revision instruction.');
       const plan = await this.resolvePlan(userId, extraction.planRef);
       if (!plan) return this.clarify(userId, extraction, receivedAt, 'I could not resolve one active plan. Use its ID/version or an exact batch code.');
       await this.savePending(userId, { kind: 'REPLAN_CONFIRM', planId: plan.id, instruction: extraction.instruction });
-      return { text: `Plan v${plan.version}: ${plan.batches.map((batch) => batch.code).join(', ')}\nRevision instruction: ${extraction.instruction}\n\nGenerate a proposal?`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
+      return { format: 'HTML', text: `<b>REPLAN PREVIEW</b>\n\n<b>Plan</b>\nV${plan.version} · ${plan.batches.map((batch) => html(batch.code)).join(', ')}\n\n<b>Instruction</b>\n${html(extraction.instruction)}\n\n<i>The active plan remains unchanged until a proposal is approved.</i>`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
     }
     if (extraction.intent === 'QUERY' && extraction.queryKind) {
       const broad = extraction.queryKind === 'batch_detail' ? 'batches' : extraction.queryKind === 'plan_detail' ? 'plans' : extraction.queryKind === 'sensor_detail' ? 'sensors' : extraction.queryKind === 'resource_detail' ? 'resources' : extraction.queryKind;
@@ -226,7 +231,7 @@ export class TelegramOperations {
       return { text: parsed.question };
     }
     await this.savePending(userId, { kind: 'REPORT_CONFIRM', report: parsed.report, slots: extraction });
-    return { text: `Please confirm this report:\n${this.reportText(parsed.report)}\nOccurrence: ${formatWIB(parsed.report.occurredAt)}`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
+    return { format: 'HTML', text: `<b>REPORT PREVIEW</b>\n\n<b>Reported condition</b>\n${html(this.reportText(parsed.report))}\n\n<b>Occurrence</b>\n${html(formatWIB(parsed.report.occurredAt))}\n\n<i>This report has not been recorded yet.</i>`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
   }
 
   private async resolvePlan(userId: bigint, reference: string) {
@@ -392,12 +397,10 @@ export class TelegramOperations {
     if (current?.kind === 'REPLAN') return { text: 'More than one active plan is affected. Select the plan to revise using the buttons above.' };
     if (current?.kind === 'PROPOSAL') {
       await this.savePending(userId, { kind: 'APPROVE_CONFIRM', planId: current.planId });
-      return { text: 'Final confirmation: activate this proposal and supersede its active predecessor?', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${current.planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+      return this.approvalConfirmation(current.planId);
     }
     if (current?.kind === 'APPROVE_CONFIRM') {
-      const plan = await this.plans.approve(userId, BigInt(current.planId));
-      await this.clearPending(userId);
-      return { text: `Plan v${plan.version} is now ACTIVE.` };
+      return this.approve(userId, current.planId);
     }
     return { text: 'There is no pending action to confirm.' };
   }
@@ -433,10 +436,10 @@ export class TelegramOperations {
     }
     if (callback.startsWith('approve:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
       await this.savePending(userId, { kind: 'APPROVE_CONFIRM', planId: current.planId });
-      return { text: 'Final confirmation: activate this proposal and supersede its active predecessor?', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${current.planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+      return this.approvalConfirmation(current.planId);
     }
     if (callback.startsWith('approve-final:') && current?.kind === 'APPROVE_CONFIRM' && callback.slice(14) === current.planId) {
-      const plan = await this.plans.approve(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `Plan v${plan.version} is now ACTIVE.` };
+      return this.approve(userId, current.planId);
     }
     if (callback.startsWith('dismiss:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
       const plan = await this.plans.dismiss(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `Plan v${plan.version} was dismissed.` };
@@ -467,10 +470,12 @@ export class TelegramOperations {
       return transaction.operationalEvent.create({ data, select: { id: true } });
     });
     const affected = await this.database.plan.findMany({ where: { userId, status: 'ACTIVE', steps: { some: { status: 'UPCOMING', ...(report.kind.startsWith('VEHICLE') ? { vehicleId: entityId } : report.kind === 'STORAGE_STATUS' ? { coldStorageId: entityId } : report.kind === 'DESTINATION_STATUS' ? { destinationId: entityId } : report.kind === 'BATCH_STATUS' ? { batchId: entityId } : { batch: { sensorSessions: { some: { sensorId: entityId, status: 'ACTIVE' } } } }) } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
-    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { text: `Recorded: ${this.reportText(report)}. No active plan has an affected upcoming step.` }; }
+    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { format: 'HTML', text: `<b>REPORT RECORDED</b>\n\n${html(this.reportText(report))}\n\n<b>Plan impact</b>\nNo active plan has an affected upcoming step.` }; }
     const instruction = `Revise future steps to account for this confirmed operational report: ${this.reportText(report)}.`;
+    const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(userId, plan.id) })));
     await this.savePending(userId, { kind: 'REPLAN', eventId: event.id.toString(), planIds: affected.map((plan) => plan.id.toString()), instruction });
-    return { text: `Recorded: ${this.reportText(report)}. Active plan${affected.length === 1 ? '' : 's'} ${affected.map((plan) => `v${plan.version}`).join(', ')} use this fact in upcoming steps and may need revision. Generate a proposal?`, buttons: affected.map((plan) => [{ text: `Revise v${plan.version}`, callback_data: `replan:${plan.id}` }]) };
+    const assessmentText = assessments.map((plan) => `<b>V${plan.version}</b> · ${plan.errors.length ? 'Replanning recommended\nThe confirmed condition makes one or more upcoming steps infeasible under current operational constraints.' : 'Current plan remains feasible\nIts upcoming steps still satisfy current timing, resource, destination, and quality constraints.'}`).join('\n\n');
+    return { format: 'HTML', text: `<b>PLAN IMPACT</b>\n\n<b>Report recorded</b>\n${html(this.reportText(report))}\n\n${assessmentText}\n\n<i>You can revise a plan even when it remains feasible.</i>`, buttons: [...affected.map((plan) => [{ text: assessments.find(({ id }) => id === plan.id)!.errors.length ? `Revise V${plan.version}` : `Replan V${plan.version} anyway`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
   }
 
   private eventType(kind: ReportKind): 'TRUCK_DELAY' | 'STORAGE_CHANGE' | 'DESTINATION_CHANGE' | 'INSPECTION_HOLD' | 'OTHER' {
@@ -488,7 +493,23 @@ export class TelegramOperations {
       return { text: `No valid revision proposal was found: ${result.reason}\n\nThe active plan remains unchanged.` };
     }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
-    return { text: `${proposalText(result.proposal)}\n\nReply with a natural-language edit, or use an action below.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
+    return { format: 'HTML', text: `<b>REVISION PROPOSAL · V${result.proposal.version}</b>\n\n${html(proposalText(result.proposal).split('\n').slice(1).join('\n'))}\n\n<i>The active plan remains unchanged until final approval.</i>\nReply with a natural-language edit or choose an action.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
+  }
+
+  private approvalConfirmation(planId: string): TelegramReply {
+    return { format: 'HTML', text: '<b>FINAL CONFIRMATION</b>\n\nActivate this proposal and supersede its active predecessor?\n\n<i>Current operational facts will be revalidated before activation.</i>', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+  }
+
+  private async approve(userId: bigint, planId: string): Promise<TelegramReply> {
+    try {
+      const plan = await this.plans.approve(userId, BigInt(planId));
+      await this.clearPending(userId);
+      return { format: 'HTML', text: `<b>PLAN ACTIVATED</b>\n\nPlan <b>V${plan.version}</b> is now active. Its predecessor has been superseded.` };
+    } catch (error) {
+      if (!(error instanceof ConflictError)) throw error;
+      await this.clearPending(userId);
+      return { format: 'HTML', text: '<b>PROPOSAL EXPIRED</b>\n\nOperational conditions changed and this proposal is no longer valid. The active plan remains unchanged.\n\nRequest a new revision using the latest facts.' };
+    }
   }
 
   private async loadConversation(userId: bigint, now: Date): Promise<Conversation> {

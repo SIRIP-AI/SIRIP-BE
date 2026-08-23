@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
 import { planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
-import type { PlanRepositoryPort } from '../../application/plans/plan-service';
+import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
 const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
@@ -407,7 +407,7 @@ export class PlanRepository implements PlanRepositoryPort {
     });
   }
 
-  async activateProposal(userId: bigint, planId: bigint) {
+  async activateProposal(userId: bigint, planId: bigint, validate: PlanValidator) {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
       const proposal = await transaction.plan.findFirst({
@@ -415,7 +415,11 @@ export class PlanRepository implements PlanRepositoryPort {
         select: {
           status: true,
           previousPlanId: true,
+          summary: true,
+          deadline: true,
           batches: { select: { batchId: true } },
+          acceptableDestinations: { select: { destinationId: true } },
+          steps: { orderBy: { sequence: 'asc' }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
         },
       });
       if (!proposal) throw new NotFoundError('Plan');
@@ -425,6 +429,33 @@ export class PlanRepository implements PlanRepositoryPort {
       if (proposal.previousPlanId) {
         const predecessor = await transaction.plan.findUnique({ where: { id: proposal.previousPlanId }, select: { status: true } });
         if (predecessor?.status !== 'ACTIVE') throw new ConflictError('Plan proposal is stale');
+      }
+      const destinationIds = proposal.acceptableDestinations.map(({ destinationId }) => destinationId.toString());
+      const context = {
+        ...await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined),
+        selectedDestinationId: destinationIds.length === 1 ? destinationIds[0]! : null,
+        acceptableDestinationIds: destinationIds,
+        deadline: proposal.deadline?.toISOString() ?? null,
+      };
+      if (context.batches.length !== scope.length) throw new ConflictError('Plan proposal is no longer valid');
+      const persisted: AiPlanProposal = {
+        summary: proposal.summary,
+        steps: proposal.steps.filter(({ status }) => status === 'UPCOMING').map((step) => ({
+          actionType: step.actionType as AiPlanProposal['steps'][number]['actionType'],
+          ...(step.batchId ? { batchId: step.batchId.toString() } : {}),
+          scheduledAt: step.scheduledAt.toISOString(),
+          ...(step.coldStorageId ? { coldStorageId: step.coldStorageId.toString() } : {}),
+          ...(step.vehicleId ? { vehicleId: step.vehicleId.toString() } : {}),
+          ...(step.destinationId ? { destinationId: step.destinationId.toString() } : {}),
+          rationale: step.rationale ?? 'Existing proposed step.',
+          ...(step.timingRationale ? { timingRationale: step.timingRationale } : {}),
+          ...(step.latestSafeAt ? { latestSafeAt: step.latestSafeAt.toISOString() } : {}),
+        })),
+      };
+      const validationErrors = validate(persisted, context);
+      if (validationErrors.length) {
+        console.warn('[Plan approval validation rejected]', { planId: planId.toString(), errors: validationErrors });
+        throw new ConflictError('Plan proposal is no longer valid');
       }
       const overlap = await transaction.planBatch.findFirst({ where: { batchId: { in: scope }, plan: { userId, status: 'ACTIVE', ...(proposal.previousPlanId ? { id: { not: proposal.previousPlanId } } : {}) } } });
       if (overlap) throw new ConflictError('A batch is already assigned to another active plan');

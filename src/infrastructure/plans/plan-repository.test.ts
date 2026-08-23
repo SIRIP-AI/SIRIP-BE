@@ -179,7 +179,7 @@ test('completes a legacy handover already fulfilled by dispatch', async () => {
   assert.equal(batchUpdated, false);
 });
 
-test('approval activates an already-created proposal without rerunning planning validation', async () => {
+test('approval revalidates an already-created proposal before activation', async () => {
   const storedPlan = {
     id: 10n, version: 1, status: 'ACTIVE', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,
     createdAt: new Date('2026-08-20T09:00:00Z'), approvedAt: new Date('2026-08-20T09:30:00Z'), completedAt: null,
@@ -188,16 +188,23 @@ test('approval activates an already-created proposal without rerunning planning 
   const transaction = {
     $executeRaw: async () => 0,
     plan: {
-      findFirst: async () => ({ status: 'PROPOSED', previousPlanId: null, batches: [{ batchId: 7n }] }),
+      findFirst: async () => ({ status: 'PROPOSED', previousPlanId: null, summary: 'Plan', deadline: null, batches: [{ batchId: 7n }], acceptableDestinations: [], steps: [] }),
+      findMany: async () => [],
       update: async () => storedPlan,
     },
     planBatch: { findFirst: async () => null },
+    batch: { findMany: async () => [{ id: 7n, code: 'B-7', weightKg: 10, grade: 'A', status: 'ACTIVE', equivalentQualityAgeDays: 1, remainingQualityWindowDays: 1, qualityEstimateStartedAt: new Date(), currentTemperatureC: 2, locationType: 'INTAKE', currentColdStorageId: null, currentVehicleId: null, currentDestinationId: null, sensorSessions: [] }] },
+    coldStorage: { findMany: async () => [] },
+    vehicle: { findMany: async () => [] },
+    destination: { findMany: async () => [] },
   };
   const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
 
-  const approved = await new PlanRepository(database).activateProposal(1n, 10n);
+  let validated = false;
+  const approved = await new PlanRepository(database).activateProposal(1n, 10n, () => { validated = true; return []; });
 
   assert.equal(approved.status, 'ACTIVE');
+  assert.equal(validated, true);
 });
 
 test('planning context reserves other active plans and only completed predecessor holds', async () => {

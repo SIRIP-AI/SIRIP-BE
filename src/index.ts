@@ -5,6 +5,7 @@ import { createApp } from './infrastructure/http/app';
 import { createDatabase } from './infrastructure/persistence/database';
 import { TelegramService } from './infrastructure/messaging/telegram-service';
 import { TelegramOperations } from './infrastructure/messaging/telegram-operations';
+import { createChatGraph, createChatWorkflow } from './infrastructure/messaging/chat-graph';
 import { PlanRepository } from './infrastructure/plans/plan-repository';
 import { createPlanGraph, createPlanWorkflow } from './infrastructure/plans/plan-graph';
 import { PlanService } from './application/plans/plan-service';
@@ -15,7 +16,8 @@ if (existsSync('.env')) loadEnvFile('.env');
 const database = createDatabase();
 const planRepository = new PlanRepository(database);
 const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validatePlanProposal })), validateSensiblePlanProposal);
-const telegram = new TelegramService(database, new TelegramOperations(database, planService));
+const telegramOperations = new TelegramOperations(database, planService);
+const telegram = new TelegramService(database, telegramOperations, createChatWorkflow(createChatGraph(telegramOperations)));
 const app = createApp(database, telegram);
 const port = Number(process.env.PORT ?? 3000);
 

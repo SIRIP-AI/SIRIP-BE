@@ -5,7 +5,7 @@ import type { PlanRepositoryPort, PlanValidator, PlanWorkflow, PlanWorkflowInput
 import { ConflictError } from '../../domain/errors';
 import { generateMultiDestinationCandidates, type PlanCandidate } from '../../domain/plans/plan-candidates';
 import { derivePlanningFacts, planSnapshot, type AiPlanResult, type PlanningContext, type PlanningFacts } from '../../domain/plans/plans';
-import { createPlanningModel, messageText, parsePlanSelection, planningMessages, type PlanningModel } from './plan-generator';
+import { createPlanningModel, deterministicSelectionSummary, messageText, parsePlanSelection, planningMessages, type PlanningModel } from './plan-generator';
 
 const PlanGraphState = Annotation.Root({
   userId: Annotation<string>(),
@@ -76,13 +76,18 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   const selectCandidate = async (state: typeof PlanGraphState.State) => {
     if (!state.generationContext || !state.generationFacts) throw new Error('Planning context is unavailable');
     if (!state.candidates.length) return { result: noCandidateResult() };
-    if (state.candidates.length === 1) return { result: { status: 'PROPOSAL' as const, ...state.candidates[0]!.proposal } };
+    if (state.candidates.length === 1) {
+      const proposal = state.candidates[0]!.proposal;
+      return { result: { status: 'PROPOSAL' as const, ...proposal, summary: deterministicSelectionSummary(proposal, state.generationContext, state.instruction ?? undefined) } };
+    }
     try {
       const response = await model().invoke(planningMessages(state.generationContext, state.generationFacts, state.candidates, state.instruction ?? undefined));
-      return { result: { status: 'PROPOSAL' as const, ...parsePlanSelection(messageText(response), state.candidates) } };
+      const proposal = parsePlanSelection(messageText(response), state.candidates);
+      return { result: { status: 'PROPOSAL' as const, ...proposal, summary: deterministicSelectionSummary(proposal, state.generationContext, state.instruction ?? undefined) } };
     } catch {
       console.warn('[AI plan selection failed; using deterministic candidate]', { planId: state.planId });
-      return { result: { status: 'PROPOSAL' as const, ...state.candidates[0]!.proposal } };
+      const proposal = state.candidates[0]!.proposal;
+      return { result: { status: 'PROPOSAL' as const, ...proposal, summary: deterministicSelectionSummary(proposal, state.generationContext, state.instruction ?? undefined) } };
     }
   };
   const refreshContext = async (state: typeof PlanGraphState.State) => {
@@ -104,7 +109,9 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     if (!errors.length) return {};
     const freshCandidates = generateMultiDestinationCandidates(state.freshContext, state.freshContext.acceptableDestinationIds ?? []);
     console.warn('[Selected plan became invalid; using fresh deterministic candidate]', { planId: state.planId, errors, candidates: freshCandidates.length });
-    return { result: freshCandidates.length ? { status: 'PROPOSAL' as const, ...freshCandidates[0]!.proposal } : noCandidateResult() };
+    if (!freshCandidates.length) return { result: noCandidateResult() };
+    const proposal = freshCandidates[0]!.proposal;
+    return { result: { status: 'PROPOSAL' as const, ...proposal, summary: deterministicSelectionSummary(proposal, state.freshContext, state.instruction ?? undefined) } };
   };
 
   return new StateGraph(PlanGraphState, { input: PlanGraphInputSchema, output: PlanGraphOutputSchema })

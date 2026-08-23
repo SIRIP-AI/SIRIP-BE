@@ -77,7 +77,8 @@ test('Indonesian TR-02 delay extracts to preview, confirms mutation, and flags i
     vehicle: { update: async ({ data }: { data: { delayMinutes: number } }) => { delayMinutes = data.delayMinutes; } },
     operationalEvent: { create: async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: 41n }; } },
   });
-  const operations = new TelegramOperations(memory.database, emptyPlans, model({ intent: 'REPORT', entityType: 'vehicle', entityCode: 'TR-02', delayMinutes: 90, status: 'DELAYED' }));
+  const plans = { ...emptyPlans, assess: async () => ['Step 1 does not account for vehicle delay'] } as unknown as PlanService;
+  const operations = new TelegramOperations(memory.database, plans, model({ intent: 'REPORT', entityType: 'vehicle', entityCode: 'TR-02', delayMinutes: 90, status: 'DELAYED' }));
 
   const preview = await operations.handle(1n, 'TR-02 telat 90 menit', null, new Date('2026-08-21T10:00:00.000Z'));
   assert.match(preview.text, /TR-02 delayed 90 minutes/);
@@ -86,7 +87,7 @@ test('Indonesian TR-02 delay extracts to preview, confirms mutation, and flags i
   const confirmed = await operations.handle(1n, null, 'report:confirm', new Date('2026-08-21T10:01:00.000Z'));
   assert.equal(delayMinutes, 90);
   assert.equal(events[0]?.source, 'TELEGRAM');
-  assert.match(confirmed.text, /Active plan v3/);
+  assert.match(confirmed.text, /V3.*Replanning recommended/s);
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPLAN');
 });
 
@@ -158,7 +159,7 @@ test('typed confirmation starts the final approval confirmation for a proposal',
   const plans = { list: emptyPlans.list.bind(emptyPlans), approve: async () => { approvals += 1; throw new Error('unexpected'); } } as unknown as PlanService;
   const reply = await new TelegramOperations(memory.database, plans, model({ intent: 'CONFIRM' })).handle(1n, 'confirm', null, new Date());
 
-  assert.match(reply.text, /Final confirmation/);
+  assert.match(reply.text, /FINAL CONFIRMATION/);
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'APPROVE_CONFIRM');
   assert.equal(approvals, 0);
 });
@@ -172,7 +173,7 @@ test('direct replanning remains preview-only until confirmation', async () => {
   let revisions = 0;
   const plans = { list: async () => ({ activePlans: [plan()], proposedPlans: [], history: [], updatedAt: '' }), revise: async () => { revisions += 1; throw new Error('unexpected'); } } as unknown as PlanService;
   const reply = await new TelegramOperations(memory.database, plans, model({ intent: 'REPLAN', planRef: '3', instruction: 'use another truck' })).handle(1n, 'replan plan 3 because use another truck', null, new Date('2026-08-21T10:00:00.000Z'));
-  assert.match(reply.text, /Generate a proposal/);
+  assert.match(reply.text, /REPLAN PREVIEW/);
   assert.equal(revisions, 0);
 });
 

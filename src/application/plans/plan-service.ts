@@ -1,5 +1,5 @@
 import { ConflictError, RequestError } from '../../domain/errors';
-import type { AiPlanProposal, AiPlanResult, PlanList, PlanningActivePlan, PlanningContext, PlanView } from '../../domain/plans/plans';
+import { generatedPlanActionTypes, type AiPlanProposal, type AiPlanResult, type GeneratedPlanActionType, type PlanList, type PlanningActivePlan, type PlanningContext, type PlanView } from '../../domain/plans/plans';
 
 export type PlanValidator = (proposal: AiPlanProposal, context: PlanningContext) => string[];
 export type PlanWorkflowInput = { userId: bigint; batchIds: bigint[]; destinationIds: bigint[]; deadline: string | null; planId?: bigint; instruction?: string };
@@ -11,7 +11,7 @@ export type PlanRepositoryPort = {
   get(userId: bigint, planId: bigint): Promise<PlanView>;
   loadContext(userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext>;
   saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options?: { triggerEventId?: bigint; replaceProposalId?: bigint }): Promise<PlanView>;
-  activateProposal(userId: bigint, planId: bigint): Promise<PlanView>;
+  activateProposal(userId: bigint, planId: bigint, validate: PlanValidator): Promise<PlanView>;
   dismissProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   completeStep(userId: bigint, planId: bigint, stepId: bigint): Promise<PlanView>;
 };
@@ -58,7 +58,28 @@ export class PlanService {
   }
 
   approve(userId: bigint, planId: bigint) {
-    return this.repository.activateProposal(userId, planId);
+    return this.repository.activateProposal(userId, planId, this.validate);
+  }
+
+  async assess(userId: bigint, planId: bigint) {
+    const plan = await this.repository.get(userId, planId);
+    if (plan.status !== 'ACTIVE') throw new ConflictError('Only active plans can be assessed');
+    const context = await this.repository.loadContext(userId, plan.batches.map(({ id }) => BigInt(id)), planId);
+    const proposal: AiPlanProposal = {
+      summary: plan.summary,
+      steps: plan.steps.filter((step): step is typeof step & { actionType: GeneratedPlanActionType } => step.status === 'UPCOMING' && generatedPlanActionTypes.includes(step.actionType as GeneratedPlanActionType)).map((step) => ({
+        actionType: step.actionType,
+        ...(step.batch ? { batchId: step.batch.id } : {}),
+        scheduledAt: step.scheduledAt,
+        ...(step.resources.find(({ type }) => type === 'COLD_STORAGE') ? { coldStorageId: step.resources.find(({ type }) => type === 'COLD_STORAGE')!.id } : {}),
+        ...(step.resources.find(({ type }) => type === 'VEHICLE') ? { vehicleId: step.resources.find(({ type }) => type === 'VEHICLE')!.id } : {}),
+        ...(step.resources.find(({ type }) => type === 'DESTINATION') ? { destinationId: step.resources.find(({ type }) => type === 'DESTINATION')!.id } : {}),
+        rationale: step.rationale ?? 'Existing approved step.',
+        ...(step.timingRationale ? { timingRationale: step.timingRationale } : {}),
+        ...(step.latestSafeAt ? { latestSafeAt: step.latestSafeAt } : {}),
+      })),
+    };
+    return this.validate(proposal, context);
   }
 
   dismiss(userId: bigint, planId: bigint) {

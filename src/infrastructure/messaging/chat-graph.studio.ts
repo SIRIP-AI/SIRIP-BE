@@ -1,6 +1,12 @@
 import { createChatGraph } from './chat-graph';
-import { ChatRepository } from './chat-repository';
 import { createDatabase } from '../persistence/database';
+import { PlanRepository } from '../plans/plan-repository';
+import { createPlanGraph, createPlanWorkflow } from '../plans/plan-graph';
+import { PlanService } from '../../application/plans/plan-service';
+import { validatePlanProposal, validateSensiblePlanProposal } from '../../domain/plans/plans';
+import { TelegramOperations } from './telegram-operations';
 
 const database = createDatabase();
-export const chatWorkflow = createChatGraph(new ChatRepository(database));
+const repository = new PlanRepository(database);
+const plans = new PlanService(repository, createPlanWorkflow(createPlanGraph({ repository, validate: validatePlanProposal })), validateSensiblePlanProposal);
+export const chatWorkflow = createChatGraph(new TelegramOperations(database, plans));

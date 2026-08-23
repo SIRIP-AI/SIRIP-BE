@@ -28,7 +28,7 @@ PLANNING OBJECTIVES, IN ORDER
 4. Minimize waiting and handling.
 5. During replanning, prefer fewer changes to feasible future actions.
 
-All candidates have already passed deterministic feasibility and quality checks. Return only the structured selection defined by the response schema.`;
+All candidates have already passed deterministic feasibility and quality checks. Return only the supplied candidate ID in the structured selection defined by the response schema.`;
 
 const responseSchema = {
   name: 'sirip_plan_result',
@@ -36,8 +36,8 @@ const responseSchema = {
   schema: {
     type: 'object',
     additionalProperties: false,
-    properties: { candidateId: { type: 'string' }, summary: { type: 'string', minLength: 1, maxLength: 1000 } },
-    required: ['candidateId', 'summary'],
+    properties: { candidateId: { type: 'string' } },
+    required: ['candidateId'],
   },
 } as const;
 
@@ -164,11 +164,22 @@ export function parsePlanSelection(content: string, candidates: PlanCandidate[])
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('AI selector returned an invalid selection', 502);
   const selection = value as Record<string, unknown>;
-  if (Object.keys(selection).some((key) => key !== 'candidateId' && key !== 'summary') || typeof selection.candidateId !== 'string' || typeof selection.summary !== 'string') throw new RequestError('AI selector returned an invalid selection', 502);
-  const summary = selection.summary.trim();
+  if (Object.keys(selection).some((key) => key !== 'candidateId') || typeof selection.candidateId !== 'string') throw new RequestError('AI selector returned an invalid selection', 502);
   const candidate = candidates.find(({ id }) => id === selection.candidateId);
-  if (!candidate || !summary || summary.length > 1000) throw new RequestError('AI selector returned an invalid selection', 502);
-  return { ...candidate.proposal, summary };
+  if (!candidate) throw new RequestError('AI selector returned an invalid selection', 502);
+  return candidate.proposal;
+}
+
+export function deterministicSelectionSummary(proposal: PlanCandidate['proposal'], context: PlanningContext, instruction?: string) {
+  if (!context.currentPlan) return proposal.summary;
+  const currentVehicleIds = [...new Set(context.currentPlan.steps.filter(({ status }) => status === 'UPCOMING').flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []))];
+  const nextVehicleIds = [...new Set(proposal.steps.flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []))];
+  const vehicleName = (id: string) => context.vehicles.find((vehicle) => vehicle.id === id)?.code ?? `vehicle ${id}`;
+  const vehiclesChanged = JSON.stringify(currentVehicleIds) !== JSON.stringify(nextVehicleIds)
+    ? ` Vehicles: ${currentVehicleIds.map(vehicleName).join(', ') || 'none'} -> ${nextVehicleIds.map(vehicleName).join(', ') || 'none'}.`
+    : '';
+  const trigger = instruction ? `Revision trigger: ${instruction.trim().replace(/\s+/g, ' ')} ` : 'Validated revision. ';
+  return `${trigger}${vehiclesChanged} Future steps and timing are derived from the selected validated candidate.`.slice(0, 1000);
 }
 
 export function messageText(message: BaseMessage) {
