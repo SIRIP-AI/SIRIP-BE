@@ -11,7 +11,7 @@ export type PlanRepositoryPort = {
   get(userId: bigint, planId: bigint): Promise<PlanView>;
   loadContext(userId: bigint, batchIds: bigint[], planId?: bigint): Promise<PlanningContext>;
   saveProposal(userId: bigint, proposal: AiPlanProposal, batchIds: bigint[], destinationIds: bigint[], deadline: string | null, expectedPlan: PlanningActivePlan | null, options?: { triggerEventId?: bigint; replaceProposalId?: bigint }): Promise<PlanView>;
-  activateProposal(userId: bigint, planId: bigint, validate: PlanValidator): Promise<PlanView>;
+  activateProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   dismissProposal(userId: bigint, planId: bigint): Promise<PlanView>;
   completeStep(userId: bigint, planId: bigint, stepId: bigint): Promise<PlanView>;
 };
@@ -58,7 +58,7 @@ export class PlanService {
   }
 
   approve(userId: bigint, planId: bigint) {
-    return this.repository.activateProposal(userId, planId, this.validate);
+    return this.repository.activateProposal(userId, planId);
   }
 
   dismiss(userId: bigint, planId: bigint) {

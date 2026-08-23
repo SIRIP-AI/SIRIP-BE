@@ -1,7 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { generatedPlanActionTypes, planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
-import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
+import { planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
+import type { PlanRepositoryPort } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
 const activeBatchStatuses = ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] as const;
@@ -141,36 +141,6 @@ function proposalStep(step: AiPlanProposal['steps'][number], sequence: number) {
     timingRationale: step.timingRationale ?? null,
     latestSafeAt: step.latestSafeAt ? new Date(step.latestSafeAt) : null,
   };
-}
-
-function completedFacts(steps: Array<{
-  sequence: number;
-  actionType: string;
-  batchId: bigint | null;
-  coldStorageId: bigint | null;
-  vehicleId: bigint | null;
-  destinationId: bigint | null;
-  scheduledAt: Date;
-  completedAt: Date | null;
-  rationale: string | null;
-  timingRationale: string | null;
-  latestSafeAt: Date | null;
-}>) {
-  return JSON.stringify(steps.map((step) => [
-    step.sequence,
-    step.actionType,
-    step.batchId?.toString() ?? null,
-    step.coldStorageId?.toString() ?? null,
-    step.vehicleId?.toString() ?? null,
-    step.destinationId?.toString() ?? null,
-    step.scheduledAt.toISOString(),
-    step.completedAt?.toISOString() ?? null,
-    step.rationale,
-    step.timingRationale ?? null,
-    step.latestSafeAt?.toISOString() ?? null,
-    step.timingRationale,
-    step.latestSafeAt?.toISOString() ?? null,
-  ]));
 }
 
 type PlanningClient = Pick<Prisma.TransactionClient, 'batch' | 'coldStorage' | 'vehicle' | 'destination' | 'plan'>;
@@ -337,48 +307,6 @@ async function loadPlanningContext(client: PlanningClient, userId: bigint, batch
   };
 }
 
-function storedProposal(plan: {
-  summary: string;
-  steps: Array<{
-    actionType: PlanActionType;
-    batchId: bigint | null;
-    coldStorageId: bigint | null;
-    vehicleId: bigint | null;
-    destinationId: bigint | null;
-    scheduledAt: Date;
-    rationale: string | null;
-    timingRationale: string | null;
-    latestSafeAt: Date | null;
-  }>;
-}): AiPlanProposal {
-  if (plan.steps.some((step) => !generatedPlanActionTypes.includes(step.actionType as typeof generatedPlanActionTypes[number]))) throw new ConflictError('Legacy proposal uses unsupported actions');
-  return {
-    summary: plan.summary,
-    steps: plan.steps.map((step) => ({
-      actionType: step.actionType as typeof generatedPlanActionTypes[number],
-      ...(step.batchId ? { batchId: step.batchId.toString() } : {}),
-      scheduledAt: step.scheduledAt.toISOString(),
-      ...(step.coldStorageId ? { coldStorageId: step.coldStorageId.toString() } : {}),
-      ...(step.vehicleId ? { vehicleId: step.vehicleId.toString() } : {}),
-      ...(step.destinationId ? { destinationId: step.destinationId.toString() } : {}),
-      rationale: step.rationale ?? 'Historical step',
-      ...(step.timingRationale ? { timingRationale: step.timingRationale } : {}),
-      ...(step.latestSafeAt ? { latestSafeAt: step.latestSafeAt.toISOString() } : {}),
-    })),
-  };
-}
-
-async function lockApprovalContext(transaction: Prisma.TransactionClient, userId: bigint, planId: bigint) {
-  await lockUser(transaction, userId);
-  await transaction.$queryRaw`SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE') FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "plan_id", "batch_id" FROM "plan_batches" WHERE "plan_id" IN (SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE')) FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "id" FROM "plan_steps" WHERE "plan_id" IN (SELECT "id" FROM "plans" WHERE "user_id" = ${userId} AND ("id" = ${planId} OR "status" = 'ACTIVE')) FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "id" FROM "batches" WHERE "user_id" = ${userId} AND "deleted_at" IS NULL AND "status" IN ('MONITORING', 'ACTIVE', 'INSPECTION_HOLD') FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "id" FROM "cold_storages" WHERE "user_id" = ${userId} FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "id" FROM "vehicles" WHERE "user_id" = ${userId} FOR UPDATE`;
-  await transaction.$queryRaw`SELECT "id" FROM "destinations" WHERE "user_id" = ${userId} FOR UPDATE`;
-}
-
 export class PlanRepository implements PlanRepositoryPort {
   constructor(private readonly database: Database) {}
 
@@ -475,54 +403,27 @@ export class PlanRepository implements PlanRepositoryPort {
     });
   }
 
-  async activateProposal(userId: bigint, planId: bigint, validate: PlanValidator) {
+  async activateProposal(userId: bigint, planId: bigint) {
     return this.database.$transaction(async (transaction) => {
-      await lockApprovalContext(transaction, userId, planId);
+      await lockUser(transaction, userId);
       const proposal = await transaction.plan.findFirst({
         where: { id: planId, userId },
         select: {
           status: true,
           previousPlanId: true,
-          summary: true,
-          destinationId: true,
-          acceptableDestinations: { select: { destinationId: true } },
-          deadline: true,
           batches: { select: { batchId: true } },
-          steps: { orderBy: { sequence: 'asc' }, select: { sequence: true, status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, completedAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
         },
       });
       if (!proposal) throw new NotFoundError('Plan');
       if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
       const scope = proposal.batches.map(({ batchId }) => batchId);
       if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
-      const loadedContext = await loadPlanningContext(transaction, userId, scope, proposal.previousPlanId ?? undefined);
-      const destinationIds = proposal.acceptableDestinations.map(({ destinationId }) => destinationId.toString());
-      const scopeDestinations = destinationIds.length ? destinationIds : proposal.destinationId ? [proposal.destinationId.toString()] : [];
-      const context = { ...loadedContext, selectedDestinationId: scopeDestinations.length === 1 ? scopeDestinations[0]! : null, acceptableDestinationIds: scopeDestinations, deadline: proposal.deadline?.toISOString() ?? null };
-      if (!context.acceptableDestinationIds.length) throw new ConflictError('Plan proposal has no destination scope');
-      const errors = validate(storedProposal({ summary: proposal.summary, steps: proposal.steps.filter((step) => step.status === 'UPCOMING') }), context);
-      if (errors.length) throw new ConflictError('Plan proposal is no longer feasible');
-      if (proposal.previousPlanId && !context.currentPlan) throw new ConflictError('Plan proposal is stale');
-      if (context.currentPlan && context.currentPlan.id !== proposal.previousPlanId?.toString()) throw new ConflictError('Plan proposal is stale');
       if (proposal.previousPlanId) {
         const predecessor = await transaction.plan.findUnique({ where: { id: proposal.previousPlanId }, select: { status: true } });
         if (predecessor?.status !== 'ACTIVE') throw new ConflictError('Plan proposal is stale');
       }
       const overlap = await transaction.planBatch.findFirst({ where: { batchId: { in: scope }, plan: { userId, status: 'ACTIVE', ...(proposal.previousPlanId ? { id: { not: proposal.previousPlanId } } : {}) } } });
       if (overlap) throw new ConflictError('A batch is already assigned to another active plan');
-      const completed = proposal.steps.filter((step) => step.status === 'COMPLETED');
-      const activeCompleted = context.currentPlan?.steps.filter((step) => step.status === 'COMPLETED').map((step) => ({
-        ...step,
-        batchId: step.batchId ? BigInt(step.batchId) : null,
-        coldStorageId: step.coldStorageId ? BigInt(step.coldStorageId) : null,
-        vehicleId: step.vehicleId ? BigInt(step.vehicleId) : null,
-        destinationId: step.destinationId ? BigInt(step.destinationId) : null,
-        scheduledAt: new Date(step.scheduledAt),
-        completedAt: step.completedAt ? new Date(step.completedAt) : null,
-        timingRationale: step.timingRationale ?? null,
-        latestSafeAt: step.latestSafeAt ? new Date(step.latestSafeAt) : null,
-      })) ?? [];
-      if (completedFacts(completed) !== completedFacts(activeCompleted)) throw new ConflictError('Plan proposal is stale');
       if (proposal.previousPlanId) await transaction.plan.update({ where: { id: proposal.previousPlanId }, data: { status: 'SUPERSEDED' } });
       return serializePlan(await transaction.plan.update({
         where: { id: planId },
@@ -586,7 +487,7 @@ export class PlanRepository implements PlanRepositoryPort {
         if ((loaded._sum.weightKg ?? 0) + step.batch.weightKg > vehicle.capacityKg) throw new ConflictError('Vehicle no longer has enough capacity');
         await transaction.batch.update({ where: { id: step.batchId }, data: { locationType: 'VEHICLE', currentColdStorageId: null, currentVehicleId: step.vehicleId, currentDestinationId: null, locationUpdatedAt: completedAt } });
       }
-      if (step.actionType === 'HANDOVER' && step.batchId && step.vehicleId && step.destinationId && step.batch) {
+      if ((step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && step.batchId && step.vehicleId && step.destinationId && step.batch) {
         if (step.batch.locationType !== 'VEHICLE' || step.batch.currentVehicleId !== step.vehicleId) throw new ConflictError('Batch is not on the planned vehicle');
         await transaction.batch.update({ where: { id: step.batchId }, data: { status: 'HANDED_OVER', handedOverAt: completedAt, locationType: 'DESTINATION', currentColdStorageId: null, currentVehicleId: null, currentDestinationId: step.destinationId, locationUpdatedAt: completedAt } });
         const sessions = await transaction.sensorSession.findMany({ where: { batchId: step.batchId, status: 'ACTIVE' }, select: { sensorId: true } });
