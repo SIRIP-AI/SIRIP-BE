@@ -31,9 +31,10 @@ test('baseline telemetry stays near 2C without alerts and yields ordered quality
     assert.equal(calculateQualityState(readings)?.currentTemperatureC, 2);
     return calculateQualityState(readings)!.remainingQualityWindowDays;
   });
-  assert.ok(Math.abs(windows[0]! - 2.4) < 0.1);
-  assert.ok(Math.abs(windows[1]! - 2.7) < 0.1);
-  assert.ok(Math.abs(windows[2]! - 3) < 0.1);
+  assert.ok(Math.abs(windows[0]! - 5.3) < 0.1);
+  assert.ok(Math.abs(windows[1]! - 5.5) < 0.1);
+  assert.ok(Math.abs(windows[2]! - 5.7) < 0.1);
+  assert.ok(windows.every((window) => window > 4));
   assert.ok(windows[0]! < windows[1]! && windows[1]! < windows[2]!);
 });
 
@@ -57,4 +58,18 @@ test('reserved codes and per-user device UIDs are stable and distinct', () => {
   assert.deepEqual(demoBatches.slice(0, 2).map((_, index) => demoDeviceUid(7n, index)), ['sirip-demo-device:7:1', 'sirip-demo-device:7:2']);
   assert.equal(new Set(demoBatches.slice(0, 3).map((_, index) => demoDeviceUid(7n, index))).size, 3);
   assert.notEqual(demoDeviceUid(7n, 0), demoDeviceUid(8n, 0));
+});
+
+test('demo telemetry chronology moves healthy quality through warning before later excursion deterioration', () => {
+  const now = Date.UTC(2026, 7, 20);
+  const definition = demoActiveBatches[0];
+  const durationDays = (12 - definition.qualityWindowDays) / Math.exp(0.12 * 2);
+  const baseline = baselineTemperatures.map((temperatureC, index) => ({ id: BigInt(index + 1), sequenceNumber: BigInt(index + 1), temperatureC, measuredAt: new Date(now - 2 * 86_400_000 - durationDays * 86_400_000 + index * durationDays * 86_400_000 / 4) }));
+  const risk = [{ id: 6n, sequenceNumber: 6n, temperatureC: 4, measuredAt: new Date(now) }];
+  const warning = evaluateMonitoring(1n, [...baseline, ...risk]);
+  assert.equal(warning.find(({ type }) => type === 'QUALITY_WINDOW')?.structuredData.alert.severity, 'WARNING');
+  const excursion = [9.2, 9.5, 9.8, 10.1, 10.3].map((temperatureC, index) => ({ id: BigInt(index + 10), sequenceNumber: BigInt(index + 10), temperatureC, measuredAt: new Date(now + 24 * 3_600_000 - (4 - index) * 6 * 3_600_000) }));
+  const deteriorated = evaluateMonitoring(1n, [...baseline, ...risk, ...excursion]);
+  assert.ok(deteriorated.some(({ type }) => type === 'TEMPERATURE_EXCURSION'));
+  assert.equal(deteriorated.find(({ type }) => type === 'QUALITY_WINDOW')?.structuredData.alert.severity, 'CRITICAL');
 });

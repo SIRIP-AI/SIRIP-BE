@@ -5,10 +5,10 @@ import { AIMessage } from '@langchain/core/messages';
 import type { PlanService } from '../../application/plans/plan-service';
 import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
-import { mergeTelegramSlots, parseConversation, recoveredBatchStatus, recoveredSensorStatus, reportOccurrence, resolvePlanReference, TelegramOperations, type Conversation } from './telegram-operations';
+import { mergeTelegramSlots, parseConversation, recoveredBatchStatus, recoveredSensorStatus, reportOccurrence, resolvePlanReference, telegramPlanTimingText, TelegramOperations, type Conversation } from './telegram-operations';
 import type { TelegramExtraction, TelegramInterpretationModel } from './telegram-extractor';
 
-const base: TelegramExtraction = { intent: 'UNKNOWN', queryKind: null, entityType: null, entityCode: null, entityName: null, planRef: null, delayMinutes: null, status: null, instruction: null, missingFields: [] };
+const base: TelegramExtraction = { intent: 'UNKNOWN', queryKind: null, query: null, entityType: null, entityCode: null, entityName: null, planRef: null, delayMinutes: null, status: null, instruction: null, missingFields: [] };
 const emptyPlans = { list: async () => ({ activePlans: [], proposedPlans: [], history: [], updatedAt: '' }) } as unknown as PlanService;
 const model = (...values: Array<Partial<TelegramExtraction>>): (() => TelegramInterpretationModel) => {
   let index = 0;
@@ -77,17 +77,46 @@ test('Indonesian TR-02 delay extracts to preview, confirms mutation, and flags i
     vehicle: { update: async ({ data }: { data: { delayMinutes: number } }) => { delayMinutes = data.delayMinutes; } },
     operationalEvent: { create: async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: 41n }; } },
   });
-  const operations = new TelegramOperations(memory.database, emptyPlans, model({ intent: 'REPORT', entityType: 'vehicle', entityCode: 'TR-02', delayMinutes: 90, status: 'DELAYED' }));
+  const plans = { ...emptyPlans, assess: async () => ['Step 1 does not account for vehicle delay'] } as unknown as PlanService;
+  const operations = new TelegramOperations(memory.database, plans, model({ intent: 'REPORT', entityType: 'vehicle', entityCode: 'TR-02', delayMinutes: 90, status: 'DELAYED' }));
 
   const preview = await operations.handle(1n, 'TR-02 telat 90 menit', null, new Date('2026-08-21T10:00:00.000Z'));
   assert.match(preview.text, /TR-02 delayed 90 minutes/);
+  assert.match(preview.text, /21 Aug 2026, 17:00 WIB/);
+  assert.doesNotMatch(preview.text, /✅|⚠️|🚨/);
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPORT_CONFIRM');
 
   const confirmed = await operations.handle(1n, null, 'report:confirm', new Date('2026-08-21T10:01:00.000Z'));
   assert.equal(delayMinutes, 90);
   assert.equal(events[0]?.source, 'TELEGRAM');
-  assert.match(confirmed.text, /Active plan v3/);
+  assert.match(confirmed.text, /^✅/);
+  assert.match(confirmed.text, /V3.*Replanning recommended/s);
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'REPLAN');
+});
+
+test('adverse monitoring impact requires explicit replan permission and carries trigger event', async () => {
+  const memory = memoryDatabase();
+  (memory.database as unknown as { plan: { findMany: () => Promise<Array<{ id: bigint; version: number }>> } }).plan = { findMany: async () => [{ id: 30n, version: 3 }] };
+  let revisions = 0;
+  const plans = { ...emptyPlans, assess: async () => ['quality deadline missed'], revise: async () => { revisions += 1; throw new Error('not expected'); } } as unknown as PlanService;
+  const operations = new TelegramOperations(memory.database, plans);
+  const reply = await operations.monitoringImpact({ eventId: 41n, userId: 1n, batchId: 7n, batchCode: 'B-101', sensorCode: 'SIM-S-101', type: 'QUALITY_WINDOW', severity: 'WARNING', title: 'Quality window warning', description: '3.8 days remain.' });
+  assert.equal(revisions, 0);
+  assert.match(reply.text, /^⚠️/);
+  assert.match(reply.text, /<b>Quality window warning<\/b>/);
+  assert.match(reply.text, /<b>Severity<\/b>\nWARNING/);
+  assert.match(reply.text, /B-101 · SIM-S-101/);
+  assert.match(reply.text, /3\.8 days remain\./);
+  assert.match(reply.text, /No proposal will be created unless you choose Replan/);
+  assert.deepEqual(parseConversation(memory.get()!.state)!.pending, { kind: 'REPLAN', eventId: '41', planIds: ['30'], instruction: 'Revise future steps to account for monitoring alert 41: Quality window warning for batch B-101.' });
+  assert.equal(reply.buttons?.at(-1)?.[0]?.text, 'Keep current plan');
+});
+
+test('stale monitoring cancel callback cannot clear a newer pending action', async () => {
+  const memory = memoryDatabase({ pending: { kind: 'PROPOSAL', planId: '31' }, messages: [] });
+  const reply = await new TelegramOperations(memory.database, emptyPlans).handle(1n, null, 'replan:cancel', new Date());
+  assert.match(reply.text, /expired/i);
+  assert.deepEqual(parseConversation(memory.get()!.state)!.pending, { kind: 'PROPOSAL', planId: '31' });
 });
 
 test('truck count scopes rows and pagination to vehicles', async () => {
@@ -102,7 +131,7 @@ test('truck count scopes rows and pagination to vehicles', async () => {
     { id: 2n, code: 'TR-02', capacityKg: 250, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
     { id: 3n, code: 'TR-03', capacityKg: 300, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
   ];
-  database.coldStorage.findMany = async () => [{ id: 4n, name: 'CR-01', operationalStatus: 'AVAILABLE', availableCapacityKg: 600 }];
+  database.coldStorage.findMany = async () => [{ id: 4n, name: 'CR-01', operationalStatus: 'AVAILABLE', capacityKg: 600, currentBatches: [] }];
   database.destination.findMany = async () => [{ id: 5n, name: 'Processor A', status: 'AVAILABLE' }];
   let calls = 0;
   const queryModel = () => ({ invoke: async () => new AIMessage(calls++ === 0
@@ -147,7 +176,7 @@ test('provider failure preserves pending and history without mutation or plannin
   const unavailable = () => ({ invoke: async () => { throw new Error('fetch failed'); } });
   const reply = await new TelegramOperations(memory.database, plans, unavailable).handle(1n, 'change it', null, new Date());
   const persisted = parseConversation(memory.get()!.state)!;
-  assert.match(reply.text, /retry/);
+  assert.match(reply.text, /try again/);
   assert.deepEqual(persisted.pending, initial.pending);
   assert.equal(revisions, 0);
 });
@@ -158,13 +187,15 @@ test('typed confirmation starts the final approval confirmation for a proposal',
   const plans = { list: emptyPlans.list.bind(emptyPlans), approve: async () => { approvals += 1; throw new Error('unexpected'); } } as unknown as PlanService;
   const reply = await new TelegramOperations(memory.database, plans, model({ intent: 'CONFIRM' })).handle(1n, 'confirm', null, new Date());
 
-  assert.match(reply.text, /Final confirmation/);
+  assert.match(reply.text, /<b>Final confirmation<\/b>/);
+  assert.match(reply.text, /supersede its active predecessor/);
+  assert.match(reply.text, /revalidated before activation/);
   assert.equal(parseConversation(memory.get()!.state)!.pending?.kind, 'APPROVE_CONFIRM');
   assert.equal(approvals, 0);
 });
 
 function plan(status: PlanView['status'] = 'ACTIVE'): PlanView {
-  return { id: '30', version: 3, status, previousPlanId: null, summary: 'Current route', destinationId: '3', deadline: null, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
+  return { id: '30', version: 3, status, previousPlanId: null, summary: 'Current route', destinationId: '3', deadline: null, timing: { status: 'ON_TIME', delayedBySeconds: 0, reasons: [] }, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
 }
 
 test('direct replanning remains preview-only until confirmation', async () => {
@@ -172,7 +203,8 @@ test('direct replanning remains preview-only until confirmation', async () => {
   let revisions = 0;
   const plans = { list: async () => ({ activePlans: [plan()], proposedPlans: [], history: [], updatedAt: '' }), revise: async () => { revisions += 1; throw new Error('unexpected'); } } as unknown as PlanService;
   const reply = await new TelegramOperations(memory.database, plans, model({ intent: 'REPLAN', planRef: '3', instruction: 'use another truck' })).handle(1n, 'replan plan 3 because use another truck', null, new Date('2026-08-21T10:00:00.000Z'));
-  assert.match(reply.text, /Generate a proposal/);
+  assert.match(reply.text, /<b>Replan preview<\/b>/);
+  assert.match(reply.text, /active plan remains unchanged until a proposal is approved/);
   assert.equal(revisions, 0);
 });
 
@@ -210,6 +242,15 @@ test('explicit V2 resolves display version 2 rather than database ID 2', () => {
   const byVersion = { ...plan(), id: '30', version: 2 };
   assert.equal(resolvePlanReference([byId, byVersion], 'V2')?.id, '30');
   assert.equal(resolvePlanReference([byId, byVersion], 'plan 2')?.id, '30');
+});
+
+test('Telegram plan warnings show exact delay and critical quality reasons', () => {
+  const delayed = { ...plan(), timing: { status: 'DELAYED' as const, delayedBySeconds: 5400, reasons: [{ code: 'QUALITY_DEADLINE_MISSED' as const, severity: 'CRITICAL' as const, batchId: '7', vehicleId: '2', destinationId: '3', targetAt: '2026-08-21T10:00:00.000Z', feasibleAt: '2026-08-21T11:30:00.000Z', delaySeconds: 5400, message: 'B-07 is projected to arrive 1 hour 30 minutes after its quality deadline.' }] } };
+  const text = telegramPlanTimingText(delayed);
+  assert.match(text, /WARNING · Plan delayed 1 hour 30 minutes/);
+  assert.match(text, /CRITICAL quality timing risk/);
+  assert.match(text, /B-07/);
+  assert.match(text, /1 hour 30 minutes after its quality deadline/);
 });
 
 test('three-turn delayed report preserves plan and vehicle until duration preview', async () => {

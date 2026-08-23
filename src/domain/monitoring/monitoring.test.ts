@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluateMonitoring, monitoringEventPrefix } from './monitoring';
+import { evaluateMonitoring, evaluateStaleSensor, monitoringEventPrefix } from './monitoring';
 
 const hour = 60 * 60 * 1000;
 const at = (hours: number) => new Date(Date.UTC(2026, 0, 1) + hours * hour);
@@ -78,4 +78,13 @@ test('evaluation is deterministic for shuffled readings', () => {
   ];
   const shuffled = [readings[3]!, readings[4]!, readings[0]!, readings[2]!, readings[1]!];
   assert.deepEqual(evaluateMonitoring(batchId, readings), evaluateMonitoring(batchId, shuffled));
+});
+
+test('rule families use accurate event types and stale timing is deterministic', () => {
+  const quality = evaluateMonitoring(batchId, [reading(1, 0, 7, 0), reading(2, 1, 7, 88)]);
+  assert.equal(quality[0]?.type, 'QUALITY_WINDOW');
+  const stale = evaluateStaleSensor({ id: 3n, batchId, startedAt: at(0), lastSyncedAt: at(1) }, new Date(at(1).getTime() + 21 * 60_000));
+  assert.equal(stale?.type, 'SENSOR_OFFLINE');
+  assert.equal(stale?.dedupeKey, `${monitoringEventPrefix(batchId)}sensor-offline:3`);
+  assert.equal(evaluateStaleSensor({ id: 3n, batchId, startedAt: at(0), lastSyncedAt: at(1) }, new Date(at(1).getTime() + 20 * 60_000)), null);
 });

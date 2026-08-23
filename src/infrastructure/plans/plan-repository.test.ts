@@ -80,6 +80,133 @@ test('completing the final step completes the plan and applies guarded cleanup',
   });
 });
 
+test('does not complete a later load before the vehicle return is confirmed', async () => {
+  let dependencyWhere: unknown;
+  const transaction = {
+    $executeRaw: async () => 0,
+    $queryRaw: async () => [],
+    plan: { findFirst: async () => ({ status: 'ACTIVE' }) },
+    planStep: {
+      findFirst: async ({ where }: { where: { id?: bigint; actionType?: string } }) => where.id
+        ? { status: 'UPCOMING', actionType: 'LOAD', vehicleId: 2n, sequence: 5, scheduledAt: new Date('2026-08-20T16:00:00Z'), batch: { deletedAt: null } }
+        : where.actionType === 'RETURN_TO_BASE' ? (dependencyWhere = where, { id: 4n }) : null,
+    },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 5n), /marked returned/);
+  assert.deepEqual((dependencyWhere as { plan: unknown }).plan, { userId: 1n, status: 'ACTIVE' });
+  assert.deepEqual((dependencyWhere as { scheduledAt: unknown }).scheduledAt, { lte: new Date('2026-08-20T16:00:00Z') });
+});
+
+test('does not complete dispatch before its load', async () => {
+  const transaction = {
+    $executeRaw: async () => 0,
+    $queryRaw: async () => [],
+    plan: { findFirst: async () => ({ status: 'ACTIVE' }) },
+    planStep: {
+      findFirst: async ({ where }: { where: { id?: bigint; actionType?: string } }) => where.id
+        ? { status: 'UPCOMING', actionType: 'DISPATCH', batchId: 7n, vehicleId: 2n, sequence: 2, scheduledAt: new Date('2026-08-20T13:15:00Z'), batch: { deletedAt: null } }
+        : where.actionType === 'LOAD' ? { id: 1n } : null,
+    },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 2n), /marked loaded/);
+});
+
+test('completing dispatch removes the batch from its truck', async () => {
+  let batchUpdate: unknown;
+  const completedPlan = {
+    id: 10n, version: 1, status: 'ACTIVE', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,
+    createdAt: new Date('2026-08-20T09:00:00Z'), approvedAt: new Date('2026-08-20T09:30:00Z'), completedAt: null,
+    batches: [{ batch: { id: 7n, code: 'B-7' } }], acceptableDestinations: [], triggerEvent: null, destination: { id: 3n, name: 'Port' }, steps: [],
+  };
+  const transaction = {
+    $executeRaw: async () => 0,
+    $queryRaw: async () => [],
+    plan: { findFirst: async () => ({ status: 'ACTIVE' }), findUniqueOrThrow: async () => completedPlan },
+    planStep: {
+      findFirst: async ({ where }: { where: { id?: bigint; status?: string; actionType?: string } }) => where.id
+        ? { status: 'UPCOMING', actionType: 'DISPATCH', batchId: 7n, vehicleId: 2n, destinationId: 3n, sequence: 2, scheduledAt: new Date('2026-08-20T13:15:00Z'), batch: { deletedAt: null, weightKg: 40, locationType: 'VEHICLE', currentColdStorageId: null, currentVehicleId: 2n } }
+        : where.actionType ? null : where.status === 'UPCOMING' ? { id: 3n } : null,
+      update: async () => ({}),
+    },
+    batch: { update: async (value: unknown) => { batchUpdate = value; return {}; } },
+    sensorSession: { findMany: async () => [], updateMany: async () => ({ count: 0 }) },
+    sensor: { updateMany: async () => ({ count: 0 }) },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  await new PlanRepository(database).completeStep(1n, 10n, 2n);
+
+  assert.deepEqual((batchUpdate as { data: object }).data, {
+    status: 'HANDED_OVER',
+    handedOverAt: (batchUpdate as { data: { handedOverAt: Date } }).data.handedOverAt,
+    locationType: 'DESTINATION',
+    currentColdStorageId: null,
+    currentVehicleId: null,
+    currentDestinationId: 3n,
+    locationUpdatedAt: (batchUpdate as { data: { locationUpdatedAt: Date } }).data.locationUpdatedAt,
+  });
+});
+
+test('completes a legacy handover already fulfilled by dispatch', async () => {
+  let batchUpdated = false;
+  const storedPlan = {
+    id: 10n, version: 1, status: 'COMPLETED', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,
+    createdAt: new Date('2026-08-20T09:00:00Z'), approvedAt: new Date('2026-08-20T09:30:00Z'), completedAt: new Date(),
+    batches: [], acceptableDestinations: [], triggerEvent: null, destination: { id: 3n, name: 'Port' }, steps: [],
+  };
+  const transaction = {
+    $executeRaw: async () => 0,
+    $queryRaw: async () => [],
+    plan: { findFirst: async () => ({ status: 'ACTIVE' }), findUniqueOrThrow: async () => storedPlan, update: async () => ({}), updateMany: async () => ({ count: 0 }) },
+    planStep: {
+      findFirst: async ({ where }: { where: { id?: bigint; status?: string; actionType?: string } }) => where.id
+        ? { status: 'UPCOMING', actionType: 'HANDOVER', batchId: 7n, vehicleId: 2n, destinationId: 3n, sequence: 3, scheduledAt: new Date(), batch: { deletedAt: null, locationType: 'DESTINATION', currentVehicleId: null, currentDestinationId: 3n } }
+        : null,
+      update: async () => ({}),
+      findMany: async () => [],
+    },
+    batch: { update: async () => { batchUpdated = true; return {}; } },
+    vehicle: { updateMany: async () => ({ count: 0 }) },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  await new PlanRepository(database).completeStep(1n, 10n, 3n);
+
+  assert.equal(batchUpdated, false);
+});
+
+test('approval revalidates an already-created proposal before activation', async () => {
+  const storedPlan = {
+    id: 10n, version: 1, status: 'ACTIVE', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,
+    createdAt: new Date('2026-08-20T09:00:00Z'), approvedAt: new Date('2026-08-20T09:30:00Z'), completedAt: null,
+    batches: [{ batch: { id: 7n, code: 'B-7' } }], acceptableDestinations: [], triggerEvent: null, destination: { id: 3n, name: 'Port' }, steps: [],
+  };
+  const transaction = {
+    $executeRaw: async () => 0,
+    plan: {
+      findFirst: async () => ({ status: 'PROPOSED', previousPlanId: null, summary: 'Plan', deadline: null, timingStatus: 'ON_TIME', delayedBySeconds: 0, timingReasons: [], batches: [{ batchId: 7n }], acceptableDestinations: [], steps: [] }),
+      findMany: async () => [],
+      update: async () => storedPlan,
+    },
+    planBatch: { findFirst: async () => null },
+    batch: { findMany: async () => [{ id: 7n, code: 'B-7', weightKg: 10, grade: 'A', status: 'ACTIVE', equivalentQualityAgeDays: 1, remainingQualityWindowDays: 1, qualityEstimateStartedAt: new Date(), currentTemperatureC: 2, locationType: 'INTAKE', currentColdStorageId: null, currentVehicleId: null, currentDestinationId: null, sensorSessions: [] }] },
+    coldStorage: { findMany: async () => [] },
+    vehicle: { findMany: async () => [] },
+    destination: { findMany: async () => [] },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  let validated = false;
+  const approved = await new PlanRepository(database).activateProposal(1n, 10n, () => { validated = true; return []; });
+
+  assert.equal(approved.status, 'ACTIVE');
+  assert.equal(validated, true);
+});
+
 test('planning context reserves other active plans and only completed predecessor holds', async () => {
   const step = (planBatchId: bigint, status: 'UPCOMING' | 'COMPLETED', actionType: 'STORE' | 'LOAD', scheduledAt: string) => ({ actionType, batchId: planBatchId, coldStorageId: actionType === 'STORE' ? 1n : null, vehicleId: actionType === 'LOAD' ? 2n : null, destinationId: null, scheduledAt: new Date(scheduledAt), status, batch: { weightKg: 40 } });
   const database = {
@@ -95,6 +222,12 @@ test('planning context reserves other active plans and only completed predecesso
       findMany: async () => [
         { id: 10n, steps: [step(7n, 'COMPLETED', 'STORE', '2026-08-20T10:00:00Z'), step(7n, 'UPCOMING', 'LOAD', '2026-08-20T14:00:00Z')] },
         { id: 11n, steps: [step(8n, 'UPCOMING', 'STORE', '2026-08-20T12:00:00Z'), step(8n, 'UPCOMING', 'LOAD', '2026-08-20T13:00:00Z')] },
+        { id: 12n, steps: [
+          { ...step(9n, 'COMPLETED', 'LOAD', '2026-08-20T13:00:00Z'), completedAt: new Date('2026-08-20T13:00:00Z') },
+          { actionType: 'DISPATCH', batchId: 9n, coldStorageId: null, vehicleId: 2n, destinationId: 3n, scheduledAt: new Date('2026-08-20T13:15:00Z'), status: 'COMPLETED', completedAt: new Date('2026-08-20T13:15:00Z'), batch: { weightKg: 40 } },
+          { actionType: 'RETURN_TO_BASE', batchId: null, coldStorageId: null, vehicleId: 2n, destinationId: 3n, scheduledAt: new Date('2026-08-20T15:15:00Z'), status: 'UPCOMING', completedAt: null, batch: null },
+          { ...step(9n, 'UPCOMING', 'LOAD', '2026-08-20T16:00:00Z'), completedAt: null },
+        ] },
       ],
     },
   } as unknown as Database;
@@ -104,5 +237,7 @@ test('planning context reserves other active plans and only completed predecesso
     { resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '7', weightKg: 40, start: '2026-08-20T10:00:00.000Z', end: null },
     { resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '8', weightKg: 40, start: '2026-08-20T12:00:00.000Z', end: '2026-08-20T13:00:00.000Z' },
     { resourceType: 'VEHICLE', resourceId: '2', batchId: '8', weightKg: 40, start: '2026-08-20T13:00:00.000Z', end: null },
+    { resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 40, start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T15:15:00.000Z', destinationId: '3', dispatchAt: '2026-08-20T13:15:00.000Z' },
+    { resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 40, start: '2026-08-20T16:00:00.000Z', end: null },
   ]);
 });

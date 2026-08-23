@@ -1,0 +1,94 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { generateMultiDestinationCandidates, generatePlanCandidates } from './plan-candidates';
+import { derivePlanningFacts, validateSensiblePlanProposal, type PlanningContext } from './plans';
+
+const context: PlanningContext = {
+  now: '2026-08-20T12:00:00.000Z',
+  selectedDestinationId: '3',
+  deadline: '2026-08-21T10:00:00.000Z',
+  batches: [{ id: '7', code: 'B-7', weightKg: 10, grade: 'A', status: 'ACTIVE', quality: { equivalentQualityAgeDays: 1, remainingQualityWindowDays: 1, qualityEstimateStartedAt: '2026-08-20T00:00:00.000Z', currentTemperatureC: 2 }, telemetry: [] }],
+  coldStorages: [],
+  vehicles: [{ id: '2', code: 'TR-2', capacityKg: 100, operationalStatus: 'AVAILABLE', delayMinutes: 0, delayPersistent: false, restriction: null, availabilityIntervals: [{ start: '2026-08-20T12:00:00.000Z', end: '2026-08-20T16:00:00.000Z' }] }],
+  destinations: [{ id: '3', name: 'Port', address: 'A', travelMinutes: 60, receivingIntervals: [{ start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T18:00:00.000Z' }], status: 'AVAILABLE', notes: null }],
+  currentPlan: null,
+};
+
+test('generates only sensible deterministic candidates', () => {
+  const candidates = generatePlanCandidates(context, derivePlanningFacts(context));
+  assert.ok(candidates.length > 0);
+  assert.ok(candidates.length <= 3);
+  assert.ok(candidates.every(({ proposal }) => validateSensiblePlanProposal(proposal, context).length === 0));
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH', 'RETURN_TO_BASE']);
+  assert.ok(candidates[0]!.proposal.steps.every((step) => step.rationale && step.timingRationale && step.latestSafeAt && Date.parse(step.latestSafeAt) >= Date.parse(step.scheduledAt)));
+  const dispatch = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'DISPATCH');
+  const load = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'LOAD');
+  assert.equal(dispatch?.latestSafeAt, '2026-08-20T14:00:00.000Z');
+  assert.equal(load?.latestSafeAt, '2026-08-20T13:45:00.000Z');
+  assert.match(dispatch?.timingRationale ?? '', /availability and return trip/);
+});
+
+test('returns no candidate when no vehicle can carry the batch', () => {
+  const impossible = { ...context, vehicles: [{ ...context.vehicles[0]!, capacityKg: 5 }] };
+  assert.deepEqual(generatePlanCandidates(impossible, derivePlanningFacts(impossible)), []);
+});
+
+test('returns an exact delayed proposal when only the arrival target is missed', () => {
+  const late = { ...context, deadline: '2026-08-20T12:10:00.000Z' };
+  const proposal = generatePlanCandidates(late, derivePlanningFacts(late))[0]?.proposal;
+  assert.equal(proposal?.timing?.status, 'DELAYED');
+  assert.equal(proposal?.timing?.delayedBySeconds, 4800);
+  assert.equal(proposal?.timing?.reasons[0]?.code, 'PLAN_DEADLINE_MISSED');
+});
+
+test('marks quality deadline lateness as a critical warning instead of rejecting the plan', () => {
+  const late = { ...context, batches: [{ ...context.batches[0]!, quality: { ...context.batches[0]!.quality!, remainingQualityWindowDays: 0.01 } }] };
+  const proposal = generatePlanCandidates(late, derivePlanningFacts(late))[0]?.proposal;
+  assert.equal(proposal?.timing?.status, 'DELAYED');
+  assert.ok(proposal?.timing?.reasons.some(({ code, severity }) => code === 'QUALITY_DEADLINE_MISSED' && severity === 'CRITICAL'));
+});
+
+test('stores an intake batch when dispatch is more than 30 minutes away', () => {
+  const waiting: PlanningContext = { ...context, batches: [{ ...context.batches[0]!, location: { type: 'INTAKE' } }], coldStorages: [{ id: '1', name: 'Cold room', capacityKg: 100, availableCapacityKg: 100, operationalStatus: 'AVAILABLE' }], vehicles: [{ ...context.vehicles[0]!, delayMinutes: 60 }] };
+  const candidates = generatePlanCandidates(waiting, derivePlanningFacts(waiting));
+  assert.ok(candidates.length > 0);
+  assert.equal(candidates[0]!.proposal.steps[0]?.actionType, 'STORE');
+  assert.ok(candidates[0]!.proposal.steps.some(({ actionType }) => actionType === 'DISPATCH'));
+});
+
+test('continues from a completed load without generating another load', () => {
+  const loaded: PlanningContext = {
+    ...context,
+    currentPlan: { id: '10', version: 1, summary: 'Loaded', destinationId: '3', deadline: context.deadline, steps: [{ sequence: 1, actionType: 'LOAD', batchId: '7', coldStorageId: null, vehicleId: '2', destinationId: null, scheduledAt: '2026-08-20T11:30:00.000Z', status: 'COMPLETED', completedAt: '2026-08-20T11:45:00.000Z', rationale: null }] },
+    resourceOccupancies: [{ resourceType: 'VEHICLE', resourceId: '2', batchId: '7', weightKg: 10, start: '2026-08-20T11:30:00.000Z', end: null }],
+  };
+  const candidates = generatePlanCandidates(loaded, derivePlanningFacts(loaded));
+  assert.ok(candidates.length > 0);
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['DISPATCH', 'RETURN_TO_BASE']);
+});
+
+test('keeps a vehicle occupied for the full round trip and shares one return across a trip', () => {
+  const shared = { ...context, batches: [...context.batches, { ...context.batches[0]!, id: '8', code: 'B-8' }] };
+  const candidates = generatePlanCandidates(shared, derivePlanningFacts(shared));
+  assert.ok(candidates.length > 0);
+  const first = candidates[0]!.proposal;
+  const returns = first.steps.filter(({ actionType }) => actionType === 'RETURN_TO_BASE');
+  assert.ok(returns.length >= 1);
+  for (const load of first.steps.filter(({ actionType }) => actionType === 'LOAD')) {
+    const previousReturn = returns.filter((step) => step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) <= Date.parse(load.scheduledAt)).at(-1);
+    const previousDispatch = first.steps.filter((step) => step.actionType === 'DISPATCH' && step.vehicleId === load.vehicleId && Date.parse(step.scheduledAt) < Date.parse(load.scheduledAt)).at(-1);
+    if (previousDispatch) assert.ok(previousReturn, 'a reused vehicle must have returned before its next load');
+  }
+});
+
+test('treats selected destinations as an acceptable pool', () => {
+  const multi: PlanningContext = { ...context, destinations: [...context.destinations, { ...context.destinations[0]!, id: '4', name: 'Second processor', travelMinutes: 30 }] };
+  const candidates = generateMultiDestinationCandidates(multi, ['3', '4']);
+  assert.ok(candidates.length > 0);
+  for (const candidate of candidates) {
+    const dispatches = candidate.proposal.steps.filter(({ actionType }) => actionType === 'DISPATCH');
+    assert.equal(dispatches.length, 1);
+    assert.ok(dispatches.every(({ destinationId }) => destinationId === '3' || destinationId === '4'));
+  }
+});

@@ -1,10 +1,7 @@
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { evaluateMonitoring, monitoringEventPrefix, type MonitoringDecision } from '../../domain/monitoring/monitoring';
 import { calculateQualityState } from '../../domain/quality/quality';
-import type { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
-
-export type ExcursionNotifier = { sendExcursion(alert: { userId: bigint; sensorCode: string; batchCode: string; averageTemperatureC: number; latestTemperatureC: number; thresholdC: number }): Promise<unknown> };
+import { MonitoringProcessor, type MonitoringNotifier } from './monitoring-processor';
 
 export type TelemetryInput = {
   sensorId: string;
@@ -15,7 +12,11 @@ export type TelemetryInput = {
 };
 
 export class TelemetryRepository {
-  constructor(private readonly database: Database, private readonly notifier?: ExcursionNotifier) {}
+  readonly monitoring: MonitoringProcessor;
+
+  constructor(private readonly database: Database, notifier?: MonitoringNotifier) {
+    this.monitoring = new MonitoringProcessor(database, notifier);
+  }
 
   async ingest(input: TelemetryInput) {
     await this.ingestMany([input]);
@@ -81,59 +82,11 @@ export class TelemetryRepository {
       const quality = calculateQualityState(retained);
       if (!quality) throw new ConflictError('Batch has no retained telemetry');
       const batch = await transaction.batch.update({ where: { id: session.batchId }, data: quality });
-      const created = await this.reconcileMonitoringEvents(transaction, batch.userId, session.batchId, evaluateMonitoring(session.batchId, retained), syncedAt);
-      await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt } });
+      const created = await this.monitoring.processTelemetry(transaction, { userId: batch.userId, batchId: session.batchId, batchCode: batch.code, sensorId: sensor.id, sensorCode: sensor.code, syncedAt, readings: retained });
+      await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt, ...(sensor.status === 'ERROR' ? {} : { status: 'ASSIGNED' }) } });
       await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: syncedAt } });
-      if (!batch.userId) return [];
-      return created.flatMap((event) => {
-        const rule = event.structuredData.rule;
-        if (rule.name !== 'temperature-excursion' || typeof rule.averageTemperatureC !== 'number' || typeof rule.latestTemperatureC !== 'number' || typeof rule.thresholdC !== 'number') return [];
-        return [{ userId: batch.userId!, sensorCode: sensor.code, batchCode: batch.code, averageTemperatureC: rule.averageTemperatureC, latestTemperatureC: rule.latestTemperatureC, thresholdC: rule.thresholdC }];
-      });
+      return created;
     });
-    for (const notification of notifications) {
-      try {
-        await this.notifier?.sendExcursion(notification);
-      } catch (error) {
-        console.error('Telegram excursion notification failed', error instanceof Error ? error.message : 'Unknown error');
-      }
-    }
-  }
-
-  private async reconcileMonitoringEvents(transaction: Prisma.TransactionClient, userId: bigint | null, batchId: bigint, decisions: MonitoringDecision[], syncedAt: Date) {
-    const existing = await transaction.operationalEvent.findMany({
-      where: { batchId, dedupeKey: { startsWith: monitoringEventPrefix(batchId) } },
-      select: { id: true, dedupeKey: true, structuredData: true },
-    });
-    const activeKeys = new Set(decisions.map((decision) => decision.dedupeKey));
-    const existingKeys = new Set(existing.map((event) => event.dedupeKey));
-    for (const decision of decisions) {
-      await transaction.operationalEvent.upsert({
-        where: { dedupeKey: decision.dedupeKey },
-        create: {
-          dedupeKey: decision.dedupeKey,
-          userId,
-          type: decision.type,
-          source: 'SYSTEM',
-          batchId,
-          rawMessage: null,
-          structuredData: decision.structuredData,
-          occurredAt: decision.occurredAt,
-        },
-        update: { structuredData: decision.structuredData },
-      });
-    }
-    for (const event of existing) {
-      if (!event.dedupeKey || activeKeys.has(event.dedupeKey)) continue;
-      const data = event.structuredData;
-      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
-      const alert = data.alert;
-      if (!alert || typeof alert !== 'object' || Array.isArray(alert) || alert.active !== true) continue;
-      await transaction.operationalEvent.update({
-        where: { id: event.id },
-        data: { structuredData: { ...data, alert: { ...alert, active: false, resolvedAt: syncedAt.toISOString() } } },
-      });
-    }
-    return decisions.filter((decision) => !existingKeys.has(decision.dedupeKey));
+    await this.monitoring.notify(notifications);
   }
 }

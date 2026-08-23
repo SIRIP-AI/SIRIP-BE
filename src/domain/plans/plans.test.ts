@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseAiPlanResult, validatePlanProposal, type PlanningContext } from './plans';
+import { derivePlanningFacts, evaluatePlanQuality, parseAiPlanResult, validatePlanProposal, validateSensiblePlanProposal, type PlanningContext } from './plans';
 
 const receivingIntervals = [{ start: '2026-08-20T00:00:00.000Z', end: '2026-08-22T00:00:00.000Z' }];
 
@@ -15,6 +15,8 @@ const context: PlanningContext = {
   destinations: [{ id: '3', name: 'Port', address: 'A', travelMinutes: 60, receivingIntervals, status: 'AVAILABLE', notes: null }, { id: '4', name: 'Other', address: 'B', travelMinutes: 0, receivingIntervals, status: 'AVAILABLE', notes: null }],
   currentPlan: null,
 };
+
+const returnStep = (scheduledAt: string, vehicleId = '2', destinationId = '3') => ({ actionType: 'RETURN_TO_BASE' as const, vehicleId, destinationId, scheduledAt, rationale: 'Return to base.' });
 
 test('parses proposal and no-valid-proposal results strictly', () => {
   assert.deepEqual(parseAiPlanResult('{"status":"NO_VALID_PROPOSAL_FOUND","reason":"No route"}'), { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'No route' });
@@ -44,6 +46,7 @@ test('requires dispatch to use the preceding load vehicle without forcing storag
   const direct = validatePlanProposal({ summary: 'Direct dispatch', steps: [
     { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load immediately.' },
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch directly.' },
+    returnStep('2026-08-20T15:15:00.000Z'),
   ] }, context);
   assert.deepEqual(direct, []);
 
@@ -52,6 +55,17 @@ test('requires dispatch to use the preceding load vehicle without forcing storag
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '9', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
   ] }, context);
   assert.ok(mismatched.some((error) => error.includes('vehicle from the preceding load')));
+});
+
+test('requires exactly one return at the deterministic round-trip time', () => {
+  const steps = [
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+  ];
+  const late = validatePlanProposal({ summary: 'Late return', steps: [...steps, returnStep('2026-08-20T15:30:00.000Z')] }, context);
+  assert.ok(late.some((error) => error.includes('exactly one return-to-base')));
+  const duplicate = validatePlanProposal({ summary: 'Duplicate return', steps: [...steps, returnStep('2026-08-20T15:15:00.000Z'), returnStep('2026-08-20T15:15:00.000Z')] }, context);
+  assert.ok(duplicate.some((error) => error.includes('duplicates a vehicle return')));
 });
 
 test('allows sequential resource reuse and rejects concurrent reserved weight', () => {
@@ -63,12 +77,24 @@ test('allows sequential resource reuse and rejects concurrent reserved weight', 
   const proposal = { summary: 'Sequential trips', steps: [
     { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
     { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
-    { actionType: 'LOAD' as const, batchId: '8', vehicleId: '2', scheduledAt: '2026-08-20T14:15:00.000Z', rationale: 'Reuse after arrival.' },
-    { actionType: 'DISPATCH' as const, batchId: '8', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T14:30:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T15:15:00.000Z'),
+    { actionType: 'LOAD' as const, batchId: '8', vehicleId: '2', scheduledAt: '2026-08-20T15:15:00.000Z', rationale: 'Reuse after return.' },
+    { actionType: 'DISPATCH' as const, batchId: '8', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T15:30:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T17:30:00.000Z'),
   ] };
   assert.deepEqual(validatePlanProposal(proposal, shared), []);
   const reserved = { ...shared, resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 55, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z' }] };
   assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('Vehicle Truck exceeds its 60 kg concurrent capacity')));
+});
+
+test('rejects an overlapping vehicle commitment even when capacity is sufficient', () => {
+  const proposal = { summary: 'Conflicting trip', steps: [
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T15:15:00.000Z'),
+  ] };
+  const reserved = { ...context, vehicles: [{ ...context.vehicles[0]!, capacityKg: 1_000 }], resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 10, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z', destinationId: '9', dispatchAt: '2026-08-20T12:45:00.000Z' }] };
+  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('overlapping incompatible trips')));
 });
 
 test('releases storage on load and enforces one store and load per batch', () => {
@@ -76,6 +102,7 @@ test('releases storage on load and enforces one store and load per batch', () =>
     { actionType: 'STORE', batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store.' },
     { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Release storage.' },
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T15:15:00.000Z'),
   ] }, { ...context, resourceOccupancies: [{ resourceType: 'COLD_STORAGE', resourceId: '1', batchId: '99', weightKg: 95, start: '2026-08-20T13:00:00.000Z', end: '2026-08-20T14:00:00.000Z' }] });
   assert.deepEqual(valid, []);
 
@@ -96,5 +123,46 @@ test('uses a completed predecessor load as the unmatched load for dispatch', () 
   ] }, resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '7', weightKg: 10, start: '2026-08-20T11:00:00.000Z', end: null }] };
   assert.deepEqual(validatePlanProposal({ summary: 'Dispatch loaded batch', steps: [
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Continue the journey.' },
+    returnStep('2026-08-20T15:00:00.000Z'),
   ] }, revised), []);
+});
+
+test('derives scarcity and rejects wasting the only capable vehicle when a validated alternative exists', () => {
+  const scarceContext: PlanningContext = {
+    ...context,
+    deadline: '2026-08-22T10:00:00.000Z',
+    batches: [
+      { ...context.batches[0]!, id: '101', code: 'B-101', weightKg: 180, quality: { ...context.batches[0]!.quality!, remainingQualityWindowDays: 2 } },
+      { ...context.batches[0]!, id: '102', code: 'B-102', weightKg: 420, quality: { ...context.batches[0]!.quality!, remainingQualityWindowDays: 2 } },
+    ],
+    vehicles: [
+      { ...context.vehicles[0]!, id: '1', code: 'TR-01', capacityKg: 450 },
+      { ...context.vehicles[0]!, id: '2', code: 'TR-02', capacityKg: 250 },
+      { ...context.vehicles[0]!, id: '3', code: 'TR-03', capacityKg: 300 },
+    ],
+  };
+  const bad = { summary: 'Waste TR-01', steps: [
+    { actionType: 'LOAD' as const, batchId: '101', vehicleId: '1', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '101', vehicleId: '1', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T15:15:00.000Z', '1'),
+    { actionType: 'LOAD' as const, batchId: '102', vehicleId: '1', scheduledAt: '2026-08-21T13:00:00.000Z', rationale: 'Wait.' },
+    { actionType: 'DISPATCH' as const, batchId: '102', vehicleId: '1', destinationId: '3', scheduledAt: '2026-08-21T13:15:00.000Z', rationale: 'Dispatch tomorrow.' },
+    returnStep('2026-08-21T15:15:00.000Z', '1'),
+  ] };
+
+  const facts = derivePlanningFacts(scarceContext);
+  assert.equal(facts.batches.find(({ batchId }) => batchId === '102')?.resourceFlexibility, 'LOW');
+  assert.deepEqual(validatePlanProposal(bad, scarceContext), []);
+  assert.ok(evaluatePlanQuality(bad, scarceContext, facts).some(({ code }) => code === 'SCARCE_RESOURCE_MISALLOCATION'));
+  assert.ok(validateSensiblePlanProposal(bad, scarceContext).some((error) => error.includes('SCARCE_RESOURCE_MISALLOCATION')));
+});
+
+test('rejects storage when removing it leaves the plan feasible', () => {
+  const proposal = { summary: 'Unnecessary storage', steps: [
+    { actionType: 'STORE' as const, batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:01:00.000Z', rationale: 'Store.' },
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T12:15:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T14:30:00.000Z'),
+  ] };
+  assert.ok(evaluatePlanQuality(proposal, context).some(({ code }) => code === 'UNNECESSARY_STORAGE'));
 });

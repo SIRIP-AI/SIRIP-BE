@@ -21,6 +21,13 @@ enum BatchStatus {
   CLOSED
 }
 
+enum BatchLocationType {
+  INTAKE
+  COLD_STORAGE
+  VEHICLE
+  DESTINATION
+}
+
 enum SensorStatus {
   AVAILABLE
   ASSIGNED
@@ -56,6 +63,8 @@ enum DestinationStatus {
 
 enum OperationalEventType {
   TEMPERATURE_EXCURSION
+  QUALITY_WINDOW
+  SENSOR_OFFLINE
   TRUCK_DELAY
   STORAGE_CHANGE
   DESTINATION_CHANGE
@@ -83,10 +92,16 @@ enum PlanStatus {
   DISMISSED
 }
 
+enum PlanTimingStatus {
+  ON_TIME
+  DELAYED
+}
+
 enum PlanActionType {
   STORE
   LOAD
   DISPATCH
+  RETURN_TO_BASE
   HANDOVER
   INSPECT
   OTHER
@@ -214,11 +229,19 @@ model Batch {
   remainingQualityWindowDays Float?        @map("remaining_quality_window_days")
   qualityEstimateStartedAt   DateTime?     @map("quality_estimate_started_at") @db.Timestamptz
   currentTemperatureC        Float?        @map("current_temperature_c")
+  locationType               BatchLocationType @default(INTAKE) @map("location_type")
+  currentColdStorageId       BigInt?       @map("current_cold_storage_id")
+  currentVehicleId           BigInt?       @map("current_vehicle_id")
+  currentDestinationId       BigInt?       @map("current_destination_id")
+  locationUpdatedAt          DateTime      @default(now()) @map("location_updated_at") @db.Timestamptz
   createdAt                  DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime      @updatedAt @map("updated_at") @db.Timestamptz
   deletedAt                  DateTime?     @map("deleted_at") @db.Timestamptz
   user                       User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   fishingTrip                FishingTrip?  @relation(fields: [fishingTripId], references: [id])
+  currentColdStorage         ColdStorage?  @relation("BatchCurrentStorage", fields: [currentColdStorageId], references: [id])
+  currentVehicle             Vehicle?      @relation("BatchCurrentVehicle", fields: [currentVehicleId], references: [id])
+  currentDestination         Destination?  @relation("BatchCurrentDestination", fields: [currentDestinationId], references: [id])
   sensorSessions             SensorSession[]
   operationalEvents          OperationalEvent[]
   planSteps                  PlanStep[]
@@ -290,6 +313,7 @@ model ColdStorage {
   user                User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents   OperationalEvent[]
   planSteps           PlanStep[]
+  currentBatches      Batch[]            @relation("BatchCurrentStorage")
 
   @@unique([userId, name])
   @@map("cold_storages")
@@ -310,6 +334,7 @@ model Vehicle {
   user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
+  currentBatches    Batch[]            @relation("BatchCurrentVehicle")
 
   @@unique([userId, code])
   @@map("vehicles")
@@ -330,6 +355,8 @@ model Destination {
   operationalEvents OperationalEvent[]
   planSteps         PlanStep[]
   plans             Plan[]             @relation("PlanDestination")
+  acceptedPlans     PlanDestination[]
+  currentBatches    Batch[]             @relation("BatchCurrentDestination")
 
   @@unique([userId, name])
   @@map("destinations")
@@ -372,6 +399,9 @@ model Plan {
   destinationId  BigInt?           @map("destination_id")
   summary        String
   deadline       DateTime?         @db.Timestamptz
+  timingStatus   PlanTimingStatus  @default(ON_TIME) @map("timing_status")
+  delayedBySeconds Int             @default(0) @map("delayed_by_seconds")
+  timingReasons  Json              @default("[]") @map("timing_reasons")
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
   completedAt    DateTime?         @map("completed_at") @db.Timestamptz
@@ -384,6 +414,7 @@ model Plan {
   approvedBy     User?             @relation("ApprovedPlans", fields: [approvedById], references: [id])
   steps          PlanStep[]
   batches        PlanBatch[]
+  acceptableDestinations PlanDestination[]
 
   @@unique([userId, version])
   @@index([userId, status, createdAt])
@@ -403,12 +434,23 @@ model PlanBatch {
   @@map("plan_batches")
 }
 
+model PlanDestination {
+  planId        BigInt @map("plan_id")
+  destinationId BigInt @map("destination_id")
+  plan          Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  destination   Destination @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+
+  @@id([planId, destinationId])
+  @@index([destinationId])
+  @@map("plan_destinations")
+}
+
 model PlanStep {
   id            BigInt         @id @default(autoincrement())
   planId        BigInt         @map("plan_id")
   sequence      Int
   actionType    PlanActionType @map("action_type")
-  batchId       BigInt         @map("batch_id")
+  batchId       BigInt?        @map("batch_id")
   coldStorageId BigInt?        @map("cold_storage_id")
   vehicleId     BigInt?        @map("vehicle_id")
   destinationId BigInt?        @map("destination_id")
@@ -416,8 +458,10 @@ model PlanStep {
   status        PlanStepStatus
   completedAt   DateTime?      @map("completed_at") @db.Timestamptz
   rationale     String?
+  timingRationale String?      @map("timing_rationale")
+  latestSafeAt  DateTime?      @map("latest_safe_at") @db.Timestamptz
   plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
-  batch         Batch          @relation(fields: [batchId], references: [id])
+  batch         Batch?         @relation(fields: [batchId], references: [id])
   coldStorage   ColdStorage?   @relation(fields: [coldStorageId], references: [id], onDelete: Restrict)
   vehicle       Vehicle?       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   destination   Destination?   @relation(fields: [destinationId], references: [id], onDelete: Restrict)

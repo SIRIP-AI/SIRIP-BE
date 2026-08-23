@@ -11,13 +11,19 @@ function coldStorageResponse(resource: {
   availableCapacityKg: number;
   operationalStatus: string;
   updatedAt: Date;
+  currentBatches?: Array<{ weightKg: number }>;
 }) {
-  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : resource.availableCapacityKg === 0 ? 'FULL' : 'AVAILABLE';
+  const currentBatches = resource.currentBatches ?? [];
+  const occupiedCapacityKg = currentBatches.reduce((total, batch) => total + batch.weightKg, 0);
+  const availableCapacityKg = Math.max(0, resource.capacityKg - occupiedCapacityKg);
+  const status = resource.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : availableCapacityKg === 0 ? 'FULL' : 'AVAILABLE';
   return {
     id: resource.id.toString(),
     name: resource.name,
     capacityKg: resource.capacityKg,
-    availableCapacityKg: resource.availableCapacityKg,
+    availableCapacityKg,
+    occupiedCapacityKg,
+    storedBatchCount: currentBatches.length,
     operationalStatus: resource.operationalStatus,
     status,
     updatedAt: resource.updatedAt.toISOString(),
@@ -130,12 +136,13 @@ function sensorInclude(userId: bigint) {
 function vehicleInclude(userId: bigint) {
   return {
     planSteps: {
-      where: { status: 'UPCOMING' as const, batch: { deletedAt: null }, plan: { userId, status: 'ACTIVE' as const } },
+      where: { status: 'UPCOMING' as const, plan: { userId, status: 'ACTIVE' as const }, OR: [{ batch: { deletedAt: null } }, { actionType: 'RETURN_TO_BASE' as const, batchId: null }] },
       select: { id: true },
       take: 1,
     },
   };
 }
+function coldStorageInclude(userId: bigint) { return { currentBatches: { where: { userId, deletedAt: null }, select: { weightKg: true } } } as const; }
 
 function translateDatabaseError(error: unknown): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -150,12 +157,12 @@ export class ResourceRepository {
   constructor(private readonly database: Database) {}
 
   async listColdStorages(userId: bigint) {
-    return (await this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' } })).map(coldStorageResponse);
+    return (await this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' }, include: coldStorageInclude(userId) })).map(coldStorageResponse);
   }
 
   async createColdStorage(userId: bigint, input: ColdStorageInput) {
     try {
-      return coldStorageResponse(await this.database.coldStorage.create({ data: { ...input, userId } }));
+      return coldStorageResponse(await this.database.coldStorage.create({ data: { ...input, availableCapacityKg: input.capacityKg, userId }, include: coldStorageInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }
@@ -163,12 +170,14 @@ export class ResourceRepository {
 
   async updateColdStorage(userId: bigint, id: bigint, input: ColdStorageInput) {
     try {
-      const existing = await this.database.coldStorage.findFirst({ where: { id, userId } });
+      const existing = await this.database.coldStorage.findFirst({ where: { id, userId }, include: coldStorageInclude(userId) });
       if (!existing) throw new NotFoundError('Resource');
-      if (existing.availableCapacityKg === 0 && existing.operationalStatus !== input.operationalStatus) {
+      const occupiedCapacityKg = existing.currentBatches.reduce((total, batch) => total + batch.weightKg, 0);
+      if (input.capacityKg < occupiedCapacityKg) throw new ConflictError(`Capacity cannot be less than ${occupiedCapacityKg} kg currently stored`);
+      if (occupiedCapacityKg >= existing.capacityKg && existing.operationalStatus !== input.operationalStatus) {
         throw new ConflictError('Operational status cannot be changed while cold storage is full');
       }
-      return coldStorageResponse(await this.database.coldStorage.update({ where: { id, userId }, data: input }));
+      return coldStorageResponse(await this.database.coldStorage.update({ where: { id, userId }, data: { ...input, availableCapacityKg: input.capacityKg }, include: coldStorageInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
     }

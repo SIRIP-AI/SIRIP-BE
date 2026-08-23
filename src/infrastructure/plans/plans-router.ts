@@ -22,14 +22,17 @@ function id(value: string, label: string) {
 function proposalRequest(body: unknown) {
   if (typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
   const request = body as Record<string, unknown>;
-  if (Object.keys(request).some((key) => key !== 'batchIds' && key !== 'destinationId' && key !== 'deadline' && key !== 'triggerEventId')) throw new RequestError('Request body contains unsupported fields', 400);
+  if (Object.keys(request).some((key) => key !== 'batchIds' && key !== 'destinationId' && key !== 'destinationIds' && key !== 'deadline' && key !== 'triggerEventId')) throw new RequestError('Request body contains unsupported fields', 400);
   if (!Array.isArray(request.batchIds) || request.batchIds.length < 1 || request.batchIds.length > 100) throw new RequestError('batchIds must contain 1 to 100 IDs', 400);
   const batchIds = request.batchIds.map((value) => {
     if (typeof value !== 'string') throw new RequestError('batchIds must contain positive integer strings', 400);
     return id(value, 'Batch ID');
   });
   if (new Set(batchIds).size !== batchIds.length) throw new RequestError('batchIds must be distinct', 400);
-  const destinationId = typeof request.destinationId === 'string' ? id(request.destinationId, 'destinationId') : (() => { throw new RequestError('destinationId must be a positive integer', 400); })();
+  const rawDestinationIds = Array.isArray(request.destinationIds) ? request.destinationIds : request.destinationId === undefined ? [] : [request.destinationId];
+  if (rawDestinationIds.length < 1 || rawDestinationIds.length > 20) throw new RequestError('destinationIds must contain 1 to 20 IDs', 400);
+  const destinationIds = rawDestinationIds.map((value) => typeof value === 'string' ? id(value, 'destinationId') : (() => { throw new RequestError('destinationIds must contain positive integer strings', 400); })());
+  if (new Set(destinationIds).size !== destinationIds.length) throw new RequestError('destinationIds must be distinct', 400);
   if (typeof request.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(request.deadline)) throw new RequestError('deadline must be an ISO datetime with timezone', 400);
   const parsedDeadline = new Date(request.deadline);
   if (Number.isNaN(parsedDeadline.getTime()) || parsedDeadline.getTime() <= Date.now()) throw new RequestError('deadline must be in the future', 400);
@@ -37,7 +40,7 @@ function proposalRequest(body: unknown) {
   const triggerEventId = request.triggerEventId === undefined || request.triggerEventId === null
     ? undefined
     : typeof request.triggerEventId === 'string' ? id(request.triggerEventId, 'triggerEventId') : (() => { throw new RequestError('triggerEventId must be a positive integer', 400); })();
-  return { batchIds, destinationId, deadline, ...(triggerEventId !== undefined ? { triggerEventId } : {}) };
+  return { batchIds, destinationIds, deadline, ...(triggerEventId !== undefined ? { triggerEventId } : {}) };
 }
 
 function revisionInstruction(body: unknown) {
@@ -54,7 +57,7 @@ export function createPlansRouter(service: PlanService) {
   router.get('/', async (_request, response) => response.json(await service.list(userId(response.locals))));
   router.post('/proposals', async (request, response) => {
     const input = proposalRequest(request.body);
-    const result = await service.generateProposal(userId(response.locals), input.batchIds, input.destinationId, input.deadline, input.triggerEventId);
+    const result = await service.generateProposal(userId(response.locals), input.batchIds, input.destinationIds, input.deadline, input.triggerEventId);
     response.status(result.status === 'PROPOSAL' ? 201 : 200).json(result);
   });
   router.get('/:id', async (request, response) => response.json(await service.get(userId(response.locals), id(request.params.id, 'Plan ID'))));

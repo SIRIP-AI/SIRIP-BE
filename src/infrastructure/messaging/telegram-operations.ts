@@ -1,22 +1,25 @@
 import { Prisma } from '../../generated/prisma/client';
+import { ConflictError } from '../../domain/errors';
 import type { PlanService } from '../../application/plans/plan-service';
 import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
 import { createTelegramInterpretationModel, extractTelegramRequest, telegramExtraction, type InterpretationMessage, type TelegramExtraction, type TelegramInterpretationModel } from './telegram-extractor';
 import { composeTelegramQueryResponse } from './telegram-response-composer';
+import { executeTelegramQuery } from './telegram-query';
 import { loadTelegramOperationalSnapshot } from './telegram-snapshot';
+import type { MonitoringAlert } from '../telemetry/monitoring-processor';
 
 const pageSize = 5;
 const conversationLifetimeMs = 30 * 60_000;
 const historyLimit = 10;
 const maximumHistoryText = 2000;
 
-export type TelegramReply = { text: string; buttons?: Array<Array<{ text: string; callback_data: string }>> };
+export type TelegramReply = { text: string; format?: 'HTML'; buttons?: Array<Array<{ text: string; callback_data: string }>> };
 type QueryKind = 'batches' | 'plans' | 'steps' | 'alerts' | 'sensors' | 'resources';
 type ResourceScope = 'vehicle' | 'storage' | 'destination';
 type ReportKind = 'VEHICLE_DELAY' | 'VEHICLE_STATUS' | 'STORAGE_STATUS' | 'DESTINATION_STATUS' | 'BATCH_STATUS' | 'SENSOR_STATUS';
 type Report = { kind: ReportKind; entityId: string; entityName: string; value: number | 'AVAILABLE' | 'UNAVAILABLE' | 'INSPECTION_HOLD' | 'ACTIVE' | 'ERROR'; occurredAt: string; rawMessage: string; planRef?: string };
-type State =
+export type State =
   | { kind: 'CLARIFY'; slots: TelegramExtraction; receivedAt: string }
   | { kind: 'REPORT_CONFIRM'; report: Report; slots?: TelegramExtraction }
   | { kind: 'REPLAN'; eventId: string; planIds: string[]; instruction: string }
@@ -30,12 +33,31 @@ const reportKinds: ReportKind[] = ['VEHICLE_DELAY', 'VEHICLE_STATUS', 'STORAGE_S
 const reportValues: Report['value'][] = ['AVAILABLE', 'UNAVAILABLE', 'INSPECTION_HOLD', 'ACTIVE', 'ERROR'];
 export type ChatMessage = InterpretationMessage;
 export type Conversation = { pending: State | null; messages: ChatMessage[] };
+export type PreparedTelegramTurn = { userId: bigint; input: string; receivedAt: Date; conversation: Conversation; extraction: TelegramExtraction; inbound: ChatMessage };
+export type PreparedTelegramResult = { kind: 'READY'; turn: PreparedTelegramTurn } | { kind: 'REPLY'; reply: TelegramReply };
 
 function formatWIB(date: Date | string | null | undefined): string {
   if (!date) return 'never';
   const parsed = typeof date === 'string' ? new Date(date) : date;
   if (Number.isNaN(parsed.getTime())) return 'never';
   return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+}
+
+function html(value: unknown) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function duration(seconds: number) {
+  const minutes = Math.ceil(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return [hours ? `${hours} hour${hours === 1 ? '' : 's'}` : '', remainder ? `${remainder} minute${remainder === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ') || '0 minutes';
+}
+
+export function telegramPlanTimingText(plan: PlanView) {
+  if (plan.timing.status === 'ON_TIME') return '';
+  const critical = plan.timing.reasons.some(({ severity }) => severity === 'CRITICAL');
+  return [`⚠️ WARNING · Plan delayed ${duration(plan.timing.delayedBySeconds)}`, ...(critical ? ['CRITICAL quality timing risk'] : []), ...plan.timing.reasons.map(({ message }) => `- ${message}`)].join('\n');
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -131,6 +153,7 @@ export function mergeTelegramSlots(previous: TelegramExtraction, next: TelegramE
   return {
     intent: next.intent === 'UNKNOWN' ? previous.intent : next.intent,
     queryKind: next.queryKind ?? previous.queryKind,
+    query: next.query ?? previous.query,
     entityType: next.entityType ?? previous.entityType,
     entityCode: next.entityCode ?? previous.entityCode,
     entityName: next.entityName ?? previous.entityName,
@@ -145,7 +168,7 @@ export function mergeTelegramSlots(previous: TelegramExtraction, next: TelegramE
 function reportSlots(report: Report): TelegramExtraction {
   const entityType = report.kind.startsWith('VEHICLE') ? 'vehicle' : report.kind === 'STORAGE_STATUS' ? 'storage' : report.kind === 'DESTINATION_STATUS' ? 'destination' : report.kind === 'BATCH_STATUS' ? 'batch' : 'sensor';
   const status = report.kind === 'VEHICLE_DELAY' ? 'DELAYED' : report.value === 'AVAILABLE' || report.value === 'ACTIVE' ? 'RECOVERED' : report.value === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'ISSUE';
-  return { intent: 'REPORT', queryKind: null, entityType, entityCode: report.entityName, entityName: null, planRef: report.planRef ?? null, delayMinutes: report.kind === 'VEHICLE_DELAY' ? report.value as number : null, status, instruction: null, missingFields: [] };
+  return { intent: 'REPORT', queryKind: null, query: null, entityType, entityCode: report.entityName, entityName: null, planRef: report.planRef ?? null, delayMinutes: report.kind === 'VEHICLE_DELAY' ? report.value as number : null, status, instruction: null, missingFields: [] };
 }
 
 export function resolvePlanReference(plans: PlanView[], reference: string) {
@@ -168,46 +191,79 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 }
 
 function proposalText(plan: PlanView) {
-  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
+  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
   const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...steps].join('\n');
+  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...(telegramPlanTimingText(plan) ? ['', telegramPlanTimingText(plan)] : []), ...steps].join('\n');
 }
 
 export class TelegramOperations {
   constructor(private readonly database: Database, private readonly plans: PlanService, private readonly model: () => TelegramInterpretationModel = createTelegramInterpretationModel) {}
 
+  async monitoringImpact(alert: MonitoringAlert): Promise<TelegramReply> {
+    const affected = await this.database.plan.findMany({ where: { userId: alert.userId, status: 'ACTIVE', batches: { some: { batchId: alert.batchId } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
+    const heading = `${alert.severity === 'CRITICAL' ? '🚨' : '⚠️'} <b>${html(alert.title)}</b>\n\n<b>Batch</b>\n${html(alert.batchCode)}${alert.sensorCode ? ` · ${html(alert.sensorCode)}` : ''}\n\n<b>Severity</b>\n${alert.severity}\n\n${html(alert.description)}`;
+    if (!affected.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nNo active plan directly includes this batch.` };
+    const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(alert.userId, plan.id) })));
+    const impacted = assessments.filter(({ errors }) => errors.length > 0);
+    if (!impacted.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nThe affected active plans are still feasible with the current operational facts.` };
+    const instruction = `Revise future steps to account for monitoring alert ${alert.eventId}: ${alert.title} for batch ${alert.batchCode}.`;
+    await this.savePending(alert.userId, { kind: 'REPLAN', eventId: alert.eventId.toString(), planIds: impacted.map(({ id }) => id.toString()), instruction });
+    return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\n${impacted.map(({ version }) => `V${version} is no longer valid under current operational constraints.`).join('\n')}\n\n<i>No proposal will be created unless you choose Replan.</i>`, buttons: [...impacted.map((plan) => [{ text: `Replan V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
+  }
+
   async handle(userId: bigint, text: string | null, callback: string | null, receivedAt = new Date()): Promise<TelegramReply> {
+    if (callback) return this.handleCallback(userId, callback, receivedAt);
+    const prepared = await this.prepareText(userId, text, receivedAt);
+    return prepared.kind === 'REPLY' ? prepared.reply : this.executePrepared(prepared.turn);
+  }
+
+  async handleCallback(userId: bigint, callback: string, receivedAt = new Date()): Promise<TelegramReply> {
     const conversation = await this.loadConversation(userId, receivedAt);
     const current = conversation.pending;
-    if (callback) {
-      const semantic = this.callbackLabel(callback);
-      const reply = await this.callback(userId, callback, current);
-      return this.remember(userId, conversation.messages, semantic ? { role: 'user', text: semantic, timestamp: receivedAt.toISOString() } : null, reply, receivedAt);
-    }
+    const semantic = this.callbackLabel(callback);
+    const reply = await this.callback(userId, callback, current);
+    return this.remember(userId, conversation.messages, semantic ? { role: 'user', text: semantic, timestamp: receivedAt.toISOString() } : null, reply, receivedAt);
+  }
+
+  async prepareText(userId: bigint, text: string | null, receivedAt = new Date()): Promise<PreparedTelegramResult> {
+    const conversation = await this.loadConversation(userId, receivedAt);
+    const current = conversation.pending;
     const input = text?.trim() ?? '';
-    if (!input) return { text: 'Send a question or operational report.' };
+    if (!input) return { kind: 'REPLY', reply: { text: 'Please send an operational question or report.' } };
     const snapshot = await loadTelegramOperationalSnapshot(this.database, this.plans, userId);
     const extracted = await extractTelegramRequest(this.model, snapshot, conversation.messages, current, input);
     const inbound: ChatMessage = { role: 'user', text: input.slice(0, maximumHistoryText), timestamp: receivedAt.toISOString() };
-    if (!extracted) return this.remember(userId, conversation.messages, inbound, { text: 'I could not interpret that request right now. Please retry.' }, receivedAt, current);
+    if (!extracted) return { kind: 'REPLY', reply: await this.remember(userId, conversation.messages, inbound, { text: 'I could not understand that request right now. Please try again.' }, receivedAt, current) };
+    return { kind: 'READY', turn: { userId, input, receivedAt, conversation, extraction: extracted, inbound } };
+  }
+
+  async executePrepared(turn: PreparedTelegramTurn): Promise<TelegramReply> {
+    const { userId, input, receivedAt, conversation, inbound } = turn;
+    const current = conversation.pending;
+    const extracted = turn.extraction;
     const extraction = current?.kind === 'CLARIFY' ? mergeTelegramSlots(current.slots, extracted) : current?.kind === 'REPORT_CONFIRM' && extracted.intent === 'REPORT' ? mergeTelegramSlots(current.slots ?? reportSlots(current.report), extracted) : extracted;
     const reply = await this.interpreted(userId, input, extraction, current, receivedAt);
     return this.remember(userId, conversation.messages, inbound, reply, receivedAt);
   }
 
   private async interpreted(userId: bigint, input: string, extraction: TelegramExtraction, current: State | null, receivedAt: Date): Promise<TelegramReply> {
-    if (extraction.intent === 'CANCEL') { await this.clearPending(userId); return { text: 'Canceled. No pending action was applied.' }; }
+    if (extraction.intent === 'CANCEL') { await this.clearPending(userId); return { text: 'Canceled. Nothing was changed.' }; }
     if (extraction.intent === 'CONFIRM') return this.typedConfirm(userId, current);
     if (current?.kind === 'PROPOSAL' && extraction.intent === 'PROPOSAL_EDIT' && extraction.instruction) {
       await this.savePending(userId, { kind: 'EDIT_CONFIRM', planId: current.planId, instruction: extraction.instruction });
-      return { text: `Preview plan edit:\n${extraction.instruction}\n\nGenerate a replacement proposal?`, buttons: [[{ text: 'Confirm edit', callback_data: 'edit:confirm' }, { text: 'Cancel', callback_data: 'edit:cancel' }]] };
+      return { format: 'HTML', text: `<b>Plan edit preview</b>\n\n<b>Requested change</b>\n${html(extraction.instruction)}\n\n<i>No plan has changed yet.</i>`, buttons: [[{ text: 'Confirm edit', callback_data: 'edit:confirm' }, { text: 'Cancel', callback_data: 'edit:cancel' }]] };
     }
     if (extraction.intent === 'REPLAN') {
-      if (!extraction.planRef || !extraction.instruction) return this.clarify(userId, extraction, receivedAt, 'Include the active plan ID/version or exact batch code and the revision instruction.');
+      if (!extraction.planRef || !extraction.instruction) return this.clarify(userId, extraction, receivedAt, 'Which active plan should I revise, and what should change? Please include its ID, version, or exact batch code.');
       const plan = await this.resolvePlan(userId, extraction.planRef);
-      if (!plan) return this.clarify(userId, extraction, receivedAt, 'I could not resolve one active plan. Use its ID/version or an exact batch code.');
+      if (!plan) return this.clarify(userId, extraction, receivedAt, 'I could not identify one active plan. Please use its ID, version, or exact batch code.');
       await this.savePending(userId, { kind: 'REPLAN_CONFIRM', planId: plan.id, instruction: extraction.instruction });
-      return { text: `Plan v${plan.version}: ${plan.batches.map((batch) => batch.code).join(', ')}\nRevision instruction: ${extraction.instruction}\n\nGenerate a proposal?`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
+      return { format: 'HTML', text: `<b>Replan preview</b>\n\n<b>Plan</b>\nV${plan.version} · ${plan.batches.map((batch) => html(batch.code)).join(', ')}\n\n<b>Instruction</b>\n${html(extraction.instruction)}\n\n<i>The active plan remains unchanged until a proposal is approved.</i>`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
+    }
+    if (extraction.intent === 'QUERY' && extraction.missingFields.includes('queryMetric')) return this.clarify(userId, extraction, receivedAt, 'Do you mean total, available, or occupied cold-storage capacity?');
+    if (extraction.intent === 'QUERY' && extraction.query) {
+      const result = await executeTelegramQuery(this.database, userId, extraction.query);
+      return { text: await composeTelegramQueryResponse(this.model, input, result.facts, result.fallback) };
     }
     if (extraction.intent === 'QUERY' && extraction.queryKind) {
       const broad = extraction.queryKind === 'batch_detail' ? 'batches' : extraction.queryKind === 'plan_detail' ? 'plans' : extraction.queryKind === 'sensor_detail' ? 'sensors' : extraction.queryKind === 'resource_detail' ? 'resources' : extraction.queryKind;
@@ -219,14 +275,14 @@ export class TelegramOperations {
       return this.query(userId, broad as QueryKind, 0, input, resourceScope);
     }
     const reportReceivedAt = current?.kind === 'CLARIFY' ? new Date(current.receivedAt) : receivedAt;
-    if (extraction.intent !== 'REPORT') return { text: 'I can query operations, record supported reports, or revise an existing plan.' };
+    if (extraction.intent !== 'REPORT') return { text: 'I can help with operational questions, supported reports, and revisions to existing plans.' };
     const parsed = await this.parseReport(userId, extraction, input, reportReceivedAt);
     if ('question' in parsed) {
       await this.savePending(userId, { kind: 'CLARIFY', slots: extraction, receivedAt: reportReceivedAt.toISOString() });
       return { text: parsed.question };
     }
     await this.savePending(userId, { kind: 'REPORT_CONFIRM', report: parsed.report, slots: extraction });
-    return { text: `Please confirm this report:\n${this.reportText(parsed.report)}\nOccurrence: ${formatWIB(parsed.report.occurredAt)}`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
+    return { format: 'HTML', text: `<b>Report preview</b>\n\n<b>Reported condition</b>\n${html(this.reportText(parsed.report))}\n\n<b>Occurrence</b>\n${html(formatWIB(parsed.report.occurredAt))}\n\n<i>This report has not been recorded yet.</i>`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
   }
 
   private async resolvePlan(userId: bigint, reference: string) {
@@ -252,10 +308,10 @@ export class TelegramOperations {
     if (/\b(current|active)\s+plan\b|\bplan\b.*\b(current|active)\b/i.test(input)) {
       const list = await this.plans.list(userId);
       const matches = list.activePlans;
-      if (!matches.length) return { text: 'No active plans.' };
+      if (!matches.length) return { text: 'There are no active plans right now.' };
       const lines = matches.flatMap((plan) => {
         const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...(telegramPlanTimingText(plan) ? [telegramPlanTimingText(plan)] : []), ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
       });
       return { text: lines.join('\n') };
     }
@@ -263,7 +319,7 @@ export class TelegramOperations {
     if (planReference) {
       const list = await this.plans.list(userId);
       const plan = resolvePlanReference([...list.activePlans, ...list.proposedPlans, ...list.history], planReference);
-      return plan ? { text: proposalText(plan).replace(' proposal', ` ${plan.status}`) } : { text: 'Plan not found.' };
+      return plan ? { text: proposalText(plan).replace(' proposal', ` ${plan.status}`) } : { text: 'I could not find that plan.' };
     }
     const sensors = await this.database.sensor.findMany({ where: { userId, deletedAt: null }, select: { code: true, status: true, provisioningStatus: true, lastSeenAt: true, sessions: { where: { status: 'ACTIVE' }, take: 1, select: { batch: { select: { code: true } }, lastSyncedAt: true } } } });
     const sensor = extraction.entityType === 'sensor' ? sensors.find((item) => item.code.toLowerCase() === lowered) : undefined;
@@ -274,13 +330,13 @@ export class TelegramOperations {
     if (extraction.entityType === 'vehicle' || extraction.entityType === 'storage' || extraction.entityType === 'destination') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, select: { code: true, operationalStatus: true, delayMinutes: true } }),
-        this.database.coldStorage.findMany({ where: { userId }, select: { name: true, operationalStatus: true, availableCapacityKg: true } }),
+        this.database.coldStorage.findMany({ where: { userId }, select: { name: true, operationalStatus: true, capacityKg: true, currentBatches: { where: { userId, deletedAt: null }, select: { weightKg: true } } } }),
         this.database.destination.findMany({ where: { userId }, select: { name: true, status: true } }),
       ]);
       const vehicle = extraction.entityType === 'vehicle' ? vehicles.find((item) => item.code.toLowerCase() === lowered) : undefined;
       if (vehicle) return { text: `Truck ${vehicle.code}: ${vehicle.operationalStatus}${vehicle.delayMinutes ? `, delayed ${vehicle.delayMinutes} minutes` : ', no delay'}` };
       const storage = extraction.entityType === 'storage' ? storages.find((item) => item.name.toLowerCase() === lowered) : undefined;
-      if (storage) return { text: `Storage ${storage.name}: ${storage.operationalStatus}, ${storage.availableCapacityKg}kg free` };
+      if (storage) return { text: `Storage ${storage.name}: ${storage.operationalStatus}, ${Math.max(0, storage.capacityKg - storage.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free` };
       const destination = extraction.entityType === 'destination' ? destinations.find((item) => item.name.toLowerCase() === lowered) : undefined;
       if (destination) return { text: `Destination ${destination.name}: ${destination.status}` };
     }
@@ -291,7 +347,7 @@ export class TelegramOperations {
     const rows = await this.queryRows(userId, kind, resourceScope);
     const start = page * pageSize;
     const shown = rows.slice(start, start + pageSize);
-    const text = shown.length ? `${kind[0]?.toUpperCase()}${kind.slice(1)} (${start + 1}-${start + shown.length} of ${rows.length})\n${shown.join('\n')}` : `No ${kind} found.`;
+    const text = shown.length ? `${kind[0]?.toUpperCase()}${kind.slice(1)} (${start + 1}-${start + shown.length} of ${rows.length})\n${shown.join('\n')}` : `No ${kind} found right now.`;
     const composed = await composeTelegramQueryResponse(this.model, question, { kind, range: shown.length ? { from: start + 1, to: start + shown.length, total: rows.length } : null, rows: shown }, text);
     const scopeSuffix = kind === 'resources' && resourceScope ? `:${resourceScope}` : '';
     return { text: composed, ...(start + pageSize < rows.length ? { buttons: [[{ text: 'Show more', callback_data: `more:${kind}:${page + 1}${scopeSuffix}` }]] } : {}) };
@@ -300,16 +356,16 @@ export class TelegramOperations {
   private async queryRows(userId: bigint, kind: QueryKind, resourceScope?: ResourceScope): Promise<string[]> {
     if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, ${item.remainingQualityWindowDays.toFixed(1)} days remaining`}`));
     if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${formatWIB(item.lastSeenAt)}`));
-    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, occurredAt: true } }).then((items) => items.map((item) => `${item.type}: ${item.rawMessage ?? 'active'} (${formatWIB(item.occurredAt)})`));
+    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, structuredData: true, occurredAt: true } }).then((items) => items.map((item) => { const data = record(item.structuredData); const alert = record(data?.alert); return `${item.type}: ${typeof alert?.description === 'string' ? alert.description : item.rawMessage ?? 'Active operational alert'} (${formatWIB(item.occurredAt)})`; }));
     if (kind === 'resources') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
-        this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
+        this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' }, select: { name: true, operationalStatus: true, capacityKg: true, currentBatches: { where: { userId, deletedAt: null }, select: { weightKg: true } } } }),
         this.database.destination.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
       ]);
       const rows = {
         vehicle: vehicles.map((item) => `Truck ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, delayed ${item.delayMinutes}m` : ''}`),
-        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${item.availableCapacityKg}kg free`),
+        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${Math.max(0, item.capacityKg - item.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free`),
         destination: destinations.map((item) => `Destination ${item.name}: ${item.status}`),
       };
       return resourceScope ? rows[resourceScope] : [...rows.vehicle, ...rows.storage, ...rows.destination];
@@ -318,9 +374,9 @@ export class TelegramOperations {
     const plans = [...list.activePlans, ...list.proposedPlans];
     if (kind === 'plans') return plans.map((plan) => {
       const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-      return `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
+      return `v${plan.version} ${plan.status}${plan.timing.status === 'DELAYED' ? `, DELAYED ${duration(plan.timing.delayedBySeconds)}` : ''}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
     });
-    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch.code}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
+    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {
@@ -389,17 +445,15 @@ export class TelegramOperations {
     if (current?.kind === 'REPLAN_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction, current.triggerEventId ? BigInt(current.triggerEventId) : undefined);
     if (current?.kind === 'EDIT_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction);
     if (current?.kind === 'REPLAN' && current.planIds.length === 1) return this.revise(userId, BigInt(current.planIds[0]!), current.instruction, BigInt(current.eventId));
-    if (current?.kind === 'REPLAN') return { text: 'More than one active plan is affected. Select the plan to revise using the buttons above.' };
+    if (current?.kind === 'REPLAN') return { text: 'More than one active plan is affected. Please select the plan to revise using the buttons above.' };
     if (current?.kind === 'PROPOSAL') {
       await this.savePending(userId, { kind: 'APPROVE_CONFIRM', planId: current.planId });
-      return { text: 'Final confirmation: activate this proposal and supersede its active predecessor?', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${current.planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+      return this.approvalConfirmation(current.planId);
     }
     if (current?.kind === 'APPROVE_CONFIRM') {
-      const plan = await this.plans.approve(userId, BigInt(current.planId));
-      await this.clearPending(userId);
-      return { text: `Plan v${plan.version} is now ACTIVE.` };
+      return this.approve(userId, current.planId);
     }
-    return { text: 'There is no pending action to confirm.' };
+    return { text: 'There is no pending action to confirm right now.' };
   }
 
   private callbackLabel(callback: string) {
@@ -421,28 +475,29 @@ export class TelegramOperations {
   private async callback(userId: bigint, callback: string, current: State | null): Promise<TelegramReply> {
     const more = /^more:(batches|plans|steps|alerts|sensors|resources):(\d+)(?::(vehicle|storage|destination))?$/.exec(callback);
     if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Show more', more[3] as ResourceScope | undefined);
-    if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Report canceled. No operational state changed.' }; }
+    if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Report canceled. No operational state was changed.' }; }
     if (callback === 'report:confirm' && current?.kind === 'REPORT_CONFIRM') return this.confirmReport(userId, current.report);
-    if (callback === 'replan:cancel' || callback === 'edit:cancel') { await this.clearPending(userId); return { text: 'Canceled. No planner request was made.' }; }
+    if (callback === 'replan:cancel' && (current?.kind === 'REPLAN' || current?.kind === 'REPLAN_CONFIRM')) { await this.clearPending(userId); return { text: 'Replan canceled. No planner request was made.' }; }
+    if (callback === 'edit:cancel' && current?.kind === 'EDIT_CONFIRM') { await this.clearPending(userId); return { text: 'Edit canceled. No planner request was made.' }; }
     if (callback === 'replan:confirm' && current?.kind === 'REPLAN_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction, current.triggerEventId ? BigInt(current.triggerEventId) : undefined);
     if (callback === 'edit:confirm' && current?.kind === 'EDIT_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction);
     if (callback.startsWith('replan:') && current?.kind === 'REPLAN') {
       const planId = callback.slice(7);
-      if (!current.planIds.includes(planId)) return { text: 'This action has expired.' };
+      if (!current.planIds.includes(planId)) return { text: '⚠️ This action has expired.' };
       return this.revise(userId, BigInt(planId), current.instruction, BigInt(current.eventId));
     }
     if (callback.startsWith('approve:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
       await this.savePending(userId, { kind: 'APPROVE_CONFIRM', planId: current.planId });
-      return { text: 'Final confirmation: activate this proposal and supersede its active predecessor?', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${current.planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+      return this.approvalConfirmation(current.planId);
     }
     if (callback.startsWith('approve-final:') && current?.kind === 'APPROVE_CONFIRM' && callback.slice(14) === current.planId) {
-      const plan = await this.plans.approve(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `Plan v${plan.version} is now ACTIVE.` };
+      return this.approve(userId, current.planId);
     }
     if (callback.startsWith('dismiss:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
-      const plan = await this.plans.dismiss(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `Plan v${plan.version} was dismissed.` };
+      const plan = await this.plans.dismiss(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `✅ Plan v${plan.version} was dismissed.` };
     }
     if (callback === 'proposal:cancel') { await this.clearPending(userId); return { text: 'Approval canceled. The proposal remains pending.' }; }
-    return { text: 'This action has expired. Send your request again.' };
+    return { text: '⚠️ This action has expired. Please send your request again.' };
   }
 
   private async confirmReport(userId: bigint, report: Report): Promise<TelegramReply> {
@@ -467,10 +522,12 @@ export class TelegramOperations {
       return transaction.operationalEvent.create({ data, select: { id: true } });
     });
     const affected = await this.database.plan.findMany({ where: { userId, status: 'ACTIVE', steps: { some: { status: 'UPCOMING', ...(report.kind.startsWith('VEHICLE') ? { vehicleId: entityId } : report.kind === 'STORAGE_STATUS' ? { coldStorageId: entityId } : report.kind === 'DESTINATION_STATUS' ? { destinationId: entityId } : report.kind === 'BATCH_STATUS' ? { batchId: entityId } : { batch: { sensorSessions: { some: { sensorId: entityId, status: 'ACTIVE' } } } }) } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
-    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { text: `Recorded: ${this.reportText(report)}. No active plan has an affected upcoming step.` }; }
+    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { format: 'HTML', text: `✅ <b>Report recorded</b>\n\n${html(this.reportText(report))}\n\n<b>Plan impact</b>\nNo active plan has an affected upcoming step.` }; }
     const instruction = `Revise future steps to account for this confirmed operational report: ${this.reportText(report)}.`;
+    const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(userId, plan.id) })));
     await this.savePending(userId, { kind: 'REPLAN', eventId: event.id.toString(), planIds: affected.map((plan) => plan.id.toString()), instruction });
-    return { text: `Recorded: ${this.reportText(report)}. Active plan${affected.length === 1 ? '' : 's'} ${affected.map((plan) => `v${plan.version}`).join(', ')} use this fact in upcoming steps and may need revision. Generate a proposal?`, buttons: affected.map((plan) => [{ text: `Revise v${plan.version}`, callback_data: `replan:${plan.id}` }]) };
+    const assessmentText = assessments.map((plan) => `<b>V${plan.version}</b> · ${plan.errors.length ? 'Replanning recommended\nThe confirmed condition makes one or more upcoming steps infeasible under current operational constraints.' : 'Current plan remains feasible\nIts upcoming steps still satisfy current timing, resource, destination, and quality constraints.'}`).join('\n\n');
+    return { format: 'HTML', text: `✅ <b>Report recorded</b>\n\n${html(this.reportText(report))}\n\n<b>Plan impact</b>\n${assessmentText}\n\n<i>You can revise a plan even when it remains feasible.</i>`, buttons: [...affected.map((plan) => [{ text: assessments.find(({ id }) => id === plan.id)!.errors.length ? `Revise V${plan.version}` : `Replan V${plan.version} anyway`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
   }
 
   private eventType(kind: ReportKind): 'TRUCK_DELAY' | 'STORAGE_CHANGE' | 'DESTINATION_CHANGE' | 'INSPECTION_HOLD' | 'OTHER' {
@@ -485,10 +542,26 @@ export class TelegramOperations {
     const result = await this.plans.revise(userId, planId, instruction, triggerEventId);
     if (result.status === 'NO_VALID_PROPOSAL_FOUND') {
       await this.clearPending(userId);
-      return { text: `No valid revision proposal was found: ${result.reason}\n\nThe active plan remains unchanged.` };
+      return { text: `I could not find a valid revision proposal: ${result.reason}\n\nThe active plan remains unchanged.` };
     }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
-    return { text: `${proposalText(result.proposal)}\n\nReply with a natural-language edit, or use an action below.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
+    return { format: 'HTML', text: `<b>Revision proposal · V${result.proposal.version}</b>\n\n${html(proposalText(result.proposal).split('\n').slice(1).join('\n'))}\n\n<i>The active plan remains unchanged until final approval.</i>\nReply with a natural-language edit or choose an action.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
+  }
+
+  private approvalConfirmation(planId: string): TelegramReply {
+    return { format: 'HTML', text: '<b>Final confirmation</b>\n\nActivate this proposal and supersede its active predecessor?\n\n<i>Current operational facts will be revalidated before activation.</i>', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+  }
+
+  private async approve(userId: bigint, planId: string): Promise<TelegramReply> {
+    try {
+      const plan = await this.plans.approve(userId, BigInt(planId));
+      await this.clearPending(userId);
+      return { format: 'HTML', text: `✅ <b>Plan activated</b>\n\nPlan <b>V${plan.version}</b> is now active. Its predecessor has been superseded.` };
+    } catch (error) {
+      if (!(error instanceof ConflictError)) throw error;
+      await this.clearPending(userId);
+      return { format: 'HTML', text: '⚠️ <b>Proposal expired</b>\n\nOperational conditions changed, so this proposal is no longer valid. The active plan remains unchanged.\n\nPlease request a new revision using the latest facts.' };
+    }
   }
 
   private async loadConversation(userId: bigint, now: Date): Promise<Conversation> {

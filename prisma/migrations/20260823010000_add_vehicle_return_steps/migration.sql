@@ -1,0 +1,3 @@
+ALTER TYPE "PlanActionType" ADD VALUE 'RETURN_TO_BASE';
+
+ALTER TABLE "plan_steps" ALTER COLUMN "batch_id" DROP NOT NULL;

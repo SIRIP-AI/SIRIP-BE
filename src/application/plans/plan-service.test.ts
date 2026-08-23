@@ -20,7 +20,7 @@ const context: PlanningContext = {
 };
 
 function view(status: PlanView['status']): PlanView {
-  return { id: '10', version: 1, status, previousPlanId: '9', summary: 'Current', destinationId: '3', deadline, createdAt: context.now, approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-7' }], trigger: null, steps: [] };
+  return { id: '10', version: 1, status, previousPlanId: '9', summary: 'Current', destinationId: '3', deadline, timing: { status: 'ON_TIME', delayedBySeconds: 0, reasons: [] }, createdAt: context.now, approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-7' }], trigger: null, steps: [] };
 }
 
 test('revising a proposal keeps its scope and requests transactional replacement', async () => {
@@ -40,7 +40,7 @@ test('revising a proposal keeps its scope and requests transactional replacement
     dismissProposal: async () => view('DISMISSED'),
     completeStep: async () => view('ACTIVE'),
   };
-  const proposal: AiPlanProposal = { summary: 'Revised', steps: [step] };
+  const proposal: AiPlanProposal = { summary: 'Revised', steps: [step], timing: { status: 'DELAYED', delayedBySeconds: 900, reasons: [{ code: 'PLAN_DEADLINE_MISSED', severity: 'WARNING', batchId: '7', vehicleId: null, destinationId: '3', targetAt: deadline, feasibleAt: '2026-08-25T12:15:00.000Z', delaySeconds: 900, message: 'B-7 arrives 15 minutes after the plan deadline.' }] } };
   const service = new PlanService(repository, async (request) => {
     generationInstruction = request.instruction;
     generationDeadline = request.deadline;
@@ -51,8 +51,9 @@ test('revising a proposal keeps its scope and requests transactional replacement
 
   assert.equal(generationInstruction, 'Use another truck');
   assert.equal(generationDeadline, deadline);
+  assert.deepEqual(saved?.[1].timing, proposal.timing);
   assert.deepEqual(saved?.[2], [7n]);
-  assert.equal(saved?.[3], 3n);
+  assert.deepEqual(saved?.[3], [3n]);
   assert.equal(saved?.[4], deadline);
   assert.equal(saved?.[5], currentPlan);
   assert.deepEqual(saved?.[6], { replaceProposalId: 10n });

@@ -4,6 +4,8 @@ import { RequestError } from '../../domain/errors';
 import { Prisma } from '../../generated/prisma/client';
 import type { Database } from '../persistence/database';
 import type { TelegramOperations, TelegramReply } from './telegram-operations';
+import type { ChatWorkflow } from './chat-graph';
+import type { MonitoringAlert } from '../telemetry/monitoring-processor';
 
 const linkLifetimeMs = 10 * 60_000;
 
@@ -29,7 +31,7 @@ function hash(value: string) {
 export class TelegramService {
   private botUsername: string | null = null;
 
-  constructor(private readonly database: Database, private readonly operations: TelegramOperations) {}
+  constructor(private readonly database: Database, private readonly operations: Pick<TelegramOperations, 'recordAssistant' | 'monitoringImpact'>, private readonly workflow: ChatWorkflow) {}
 
   private token() {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -128,21 +130,21 @@ export class TelegramService {
     const startToken = /^\/start(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text.trim())?.[1];
     if (startToken) {
       const linked = await this.consumeLink(startToken, externalChatId, typeof chat?.username === 'string' ? `@${chat.username}` : typeof chat?.first_name === 'string' ? chat.first_name : null);
-      await this.send(externalChatId, linked ? 'Telegram is connected to SIRIP. You will receive operational alerts here.' : 'This connection link is invalid or has expired. Generate a new link from the SIRIP Overview page.');
+      await this.send(externalChatId, linked ? '✅ Telegram is connected to SIRIP. Operational alerts will arrive here.' : '⚠️ This connection link is invalid or has expired. Please generate a new link from the SIRIP Overview page.');
       return;
     }
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
     if (!connection) {
-      await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.');
+      await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.');
       return;
     }
-    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, null));
+    await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback: null }));
   }
 
   private async receiveConnected(externalChatId: string, text: string | null, callback: string | null) {
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
-    if (!connection) { await this.send(externalChatId, 'Connect this chat from the SIRIP Overview page first.'); return; }
-    await this.sendReply(externalChatId, await this.operations.handle(connection.userId, text, callback));
+    if (!connection) { await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.'); return; }
+    await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback }));
   }
 
   private async consumeLink(token: string, externalChatId: string, displayName: string | null) {
@@ -161,22 +163,12 @@ export class TelegramService {
     });
   }
 
-  async sendExcursion(alert: ExcursionAlert) {
+  async sendMonitoringAlert(alert: MonitoringAlert) {
     const connection = await this.database.messagingConnection.findUnique({ where: { userId_channel: { userId: alert.userId, channel: 'TELEGRAM' } } });
     if (!connection) return;
-    const text = [
-      'SIRIP - TEMPERATURE ALERT',
-      '',
-      `Sensor: ${alert.sensorCode}`,
-      `Batch: ${alert.batchCode}`,
-      `Average of latest 5 readings: ${alert.averageTemperatureC.toFixed(1)}°C`,
-      `Latest temperature: ${alert.latestTemperatureC.toFixed(1)}°C`,
-      `Excursion threshold: ${alert.thresholdC.toFixed(1)}°C`,
-      '',
-      'Please inspect the batch and cooling system immediately.',
-    ].join('\n');
-    await this.send(connection.externalChatId, text);
-    await this.operations.recordAssistant(alert.userId, text);
+    const reply = await this.operations.monitoringImpact(alert);
+    await this.sendReply(connection.externalChatId, reply);
+    await this.operations.recordAssistant(alert.userId, reply.text);
   }
 
   private send(chatId: string, text: string) {
@@ -184,9 +176,14 @@ export class TelegramService {
   }
 
   private async sendReply(chatId: string, reply: TelegramReply) {
-    const chunks = reply.text.match(/[\s\S]{1,4000}/g) ?? [''];
+    const chunks = reply.text.split('\n\n').reduce<string[]>((result, section) => {
+      const addition = `${result.length ? '\n\n' : ''}${section}`;
+      if (!result.length || result[result.length - 1]!.length + addition.length > 4000) result.push(section);
+      else result[result.length - 1] += addition;
+      return result;
+    }, []);
     for (let index = 0; index < chunks.length; index += 1) {
-      await this.call('sendMessage', { chat_id: chatId, text: chunks[index], ...(index === chunks.length - 1 && reply.buttons ? { reply_markup: { inline_keyboard: reply.buttons } } : {}) });
+      await this.call('sendMessage', { chat_id: chatId, text: chunks[index], ...(reply.format ? { parse_mode: reply.format } : {}), ...(index === chunks.length - 1 && reply.buttons ? { reply_markup: { inline_keyboard: reply.buttons } } : {}) });
     }
   }
 }

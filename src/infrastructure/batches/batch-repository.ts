@@ -3,11 +3,12 @@ import type { BatchFilter, BatchInput } from '../../domain/batches/batches';
 import { ConflictError, NotFoundError } from '../../domain/errors';
 import type { Database } from '../persistence/database';
 
-const include = { fishingTrip: { select: { id: true, code: true, vesselName: true } }, sensorSessions: { where: { status: 'ACTIVE' as const }, select: { sensor: { select: { code: true, status: true } } }, take: 1 } } as const;
+const include = { fishingTrip: { select: { id: true, code: true, vesselName: true } }, currentColdStorage: { select: { id: true, name: true } }, currentVehicle: { select: { id: true, code: true } }, currentDestination: { select: { id: true, name: true } }, sensorSessions: { where: { status: 'ACTIVE' as const }, select: { sensor: { select: { code: true, status: true } } }, take: 1 } } as const;
 
 function response(batch: Prisma.BatchGetPayload<{ include: typeof include }>) {
   const sensor = batch.sensorSessions[0]?.sensor ?? null;
-  return { id: batch.id.toString(), code: batch.code, fishingTripId: batch.fishingTripId?.toString() ?? null, fishingTrip: batch.fishingTrip ? { ...batch.fishingTrip, id: batch.fishingTrip.id.toString() } : null, weightKg: batch.weightKg, grade: batch.grade, status: batch.status, receivedAt: batch.receivedAt.toISOString(), handedOverAt: batch.handedOverAt?.toISOString() ?? null, equivalentQualityAgeDays: batch.equivalentQualityAgeDays, remainingQualityWindowDays: batch.remainingQualityWindowDays, qualityEstimateStartedAt: batch.qualityEstimateStartedAt?.toISOString() ?? null, currentTemperatureC: batch.currentTemperatureC, activeSensor: sensor, createdAt: batch.createdAt.toISOString(), updatedAt: batch.updatedAt.toISOString() };
+  const location = batch.currentColdStorage ? { type: 'COLD_STORAGE', id: batch.currentColdStorage.id.toString(), name: batch.currentColdStorage.name } : batch.currentVehicle ? { type: 'VEHICLE', id: batch.currentVehicle.id.toString(), name: batch.currentVehicle.code } : batch.currentDestination ? { type: 'DESTINATION', id: batch.currentDestination.id.toString(), name: batch.currentDestination.name } : { type: 'INTAKE', id: null, name: 'Landing intake' };
+  return { id: batch.id.toString(), code: batch.code, fishingTripId: batch.fishingTripId?.toString() ?? null, fishingTrip: batch.fishingTrip ? { ...batch.fishingTrip, id: batch.fishingTrip.id.toString() } : null, weightKg: batch.weightKg, grade: batch.grade, status: batch.status, receivedAt: batch.receivedAt.toISOString(), handedOverAt: batch.handedOverAt?.toISOString() ?? null, location, equivalentQualityAgeDays: batch.equivalentQualityAgeDays, remainingQualityWindowDays: batch.remainingQualityWindowDays, qualityEstimateStartedAt: batch.qualityEstimateStartedAt?.toISOString() ?? null, currentTemperatureC: batch.currentTemperatureC, activeSensor: sensor, createdAt: batch.createdAt.toISOString(), updatedAt: batch.updatedAt.toISOString() };
 }
 
 function translate(error: unknown): never {

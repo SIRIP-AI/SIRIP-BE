@@ -10,7 +10,8 @@ export const qualityCriticalWindowDays = 2;
 export const sensorOfflineRule = 'sensor-offline';
 
 type MonitoringSeverity = 'WARNING' | 'CRITICAL';
-type MonitoringEventType = 'TEMPERATURE_EXCURSION' | 'OTHER';
+type MonitoringEventType = 'TEMPERATURE_EXCURSION' | 'QUALITY_WINDOW' | 'SENSOR_OFFLINE';
+export type MonitoringRuleFamily = 'telemetry' | 'offline';
 
 export type MonitoringDecision = {
   dedupeKey: string;
@@ -42,6 +43,10 @@ type DecisionInput = {
 
 export function monitoringEventPrefix(batchId: bigint) {
   return `monitoring:${monitoringRuleVersion}:batch:${batchId}:`;
+}
+
+export function monitoringFamilyPrefix(batchId: bigint, family: MonitoringRuleFamily) {
+  return `${monitoringEventPrefix(batchId)}${family === 'offline' ? sensorOfflineRule : ''}`;
 }
 
 function decision(batchId: bigint, input: DecisionInput): MonitoringDecision {
@@ -96,6 +101,7 @@ export function evaluateMonitoring(batchId: bigint, readings: CanonicalQualityRe
       rule: 'quality-window',
       qualifier: 'critical',
       severity: 'CRITICAL',
+      type: 'QUALITY_WINDOW',
       title: 'Quality window critical',
       description: `Remaining quality window is ${quality.remainingQualityWindowDays.toFixed(1)} days, at or below the ${qualityCriticalWindowDays}-day critical threshold.`,
       occurredAt: latest.measuredAt,
@@ -107,6 +113,7 @@ export function evaluateMonitoring(batchId: bigint, readings: CanonicalQualityRe
       rule: 'quality-window',
       qualifier: 'warning',
       severity: 'WARNING',
+      type: 'QUALITY_WINDOW',
       title: 'Quality window warning',
       description: `Remaining quality window is ${quality.remainingQualityWindowDays.toFixed(1)} days, at or below the ${qualityWarningWindowDays}-day warning threshold.`,
       occurredAt: latest.measuredAt,
@@ -124,7 +131,7 @@ export function evaluateStaleSensor(session: { id: bigint; batchId: bigint; star
   return decision(session.batchId, {
     rule: sensorOfflineRule,
     qualifier: session.id.toString(),
-    type: 'OTHER',
+    type: 'SENSOR_OFFLINE',
     severity: 'WARNING',
     title: 'Sensor offline',
     description: `No telemetry has been received for over ${sensorOfflineThresholdMs / 60000} minutes; local recording may continue and readings will sync when connectivity returns.`,

@@ -9,7 +9,7 @@ const responseEnvelope = z.union([
   z.object({ text: z.string().trim().min(1).max(maximumResponseCharacters) }).strict().transform(({ text }) => text),
   z.object({ answer: z.string().trim().min(1).max(maximumResponseCharacters) }).strict().transform(({ answer }) => answer),
 ]);
-const system = 'Write a concise Telegram answer using only the supplied validated facts. Return exactly one JSON object with one text field. Do not add facts, calculate quality, suggest mutations, or mention these rules. Preserve unknown values as unknown. Keep pagination ranges and totals accurate.';
+const system = 'Write a warm, friendly, professional plain-text Telegram answer using only the supplied validated facts. Return exactly one JSON object with one text field. Use at most one relevant emoji. Preserve every ID, code, status meaning, measurement, timestamp, unknown value, pagination range, and total; render enum statuses as natural labels without changing their meaning. Do not omit or alter facts. Do not add facts, calculations, filler, advice, suggested actions, or mention these rules.';
 
 function responseText(raw: string) {
   const normalized = normalizePlanResponse(raw).trim();
