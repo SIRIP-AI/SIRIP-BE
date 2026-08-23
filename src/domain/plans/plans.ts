@@ -369,19 +369,16 @@ export function orderPlanProposal(proposal: AiPlanProposal): AiPlanProposal {
 export function addReturnToBaseSteps(proposal: AiPlanProposal, context: PlanningContext): AiPlanProposal {
   const deliverySteps = proposal.steps.filter((step) => step.actionType !== 'RETURN_TO_BASE' && step.actionType !== 'HANDOVER');
   const returns = new Map<string, AiPlanStep>();
-  const handovers = new Map<string, AiPlanStep>();
   for (const dispatch of deliverySteps.filter((step) => step.actionType === 'DISPATCH')) {
     const destination = dispatch.destinationId ? context.destinations.find(({ id }) => id === dispatch.destinationId) : undefined;
     if (!dispatch.vehicleId || !dispatch.destinationId || !destination) continue;
     const key = `${dispatch.vehicleId}:${dispatch.destinationId}:${dispatch.scheduledAt}`;
     const expectedReturnAt = Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 2 * 60_000;
-    const arrivalAt = Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 60_000;
     const vehicle = context.vehicles.find(({ id }) => id === dispatch.vehicleId);
     const nextLoadAt = deliverySteps.filter((step) => step.actionType === 'LOAD' && step.vehicleId === dispatch.vehicleId && Date.parse(step.scheduledAt) >= expectedReturnAt).map((step) => Date.parse(step.scheduledAt)).sort((left, right) => left - right)[0];
     const availabilityEnd = vehicle?.availabilityIntervals?.filter(({ end }) => Date.parse(end) >= expectedReturnAt).map(({ end }) => Date.parse(end)).sort((left, right) => left - right)[0];
     const returnLimits = [nextLoadAt, availabilityEnd].filter((value): value is number => value !== undefined);
     const latestSafeAt = returnLimits.length ? Math.max(expectedReturnAt, Math.min(...returnLimits)) : expectedReturnAt;
-    handovers.set(`${dispatch.batchId}:${key}`, { actionType: 'HANDOVER', batchId: dispatch.batchId, vehicleId: dispatch.vehicleId, destinationId: dispatch.destinationId, scheduledAt: new Date(arrivalAt).toISOString(), rationale: `Hand over the batch at ${destination.name} after arrival.`, timingRationale: `Handover follows the configured ${destination.travelMinutes}-minute journey.`, latestSafeAt: new Date(arrivalAt).toISOString() });
     returns.set(key, {
       actionType: 'RETURN_TO_BASE',
       vehicleId: dispatch.vehicleId,
@@ -392,7 +389,7 @@ export function addReturnToBaseSteps(proposal: AiPlanProposal, context: Planning
       latestSafeAt: new Date(latestSafeAt).toISOString(),
     });
   }
-  return orderPlanProposal({ ...proposal, steps: [...deliverySteps, ...handovers.values(), ...returns.values()] });
+  return orderPlanProposal({ ...proposal, steps: [...deliverySteps, ...returns.values()] });
 }
 
 export function validatePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {

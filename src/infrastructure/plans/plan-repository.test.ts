@@ -151,6 +151,34 @@ test('completing dispatch removes the batch from its truck', async () => {
   });
 });
 
+test('completes a legacy handover already fulfilled by dispatch', async () => {
+  let batchUpdated = false;
+  const storedPlan = {
+    id: 10n, version: 1, status: 'COMPLETED', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,
+    createdAt: new Date('2026-08-20T09:00:00Z'), approvedAt: new Date('2026-08-20T09:30:00Z'), completedAt: new Date(),
+    batches: [], acceptableDestinations: [], triggerEvent: null, destination: { id: 3n, name: 'Port' }, steps: [],
+  };
+  const transaction = {
+    $executeRaw: async () => 0,
+    $queryRaw: async () => [],
+    plan: { findFirst: async () => ({ status: 'ACTIVE' }), findUniqueOrThrow: async () => storedPlan, update: async () => ({}), updateMany: async () => ({ count: 0 }) },
+    planStep: {
+      findFirst: async ({ where }: { where: { id?: bigint; status?: string; actionType?: string } }) => where.id
+        ? { status: 'UPCOMING', actionType: 'HANDOVER', batchId: 7n, vehicleId: 2n, destinationId: 3n, sequence: 3, scheduledAt: new Date(), batch: { deletedAt: null, locationType: 'DESTINATION', currentVehicleId: null, currentDestinationId: 3n } }
+        : null,
+      update: async () => ({}),
+      findMany: async () => [],
+    },
+    batch: { update: async () => { batchUpdated = true; return {}; } },
+    vehicle: { updateMany: async () => ({ count: 0 }) },
+  };
+  const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
+
+  await new PlanRepository(database).completeStep(1n, 10n, 3n);
+
+  assert.equal(batchUpdated, false);
+});
+
 test('approval activates an already-created proposal without rerunning planning validation', async () => {
   const storedPlan = {
     id: 10n, version: 1, status: 'ACTIVE', previousPlanId: null, summary: 'Plan', destinationId: 3n, deadline: null,

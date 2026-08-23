@@ -20,7 +20,7 @@ test('generates only sensible deterministic candidates', () => {
   assert.ok(candidates.length > 0);
   assert.ok(candidates.length <= 3);
   assert.ok(candidates.every(({ proposal }) => validateSensiblePlanProposal(proposal, context).length === 0));
-  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH', 'HANDOVER', 'RETURN_TO_BASE']);
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['LOAD', 'DISPATCH', 'RETURN_TO_BASE']);
   assert.ok(candidates[0]!.proposal.steps.every((step) => step.rationale && step.timingRationale && step.latestSafeAt && Date.parse(step.latestSafeAt) >= Date.parse(step.scheduledAt)));
   const dispatch = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'DISPATCH');
   const load = candidates[0]!.proposal.steps.find(({ actionType }) => actionType === 'LOAD');
@@ -39,7 +39,7 @@ test('stores an intake batch when dispatch is more than 30 minutes away', () => 
   const candidates = generatePlanCandidates(waiting, derivePlanningFacts(waiting));
   assert.ok(candidates.length > 0);
   assert.equal(candidates[0]!.proposal.steps[0]?.actionType, 'STORE');
-  assert.ok(candidates[0]!.proposal.steps.some(({ actionType }) => actionType === 'HANDOVER'));
+  assert.ok(candidates[0]!.proposal.steps.some(({ actionType }) => actionType === 'DISPATCH'));
 });
 
 test('continues from a completed load without generating another load', () => {
@@ -50,7 +50,7 @@ test('continues from a completed load without generating another load', () => {
   };
   const candidates = generatePlanCandidates(loaded, derivePlanningFacts(loaded));
   assert.ok(candidates.length > 0);
-  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['DISPATCH', 'HANDOVER', 'RETURN_TO_BASE']);
+  assert.deepEqual(candidates[0]!.proposal.steps.map(({ actionType }) => actionType), ['DISPATCH', 'RETURN_TO_BASE']);
 });
 
 test('keeps a vehicle occupied for the full round trip and shares one return across a trip', () => {
@@ -72,8 +72,8 @@ test('treats selected destinations as an acceptable pool', () => {
   const candidates = generateMultiDestinationCandidates(multi, ['3', '4']);
   assert.ok(candidates.length > 0);
   for (const candidate of candidates) {
-    const handovers = candidate.proposal.steps.filter(({ actionType }) => actionType === 'HANDOVER');
-    assert.equal(handovers.length, 1);
-    assert.ok(handovers.every(({ destinationId }) => destinationId === '3' || destinationId === '4'));
+    const dispatches = candidate.proposal.steps.filter(({ actionType }) => actionType === 'DISPATCH');
+    assert.equal(dispatches.length, 1);
+    assert.ok(dispatches.every(({ destinationId }) => destinationId === '3' || destinationId === '4'));
   }
 });

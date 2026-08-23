@@ -449,7 +449,7 @@ export class PlanRepository implements PlanRepositoryPort {
       await transaction.$queryRaw`SELECT ps."id" FROM "plan_steps" ps JOIN "plans" p ON p."id" = ps."plan_id" WHERE p."user_id" = ${userId} AND p."id" = ${planId} AND ps."id" = ${stepId} FOR UPDATE OF p, ps`;
       const plan = await transaction.plan.findFirst({ where: { id: planId, userId }, select: { status: true } });
       if (!plan) throw new NotFoundError('Plan');
-      const step = await transaction.planStep.findFirst({ where: { id: stepId, planId }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, sequence: true, scheduledAt: true, batch: { select: { deletedAt: true, weightKg: true, locationType: true, currentColdStorageId: true, currentVehicleId: true } } } });
+      const step = await transaction.planStep.findFirst({ where: { id: stepId, planId }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, sequence: true, scheduledAt: true, batch: { select: { deletedAt: true, weightKg: true, locationType: true, currentColdStorageId: true, currentVehicleId: true, currentDestinationId: true } } } });
       if (!step) throw new NotFoundError('Plan step');
       if (plan.status !== 'ACTIVE') throw new ConflictError('Plan is not active');
       if (step.status !== 'UPCOMING') throw new ConflictError('Plan step is not upcoming');
@@ -487,7 +487,9 @@ export class PlanRepository implements PlanRepositoryPort {
         if ((loaded._sum.weightKg ?? 0) + step.batch.weightKg > vehicle.capacityKg) throw new ConflictError('Vehicle no longer has enough capacity');
         await transaction.batch.update({ where: { id: step.batchId }, data: { locationType: 'VEHICLE', currentColdStorageId: null, currentVehicleId: step.vehicleId, currentDestinationId: null, locationUpdatedAt: completedAt } });
       }
-      if ((step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && step.batchId && step.vehicleId && step.destinationId && step.batch) {
+      if (step.actionType === 'HANDOVER' && step.destinationId && step.batch?.locationType === 'DESTINATION' && step.batch.currentDestinationId === step.destinationId) {
+        // Dispatch already fulfilled legacy generated handovers.
+      } else if ((step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && step.batchId && step.vehicleId && step.destinationId && step.batch) {
         if (step.batch.locationType !== 'VEHICLE' || step.batch.currentVehicleId !== step.vehicleId) throw new ConflictError('Batch is not on the planned vehicle');
         await transaction.batch.update({ where: { id: step.batchId }, data: { status: 'HANDED_OVER', handedOverAt: completedAt, locationType: 'DESTINATION', currentColdStorageId: null, currentVehicleId: null, currentDestinationId: step.destinationId, locationUpdatedAt: completedAt } });
         const sessions = await transaction.sensorSession.findMany({ where: { batchId: step.batchId, status: 'ACTIVE' }, select: { sensorId: true } });
