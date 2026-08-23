@@ -188,7 +188,7 @@ test('approval revalidates an already-created proposal before activation', async
   const transaction = {
     $executeRaw: async () => 0,
     plan: {
-      findFirst: async () => ({ status: 'PROPOSED', previousPlanId: null, summary: 'Plan', deadline: null, batches: [{ batchId: 7n }], acceptableDestinations: [], steps: [] }),
+      findFirst: async () => ({ status: 'PROPOSED', previousPlanId: null, summary: 'Plan', deadline: null, timingStatus: 'ON_TIME', delayedBySeconds: 0, timingReasons: [], batches: [{ batchId: 7n }], acceptableDestinations: [], steps: [] }),
       findMany: async () => [],
       update: async () => storedPlan,
     },

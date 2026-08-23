@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { generatePlanCandidates } from './plan-candidates';
-import { derivePlanningFacts, validateSensiblePlanProposal, type PlanningContext } from './plans';
+import { derivePlanningFacts, validateApprovablePlanProposal, type PlanningContext } from './plans';
 
 const baseline: PlanningContext = {
   now: '2026-08-20T12:00:00.000Z',
@@ -28,7 +28,7 @@ const scenarios: Scenario[] = [
   { name: 'tight but reachable quality window', context: { ...baseline, batches: [{ ...baseline.batches[0]!, quality: { ...baseline.batches[0]!.quality!, remainingQualityWindowDays: 0.2 } }] }, feasible: true },
   { name: 'insufficient capacity', context: { ...baseline, vehicles: [{ ...baseline.vehicles[0]!, capacityKg: 49 }] }, feasible: false },
   { name: 'unavailable vehicle', context: { ...baseline, vehicles: [{ ...baseline.vehicles[0]!, operationalStatus: 'UNAVAILABLE' }] }, feasible: false },
-  { name: 'deadline before reachable arrival', context: { ...baseline, deadline: '2026-08-20T12:10:00.000Z' }, feasible: false },
+  { name: 'deadline before reachable arrival', context: { ...baseline, deadline: '2026-08-20T12:10:00.000Z' }, feasible: true },
   { name: 'receiving window already passed', context: { ...baseline, destinations: [{ ...baseline.destinations[0]!, receivingIntervals: [{ start: '2026-08-20T10:00:00.000Z', end: '2026-08-20T11:00:00.000Z' }] }] }, feasible: false },
   { name: 'vehicle fully reserved through receiving window', context: { ...baseline, resourceOccupancies: [{ resourceType: 'VEHICLE', resourceId: '2', batchId: '9', weightKg: 100, start: '2026-08-20T12:00:00.000Z', end: '2026-08-20T20:00:00.000Z' }] }, feasible: false },
 ];
@@ -40,7 +40,7 @@ for (const scenario of scenarios) {
     const candidates = generatePlanCandidates(scenario.context, derivePlanningFacts(scenario.context));
     assert.equal(candidates.length > 0, scenario.feasible);
     for (const candidate of candidates) {
-      assert.deepEqual(validateSensiblePlanProposal(candidate.proposal, scenario.context), []);
+      assert.deepEqual(validateApprovablePlanProposal(candidate.proposal, scenario.context), []);
       assert.ok(candidate.proposal.steps.every((step) => step.rationale && step.timingRationale && step.latestSafeAt && Date.parse(step.latestSafeAt) >= Date.parse(step.scheduledAt)));
     }
   });

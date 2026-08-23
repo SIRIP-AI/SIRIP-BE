@@ -53,7 +53,7 @@ function requireGenerationContext(context: PlanningContext) {
 }
 
 function noCandidateResult(): AiPlanResult {
-  return { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'No feasible plan was found for the current operational constraints.' };
+  return { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'No physically valid plan was found within the seven-day planning horizon. Check resource availability, capacity, and operating windows.' };
 }
 
 export function createPlanGraph({ repository, validate, model = createPlanningModel }: PlanGraphDependencies) {

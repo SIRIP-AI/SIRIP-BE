@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ConflictError, NotFoundError } from '../../domain/errors';
-import { planSnapshot, type AiPlanProposal, type PlanActionType, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
+import { assessPlanTiming, planSnapshot, type AiPlanProposal, type PlanActionType, type PlanTimingReason, type PlanningActivePlan, type PlanView, type PlanningContext, type PlanningPlanStep, type PlanningResourceOccupancy } from '../../domain/plans/plans';
 import type { PlanRepositoryPort, PlanValidator } from '../../application/plans/plan-service';
 import type { Database } from '../persistence/database';
 
@@ -13,11 +13,11 @@ function dailyIntervals(now: Date, start: Date, end: Date) {
   const local = new Date(now.getTime() + jakartaOffsetMilliseconds);
   const startMinute = start.getUTCHours() * 60 + start.getUTCMinutes();
   const endMinute = end.getUTCHours() * 60 + end.getUTCMinutes();
-  return [0, 1, 2].map((day) => {
+  return Array.from({ length: 8 }, (_, day) => {
     const startAt = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day, start.getUTCHours() - 7, start.getUTCMinutes()));
     const endAt = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + day + (endMinute < startMinute ? 1 : 0), end.getUTCHours() - 7, end.getUTCMinutes()));
     return { start: startAt.toISOString(), end: endAt.toISOString() };
-  }).filter(({ end }) => new Date(end) > now).slice(0, 2);
+  }).filter(({ end }) => new Date(end) > now);
 }
 
 const planInclude = {
@@ -49,6 +49,17 @@ function eventMessage(event: NonNullable<StoredPlan['triggerEvent']>) {
   return event.type.replaceAll('_', ' ').toLowerCase();
 }
 
+function timingReasons(value: Prisma.JsonValue): PlanTimingReason[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const reason = item as Record<string, unknown>;
+    const validCode = ['PLAN_DEADLINE_MISSED', 'QUALITY_DEADLINE_MISSED', 'NEXT_RECEIVING_WINDOW', 'VEHICLE_DELAY', 'VEHICLE_AVAILABILITY', 'RESOURCE_RESERVATION'].includes(String(reason.code));
+    if (!validCode || (reason.severity !== 'WARNING' && reason.severity !== 'CRITICAL') || typeof reason.delaySeconds !== 'number' || typeof reason.feasibleAt !== 'string' || typeof reason.message !== 'string') return [];
+    return [reason as unknown as PlanTimingReason];
+  });
+}
+
 function serializePlan(plan: StoredPlan): PlanView {
   return {
     id: plan.id.toString(),
@@ -59,6 +70,7 @@ function serializePlan(plan: StoredPlan): PlanView {
     destinationId: plan.destinationId?.toString() ?? null,
     destinationIds: (plan.acceptableDestinations ?? []).map(({ destination }) => destination.id.toString()),
     deadline: plan.deadline?.toISOString() ?? null,
+    timing: { status: plan.timingStatus ?? 'ON_TIME', delayedBySeconds: plan.delayedBySeconds ?? 0, reasons: plan.timingReasons ? timingReasons(plan.timingReasons) : [] },
     createdAt: plan.createdAt.toISOString(),
     approvedAt: plan.approvedAt?.toISOString() ?? null,
     completedAt: plan.completedAt?.toISOString() ?? null,
@@ -389,6 +401,9 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: currentPlan?.status === 'PROPOSED' ? currentPlan.previousPlanId : currentPlan?.id ?? null,
           triggerEventId: options.triggerEventId ?? null,
           summary: proposal.summary,
+          timingStatus: proposal.timing?.status ?? 'ON_TIME',
+          delayedBySeconds: proposal.timing?.delayedBySeconds ?? 0,
+          timingReasons: proposal.timing?.reasons ?? [],
           destinationId: usedDestinations.length === 1 ? BigInt(usedDestinations[0]!) : null,
           deadline: deadline ? new Date(deadline) : null,
           batches: { create: batchIds.map((batchId) => ({ batchId })) },
@@ -417,6 +432,9 @@ export class PlanRepository implements PlanRepositoryPort {
           previousPlanId: true,
           summary: true,
           deadline: true,
+          timingStatus: true,
+          delayedBySeconds: true,
+          timingReasons: true,
           batches: { select: { batchId: true } },
           acceptableDestinations: { select: { destinationId: true } },
           steps: { orderBy: { sequence: 'asc' }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
@@ -457,6 +475,8 @@ export class PlanRepository implements PlanRepositoryPort {
         console.warn('[Plan approval validation rejected]', { planId: planId.toString(), errors: validationErrors });
         throw new ConflictError('Plan proposal is no longer valid');
       }
+      const freshTiming = assessPlanTiming(persisted, context);
+      if (proposal.timingStatus !== freshTiming.status || Math.ceil(proposal.delayedBySeconds / 60) !== Math.ceil(freshTiming.delayedBySeconds / 60)) throw new ConflictError('Plan proposal timing changed and requires renewed review');
       const overlap = await transaction.planBatch.findFirst({ where: { batchId: { in: scope }, plan: { userId, status: 'ACTIVE', ...(proposal.previousPlanId ? { id: { not: proposal.previousPlanId } } : {}) } } });
       if (overlap) throw new ConflictError('A batch is already assigned to another active plan');
       if (proposal.previousPlanId) await transaction.plan.update({ where: { id: proposal.previousPlanId }, data: { status: 'SUPERSEDED' } });

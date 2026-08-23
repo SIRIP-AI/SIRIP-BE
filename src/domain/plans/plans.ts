@@ -7,6 +7,10 @@ export type GeneratedPlanActionType = typeof generatedPlanActionTypes[number];
 export type ActiveBatchStatus = typeof activeBatchStatuses[number];
 export type PlanStatus = 'PROPOSED' | 'ACTIVE' | 'COMPLETED' | 'SUPERSEDED' | 'DISMISSED';
 export type PlanStepStatus = 'UPCOMING' | 'COMPLETED' | 'CANCELED';
+export type PlanTimingStatus = 'ON_TIME' | 'DELAYED';
+export type PlanTimingReasonCode = 'PLAN_DEADLINE_MISSED' | 'QUALITY_DEADLINE_MISSED' | 'NEXT_RECEIVING_WINDOW' | 'VEHICLE_DELAY' | 'VEHICLE_AVAILABILITY' | 'RESOURCE_RESERVATION';
+export type PlanTimingReason = { code: PlanTimingReasonCode; severity: 'WARNING' | 'CRITICAL'; batchId: string | null; vehicleId: string | null; destinationId: string | null; targetAt: string | null; feasibleAt: string; delaySeconds: number; message: string };
+export type PlanTimingAssessment = { status: PlanTimingStatus; delayedBySeconds: number; reasons: PlanTimingReason[] };
 
 export type AiPlanStep = {
   actionType: GeneratedPlanActionType;
@@ -23,6 +27,7 @@ export type AiPlanStep = {
 export type AiPlanProposal = {
   summary: string;
   steps: AiPlanStep[];
+  timing?: PlanTimingAssessment;
 };
 
 export type AiPlanResult =
@@ -192,6 +197,7 @@ export type PlanView = {
   destinationId: string | null;
   destinationIds?: string[];
   deadline: string | null;
+  timing: PlanTimingAssessment;
   createdAt: string;
   approvedAt: string | null;
   completedAt: string | null;
@@ -325,11 +331,10 @@ export function derivePlanningFacts(context: PlanningContext): PlanningFacts {
     const qualityDeadline = new Date(now + (batch.quality?.remainingQualityWindowDays ?? 0) * 86_400_000);
     const planDeadline = context.deadline ? new Date(context.deadline) : null;
     const effectiveDeadline = planDeadline && planDeadline < qualityDeadline ? planDeadline : qualityDeadline;
-    const reachableDispatchIntervals = dispatchIntervals.map((interval) => ({ ...interval, end: new Date(Math.min(Date.parse(interval.end), effectiveDeadline.getTime())).toISOString() }))
-      .filter((interval) => Date.parse(interval.end) >= Math.max(Date.parse(interval.start), now));
+    const reachableDispatchIntervals = dispatchIntervals.filter((interval) => Date.parse(interval.end) >= Math.max(Date.parse(interval.start), now));
     const feasibleVehicleIds = context.vehicles.filter((vehicle) => {
       if (vehicle.operationalStatus !== 'AVAILABLE' || vehicle.capacityKg < batch.weightKg) return false;
-      const available = vehicle.availabilityIntervals ?? [{ start: context.now, end: effectiveDeadline.toISOString() }];
+      const available = vehicle.availabilityIntervals ?? [{ start: context.now, end: reachableDispatchIntervals.at(-1)?.end ?? effectiveDeadline.toISOString() }];
       return reachableDispatchIntervals.some((dispatch) => available.some((interval) => intervalsOverlap(dispatch, interval) && Date.parse(dispatch.end) >= now + vehicle.delayMinutes * 60_000));
     }).map(({ id }) => id);
     return {
@@ -394,7 +399,7 @@ export function addReturnToBaseSteps(proposal: AiPlanProposal, context: Planning
   return orderPlanProposal({ ...proposal, steps: [...deliverySteps, ...returns.values()] });
 }
 
-export function validatePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {
+export function validatePlanProposal(proposal: AiPlanProposal, context: PlanningContext, options: { allowTargetLateness?: boolean } = {}) {
   const errors: string[] = [];
   const now = new Date(context.now);
   const batches = new Map(context.batches.map((batch) => [batch.id, batch]));
@@ -432,7 +437,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
   if (!proposal.summary.trim() || proposal.summary.length > 1000) errors.push('Plan summary is invalid');
   if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Plan must contain 1 to 100 future steps');
   if (Number.isNaN(now.getTime())) errors.push('Planning context time is invalid');
-  if (deadline && (Number.isNaN(deadline.getTime()) || deadline.getTime() <= now.getTime())) errors.push('Plan deadline must be a valid future datetime');
+  if (deadline && (Number.isNaN(deadline.getTime()) || (!options.allowTargetLateness && deadline.getTime() <= now.getTime()))) errors.push('Plan deadline must be a valid future datetime');
   if (context.selectedDestinationId && (!selectedDestination || selectedDestination.status !== 'AVAILABLE')) errors.push('Selected destination is unavailable or unconfigured');
   for (const destinationId of acceptableDestinationIds) if (destinations.get(destinationId)?.status !== 'AVAILABLE') errors.push(`Acceptable destination ${destinationId} is unavailable or unconfigured`);
   for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} has no quality state`);
@@ -507,9 +512,9 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
         else { departed.add(batch.id); if (!requiresHandover) dispatched.add(batch.id); }
         if (batch.quality && !Number.isNaN(arrival.getTime())) {
           const deadline = now.getTime() + batch.quality.remainingQualityWindowDays * 86_400_000;
-          if (arrival.getTime() > deadline) errors.push(`${label} arrives after the batch quality deadline`);
+          if (!options.allowTargetLateness && arrival.getTime() > deadline) errors.push(`${label} arrives after the batch quality deadline`);
         }
-        if (deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} arrives after the plan deadline`);
+        if (!options.allowTargetLateness && deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} arrives after the plan deadline`);
       }
     }
     if (step.actionType === 'HANDOVER' && batch && destination) {
@@ -647,4 +652,49 @@ export function validateSensiblePlanProposal(proposal: AiPlanProposal, context: 
   const hardErrors = validatePlanProposal(proposal, context);
   if (hardErrors.length) return hardErrors;
   return evaluatePlanQuality(proposal, context).map((issue) => `PLAN_QUALITY ${issue.code}: ${issue.message}`);
+}
+
+export function assessPlanTiming(proposal: AiPlanProposal, context: PlanningContext): PlanTimingAssessment {
+  const formatDuration = (seconds: number) => {
+    const minutes = Math.ceil(seconds / 60); const hours = Math.floor(minutes / 60); const remainder = minutes % 60;
+    return [hours ? `${hours} hour${hours === 1 ? '' : 's'}` : '', remainder ? `${remainder} minute${remainder === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ') || 'less than one minute';
+  };
+  const reasons: PlanTimingReason[] = [];
+  for (const step of proposal.steps.filter((candidate) => candidate.actionType === 'DISPATCH' && candidate.batchId && candidate.destinationId)) {
+    const batch = context.batches.find(({ id }) => id === step.batchId);
+    const destination = context.destinations.find(({ id }) => id === step.destinationId);
+    if (!batch || !destination) continue;
+    const feasibleAt = new Date(Date.parse(step.scheduledAt) + destination.travelMinutes * 60_000).toISOString();
+    const targets = [
+      ...(context.deadline ? [{ code: 'PLAN_DEADLINE_MISSED' as const, severity: 'WARNING' as const, targetAt: context.deadline, label: 'plan arrival deadline' }] : []),
+      ...(batch.quality ? [{ code: 'QUALITY_DEADLINE_MISSED' as const, severity: 'CRITICAL' as const, targetAt: new Date(Date.parse(context.now) + batch.quality.remainingQualityWindowDays * 86_400_000).toISOString(), label: `${batch.code} quality deadline` }] : []),
+    ];
+    for (const target of targets) {
+      const delaySeconds = Math.max(0, Math.ceil((Date.parse(feasibleAt) - Date.parse(target.targetAt)) / 1000));
+      if (!delaySeconds) continue;
+      reasons.push({ code: target.code, severity: target.severity, batchId: batch.id, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: target.targetAt, feasibleAt, delaySeconds, message: `${batch.code} is projected to arrive ${formatDuration(delaySeconds)} after its ${target.label}.` });
+    }
+  }
+  const delayedBySeconds = reasons.reduce((maximum, reason) => Math.max(maximum, reason.delaySeconds), 0);
+  if (delayedBySeconds) {
+    for (const reason of reasons.filter(({ code }) => code === 'PLAN_DEADLINE_MISSED' || code === 'QUALITY_DEADLINE_MISSED')) {
+      const step = proposal.steps.find((candidate) => candidate.actionType === 'DISPATCH' && candidate.batchId === reason.batchId && candidate.destinationId === reason.destinationId);
+      const destination = context.destinations.find(({ id }) => id === reason.destinationId);
+      const receiving = destination?.receivingIntervals.find(({ start, end }) => Date.parse(reason.feasibleAt) >= Date.parse(start) && Date.parse(reason.feasibleAt) <= Date.parse(end));
+      if (step && destination && receiving && reason.targetAt && Date.parse(receiving.start) > Date.parse(reason.targetAt) && !reasons.some(({ code, batchId }) => code === 'NEXT_RECEIVING_WINDOW' && batchId === reason.batchId)) {
+        const waitSeconds = Math.ceil((Date.parse(receiving.start) - Date.parse(reason.targetAt)) / 1000);
+        reasons.push({ code: 'NEXT_RECEIVING_WINDOW', severity: reason.severity, batchId: reason.batchId, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: reason.targetAt, feasibleAt: receiving.start, delaySeconds: waitSeconds, message: `${destination.name}'s next valid receiving window starts ${formatDuration(waitSeconds)} after the missed target.` });
+      }
+    }
+    const vehicleIds = new Set(reasons.flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []));
+    for (const vehicleId of vehicleIds) {
+      const vehicle = context.vehicles.find(({ id }) => id === vehicleId);
+      if (vehicle?.delayMinutes) reasons.push({ code: 'VEHICLE_DELAY', severity: 'WARNING', batchId: null, vehicleId, destinationId: null, targetAt: null, feasibleAt: new Date(Date.parse(context.now) + vehicle.delayMinutes * 60_000).toISOString(), delaySeconds: vehicle.delayMinutes * 60, message: `${vehicle.code} is delayed ${vehicle.delayMinutes} minutes.` });
+    }
+  }
+  return { status: delayedBySeconds ? 'DELAYED' : 'ON_TIME', delayedBySeconds, reasons };
+}
+
+export function validateApprovablePlanProposal(proposal: AiPlanProposal, context: PlanningContext) {
+  return validatePlanProposal(proposal, context, { allowTargetLateness: true });
 }

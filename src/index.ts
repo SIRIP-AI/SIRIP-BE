@@ -9,13 +9,13 @@ import { createChatGraph, createChatWorkflow } from './infrastructure/messaging/
 import { PlanRepository } from './infrastructure/plans/plan-repository';
 import { createPlanGraph, createPlanWorkflow } from './infrastructure/plans/plan-graph';
 import { PlanService } from './application/plans/plan-service';
-import { validatePlanProposal, validateSensiblePlanProposal } from './domain/plans/plans';
+import { validateApprovablePlanProposal } from './domain/plans/plans';
 
 if (existsSync('.env')) loadEnvFile('.env');
 
 const database = createDatabase();
 const planRepository = new PlanRepository(database);
-const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validatePlanProposal })), validateSensiblePlanProposal);
+const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validateApprovablePlanProposal })), validateApprovablePlanProposal);
 const telegramOperations = new TelegramOperations(database, planService);
 const telegram = new TelegramService(database, telegramOperations, createChatWorkflow(createChatGraph(telegramOperations)));
 const app = createApp(database, telegram);

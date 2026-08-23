@@ -90,6 +90,11 @@ enum PlanStatus {
   DISMISSED
 }
 
+enum PlanTimingStatus {
+  ON_TIME
+  DELAYED
+}
+
 enum PlanActionType {
   STORE
   LOAD
@@ -392,6 +397,9 @@ model Plan {
   destinationId  BigInt?           @map("destination_id")
   summary        String
   deadline       DateTime?         @db.Timestamptz
+  timingStatus   PlanTimingStatus  @default(ON_TIME) @map("timing_status")
+  delayedBySeconds Int             @default(0) @map("delayed_by_seconds")
+  timingReasons  Json              @default("[]") @map("timing_reasons")
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
   approvedAt     DateTime?         @map("approved_at") @db.Timestamptz
   completedAt    DateTime?         @map("completed_at") @db.Timestamptz

@@ -5,10 +5,10 @@ import { AIMessage } from '@langchain/core/messages';
 import type { PlanService } from '../../application/plans/plan-service';
 import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
-import { mergeTelegramSlots, parseConversation, recoveredBatchStatus, recoveredSensorStatus, reportOccurrence, resolvePlanReference, TelegramOperations, type Conversation } from './telegram-operations';
+import { mergeTelegramSlots, parseConversation, recoveredBatchStatus, recoveredSensorStatus, reportOccurrence, resolvePlanReference, telegramPlanTimingText, TelegramOperations, type Conversation } from './telegram-operations';
 import type { TelegramExtraction, TelegramInterpretationModel } from './telegram-extractor';
 
-const base: TelegramExtraction = { intent: 'UNKNOWN', queryKind: null, entityType: null, entityCode: null, entityName: null, planRef: null, delayMinutes: null, status: null, instruction: null, missingFields: [] };
+const base: TelegramExtraction = { intent: 'UNKNOWN', queryKind: null, query: null, entityType: null, entityCode: null, entityName: null, planRef: null, delayMinutes: null, status: null, instruction: null, missingFields: [] };
 const emptyPlans = { list: async () => ({ activePlans: [], proposedPlans: [], history: [], updatedAt: '' }) } as unknown as PlanService;
 const model = (...values: Array<Partial<TelegramExtraction>>): (() => TelegramInterpretationModel) => {
   let index = 0;
@@ -103,7 +103,7 @@ test('truck count scopes rows and pagination to vehicles', async () => {
     { id: 2n, code: 'TR-02', capacityKg: 250, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
     { id: 3n, code: 'TR-03', capacityKg: 300, operationalStatus: 'AVAILABLE', delayMinutes: 0 },
   ];
-  database.coldStorage.findMany = async () => [{ id: 4n, name: 'CR-01', operationalStatus: 'AVAILABLE', availableCapacityKg: 600 }];
+  database.coldStorage.findMany = async () => [{ id: 4n, name: 'CR-01', operationalStatus: 'AVAILABLE', capacityKg: 600, currentBatches: [] }];
   database.destination.findMany = async () => [{ id: 5n, name: 'Processor A', status: 'AVAILABLE' }];
   let calls = 0;
   const queryModel = () => ({ invoke: async () => new AIMessage(calls++ === 0
@@ -165,7 +165,7 @@ test('typed confirmation starts the final approval confirmation for a proposal',
 });
 
 function plan(status: PlanView['status'] = 'ACTIVE'): PlanView {
-  return { id: '30', version: 3, status, previousPlanId: null, summary: 'Current route', destinationId: '3', deadline: null, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
+  return { id: '30', version: 3, status, previousPlanId: null, summary: 'Current route', destinationId: '3', deadline: null, timing: { status: 'ON_TIME', delayedBySeconds: 0, reasons: [] }, createdAt: '2026-08-21T00:00:00.000Z', approvedAt: null, completedAt: null, batches: [{ id: '7', code: 'B-07' }], trigger: null, steps: [] };
 }
 
 test('direct replanning remains preview-only until confirmation', async () => {
@@ -211,6 +211,14 @@ test('explicit V2 resolves display version 2 rather than database ID 2', () => {
   const byVersion = { ...plan(), id: '30', version: 2 };
   assert.equal(resolvePlanReference([byId, byVersion], 'V2')?.id, '30');
   assert.equal(resolvePlanReference([byId, byVersion], 'plan 2')?.id, '30');
+});
+
+test('Telegram plan warnings show exact delay and critical quality reasons', () => {
+  const delayed = { ...plan(), timing: { status: 'DELAYED' as const, delayedBySeconds: 5400, reasons: [{ code: 'QUALITY_DEADLINE_MISSED' as const, severity: 'CRITICAL' as const, batchId: '7', vehicleId: '2', destinationId: '3', targetAt: '2026-08-21T10:00:00.000Z', feasibleAt: '2026-08-21T11:30:00.000Z', delaySeconds: 5400, message: 'B-07 is projected to arrive 1 hour 30 minutes after its quality deadline.' }] } };
+  const text = telegramPlanTimingText(delayed);
+  assert.match(text, /DELAYED 1 hour 30 minutes/);
+  assert.match(text, /CRITICAL QUALITY TIMING RISK/);
+  assert.match(text, /B-07/);
 });
 
 test('three-turn delayed report preserves plan and vehicle until duration preview', async () => {

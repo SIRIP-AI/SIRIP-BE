@@ -5,6 +5,7 @@ import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
 import { createTelegramInterpretationModel, extractTelegramRequest, telegramExtraction, type InterpretationMessage, type TelegramExtraction, type TelegramInterpretationModel } from './telegram-extractor';
 import { composeTelegramQueryResponse } from './telegram-response-composer';
+import { executeTelegramQuery } from './telegram-query';
 import { loadTelegramOperationalSnapshot } from './telegram-snapshot';
 
 const pageSize = 5;
@@ -17,7 +18,7 @@ type QueryKind = 'batches' | 'plans' | 'steps' | 'alerts' | 'sensors' | 'resourc
 type ResourceScope = 'vehicle' | 'storage' | 'destination';
 type ReportKind = 'VEHICLE_DELAY' | 'VEHICLE_STATUS' | 'STORAGE_STATUS' | 'DESTINATION_STATUS' | 'BATCH_STATUS' | 'SENSOR_STATUS';
 type Report = { kind: ReportKind; entityId: string; entityName: string; value: number | 'AVAILABLE' | 'UNAVAILABLE' | 'INSPECTION_HOLD' | 'ACTIVE' | 'ERROR'; occurredAt: string; rawMessage: string; planRef?: string };
-type State =
+export type State =
   | { kind: 'CLARIFY'; slots: TelegramExtraction; receivedAt: string }
   | { kind: 'REPORT_CONFIRM'; report: Report; slots?: TelegramExtraction }
   | { kind: 'REPLAN'; eventId: string; planIds: string[]; instruction: string }
@@ -31,6 +32,8 @@ const reportKinds: ReportKind[] = ['VEHICLE_DELAY', 'VEHICLE_STATUS', 'STORAGE_S
 const reportValues: Report['value'][] = ['AVAILABLE', 'UNAVAILABLE', 'INSPECTION_HOLD', 'ACTIVE', 'ERROR'];
 export type ChatMessage = InterpretationMessage;
 export type Conversation = { pending: State | null; messages: ChatMessage[] };
+export type PreparedTelegramTurn = { userId: bigint; input: string; receivedAt: Date; conversation: Conversation; extraction: TelegramExtraction; inbound: ChatMessage };
+export type PreparedTelegramResult = { kind: 'READY'; turn: PreparedTelegramTurn } | { kind: 'REPLY'; reply: TelegramReply };
 
 function formatWIB(date: Date | string | null | undefined): string {
   if (!date) return 'never';
@@ -41,6 +44,19 @@ function formatWIB(date: Date | string | null | undefined): string {
 
 function html(value: unknown) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function duration(seconds: number) {
+  const minutes = Math.ceil(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return [hours ? `${hours} hour${hours === 1 ? '' : 's'}` : '', remainder ? `${remainder} minute${remainder === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ') || '0 minutes';
+}
+
+export function telegramPlanTimingText(plan: PlanView) {
+  if (plan.timing.status === 'ON_TIME') return '';
+  const critical = plan.timing.reasons.some(({ severity }) => severity === 'CRITICAL');
+  return [`WARNING · PLAN DELAYED ${duration(plan.timing.delayedBySeconds)}`, ...(critical ? ['CRITICAL QUALITY TIMING RISK'] : []), ...plan.timing.reasons.map(({ message }) => `- ${message}`)].join('\n');
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -136,6 +152,7 @@ export function mergeTelegramSlots(previous: TelegramExtraction, next: TelegramE
   return {
     intent: next.intent === 'UNKNOWN' ? previous.intent : next.intent,
     queryKind: next.queryKind ?? previous.queryKind,
+    query: next.query ?? previous.query,
     entityType: next.entityType ?? previous.entityType,
     entityCode: next.entityCode ?? previous.entityCode,
     entityName: next.entityName ?? previous.entityName,
@@ -150,7 +167,7 @@ export function mergeTelegramSlots(previous: TelegramExtraction, next: TelegramE
 function reportSlots(report: Report): TelegramExtraction {
   const entityType = report.kind.startsWith('VEHICLE') ? 'vehicle' : report.kind === 'STORAGE_STATUS' ? 'storage' : report.kind === 'DESTINATION_STATUS' ? 'destination' : report.kind === 'BATCH_STATUS' ? 'batch' : 'sensor';
   const status = report.kind === 'VEHICLE_DELAY' ? 'DELAYED' : report.value === 'AVAILABLE' || report.value === 'ACTIVE' ? 'RECOVERED' : report.value === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'ISSUE';
-  return { intent: 'REPORT', queryKind: null, entityType, entityCode: report.entityName, entityName: null, planRef: report.planRef ?? null, delayMinutes: report.kind === 'VEHICLE_DELAY' ? report.value as number : null, status, instruction: null, missingFields: [] };
+  return { intent: 'REPORT', queryKind: null, query: null, entityType, entityCode: report.entityName, entityName: null, planRef: report.planRef ?? null, delayMinutes: report.kind === 'VEHICLE_DELAY' ? report.value as number : null, status, instruction: null, missingFields: [] };
 }
 
 export function resolvePlanReference(plans: PlanView[], reference: string) {
@@ -175,26 +192,42 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 function proposalText(plan: PlanView) {
   const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
   const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...steps].join('\n');
+  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...(telegramPlanTimingText(plan) ? ['', telegramPlanTimingText(plan)] : []), ...steps].join('\n');
 }
 
 export class TelegramOperations {
   constructor(private readonly database: Database, private readonly plans: PlanService, private readonly model: () => TelegramInterpretationModel = createTelegramInterpretationModel) {}
 
   async handle(userId: bigint, text: string | null, callback: string | null, receivedAt = new Date()): Promise<TelegramReply> {
+    if (callback) return this.handleCallback(userId, callback, receivedAt);
+    const prepared = await this.prepareText(userId, text, receivedAt);
+    return prepared.kind === 'REPLY' ? prepared.reply : this.executePrepared(prepared.turn);
+  }
+
+  async handleCallback(userId: bigint, callback: string, receivedAt = new Date()): Promise<TelegramReply> {
     const conversation = await this.loadConversation(userId, receivedAt);
     const current = conversation.pending;
-    if (callback) {
-      const semantic = this.callbackLabel(callback);
-      const reply = await this.callback(userId, callback, current);
-      return this.remember(userId, conversation.messages, semantic ? { role: 'user', text: semantic, timestamp: receivedAt.toISOString() } : null, reply, receivedAt);
-    }
+    const semantic = this.callbackLabel(callback);
+    const reply = await this.callback(userId, callback, current);
+    return this.remember(userId, conversation.messages, semantic ? { role: 'user', text: semantic, timestamp: receivedAt.toISOString() } : null, reply, receivedAt);
+  }
+
+  async prepareText(userId: bigint, text: string | null, receivedAt = new Date()): Promise<PreparedTelegramResult> {
+    const conversation = await this.loadConversation(userId, receivedAt);
+    const current = conversation.pending;
     const input = text?.trim() ?? '';
-    if (!input) return { text: 'Send a question or operational report.' };
+    if (!input) return { kind: 'REPLY', reply: { text: 'Send a question or operational report.' } };
     const snapshot = await loadTelegramOperationalSnapshot(this.database, this.plans, userId);
     const extracted = await extractTelegramRequest(this.model, snapshot, conversation.messages, current, input);
     const inbound: ChatMessage = { role: 'user', text: input.slice(0, maximumHistoryText), timestamp: receivedAt.toISOString() };
-    if (!extracted) return this.remember(userId, conversation.messages, inbound, { text: 'I could not interpret that request right now. Please retry.' }, receivedAt, current);
+    if (!extracted) return { kind: 'REPLY', reply: await this.remember(userId, conversation.messages, inbound, { text: 'I could not interpret that request right now. Please retry.' }, receivedAt, current) };
+    return { kind: 'READY', turn: { userId, input, receivedAt, conversation, extraction: extracted, inbound } };
+  }
+
+  async executePrepared(turn: PreparedTelegramTurn): Promise<TelegramReply> {
+    const { userId, input, receivedAt, conversation, inbound } = turn;
+    const current = conversation.pending;
+    const extracted = turn.extraction;
     const extraction = current?.kind === 'CLARIFY' ? mergeTelegramSlots(current.slots, extracted) : current?.kind === 'REPORT_CONFIRM' && extracted.intent === 'REPORT' ? mergeTelegramSlots(current.slots ?? reportSlots(current.report), extracted) : extracted;
     const reply = await this.interpreted(userId, input, extraction, current, receivedAt);
     return this.remember(userId, conversation.messages, inbound, reply, receivedAt);
@@ -213,6 +246,11 @@ export class TelegramOperations {
       if (!plan) return this.clarify(userId, extraction, receivedAt, 'I could not resolve one active plan. Use its ID/version or an exact batch code.');
       await this.savePending(userId, { kind: 'REPLAN_CONFIRM', planId: plan.id, instruction: extraction.instruction });
       return { format: 'HTML', text: `<b>REPLAN PREVIEW</b>\n\n<b>Plan</b>\nV${plan.version} · ${plan.batches.map((batch) => html(batch.code)).join(', ')}\n\n<b>Instruction</b>\n${html(extraction.instruction)}\n\n<i>The active plan remains unchanged until a proposal is approved.</i>`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
+    }
+    if (extraction.intent === 'QUERY' && extraction.missingFields.includes('queryMetric')) return this.clarify(userId, extraction, receivedAt, 'Do you mean total, available, or occupied cold-storage capacity?');
+    if (extraction.intent === 'QUERY' && extraction.query) {
+      const result = await executeTelegramQuery(this.database, userId, extraction.query);
+      return { text: await composeTelegramQueryResponse(this.model, input, result.facts, result.fallback) };
     }
     if (extraction.intent === 'QUERY' && extraction.queryKind) {
       const broad = extraction.queryKind === 'batch_detail' ? 'batches' : extraction.queryKind === 'plan_detail' ? 'plans' : extraction.queryKind === 'sensor_detail' ? 'sensors' : extraction.queryKind === 'resource_detail' ? 'resources' : extraction.queryKind;
@@ -260,7 +298,7 @@ export class TelegramOperations {
       if (!matches.length) return { text: 'No active plans.' };
       const lines = matches.flatMap((plan) => {
         const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...(telegramPlanTimingText(plan) ? [telegramPlanTimingText(plan)] : []), ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
       });
       return { text: lines.join('\n') };
     }
@@ -279,13 +317,13 @@ export class TelegramOperations {
     if (extraction.entityType === 'vehicle' || extraction.entityType === 'storage' || extraction.entityType === 'destination') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, select: { code: true, operationalStatus: true, delayMinutes: true } }),
-        this.database.coldStorage.findMany({ where: { userId }, select: { name: true, operationalStatus: true, availableCapacityKg: true } }),
+        this.database.coldStorage.findMany({ where: { userId }, select: { name: true, operationalStatus: true, capacityKg: true, currentBatches: { where: { userId, deletedAt: null }, select: { weightKg: true } } } }),
         this.database.destination.findMany({ where: { userId }, select: { name: true, status: true } }),
       ]);
       const vehicle = extraction.entityType === 'vehicle' ? vehicles.find((item) => item.code.toLowerCase() === lowered) : undefined;
       if (vehicle) return { text: `Truck ${vehicle.code}: ${vehicle.operationalStatus}${vehicle.delayMinutes ? `, delayed ${vehicle.delayMinutes} minutes` : ', no delay'}` };
       const storage = extraction.entityType === 'storage' ? storages.find((item) => item.name.toLowerCase() === lowered) : undefined;
-      if (storage) return { text: `Storage ${storage.name}: ${storage.operationalStatus}, ${storage.availableCapacityKg}kg free` };
+      if (storage) return { text: `Storage ${storage.name}: ${storage.operationalStatus}, ${Math.max(0, storage.capacityKg - storage.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free` };
       const destination = extraction.entityType === 'destination' ? destinations.find((item) => item.name.toLowerCase() === lowered) : undefined;
       if (destination) return { text: `Destination ${destination.name}: ${destination.status}` };
     }
@@ -309,12 +347,12 @@ export class TelegramOperations {
     if (kind === 'resources') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
-        this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
+        this.database.coldStorage.findMany({ where: { userId }, orderBy: { name: 'asc' }, select: { name: true, operationalStatus: true, capacityKg: true, currentBatches: { where: { userId, deletedAt: null }, select: { weightKg: true } } } }),
         this.database.destination.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
       ]);
       const rows = {
         vehicle: vehicles.map((item) => `Truck ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, delayed ${item.delayMinutes}m` : ''}`),
-        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${item.availableCapacityKg}kg free`),
+        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${Math.max(0, item.capacityKg - item.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free`),
         destination: destinations.map((item) => `Destination ${item.name}: ${item.status}`),
       };
       return resourceScope ? rows[resourceScope] : [...rows.vehicle, ...rows.storage, ...rows.destination];
@@ -323,7 +361,7 @@ export class TelegramOperations {
     const plans = [...list.activePlans, ...list.proposedPlans];
     if (kind === 'plans') return plans.map((plan) => {
       const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-      return `v${plan.version} ${plan.status}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
+      return `v${plan.version} ${plan.status}${plan.timing.status === 'DELAYED' ? `, DELAYED ${duration(plan.timing.delayedBySeconds)}` : ''}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
     });
     return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
   }

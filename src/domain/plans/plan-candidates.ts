@@ -1,4 +1,4 @@
-import { addReturnToBaseSteps, derivePlanningFacts, evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
+import { addReturnToBaseSteps, assessPlanTiming, derivePlanningFacts, evaluatePlanQuality, orderPlanProposal, validatePlanProposal, type AiPlanProposal, type AiPlanStep, type PlanningContext, type PlanningFacts } from './plans';
 
 export type PlanCandidate = { id: string; proposal: AiPlanProposal };
 
@@ -31,13 +31,12 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
   if (state.dispatched) return [[]];
   const vehicleIds = state.vehicleId ? [state.vehicleId] : batchFacts.feasibleVehicleIds;
   const now = Date.parse(context.now);
-  const latestArrival = Date.parse(batchFacts.effectiveArrivalDeadlineAt);
   const choices: AiPlanStep[][] = [];
 
   for (const vehicleId of vehicleIds) {
     const vehicle = context.vehicles.find((candidate) => candidate.id === vehicleId);
     if (!vehicle || vehicle.operationalStatus !== 'AVAILABLE' || vehicle.capacityKg < batch.weightKg) continue;
-    const availability = vehicle.availabilityIntervals ?? [{ start: context.now, end: batchFacts.effectiveArrivalDeadlineAt }];
+    const availability = vehicle.availabilityIntervals ?? [{ start: context.now, end: destination.dispatchIntervals.at(-1)?.end ?? batchFacts.effectiveArrivalDeadlineAt }];
     let vehicleChoices = 0;
     for (const dispatchWindow of destination.dispatchIntervals) {
       for (const vehicleWindow of availability) {
@@ -45,12 +44,10 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
         const earliestDispatch = Math.max(earliestLoad + (state.vehicleId ? 0 : stepMinutes * 60_000), Date.parse(dispatchWindow.start), Date.parse(vehicleWindow.start));
         const destinationLimit = Date.parse(dispatchWindow.end);
         const vehicleReturnLimit = Date.parse(vehicleWindow.end) - destination.travelMinutes * 2 * 60_000;
-        const arrivalLimit = latestArrival - destination.travelMinutes * 60_000;
-        const latestDispatch = Math.min(destinationLimit, vehicleReturnLimit, arrivalLimit);
+        const latestDispatch = Math.min(destinationLimit, vehicleReturnLimit);
         const bindingConstraints = [
           ...(latestDispatch === destinationLimit ? ['the destination receiving window'] : []),
           ...(latestDispatch === vehicleReturnLimit ? [`${vehicle.code}'s availability and return trip`] : []),
-          ...(latestDispatch === arrivalLimit ? [`${batch.code}'s quality or plan arrival deadline`] : []),
         ];
         const firstDispatch = Math.ceil(earliestDispatch / (stepMinutes * 60_000)) * stepMinutes * 60_000;
         for (let dispatchAt = firstDispatch; dispatchAt <= latestDispatch && choices.length < maximumChoicesPerBatch && vehicleChoices < maximumTimesPerVehicle; dispatchAt += stepMinutes * 60_000) {
@@ -92,7 +89,8 @@ function partialContext(context: PlanningContext, batchIds: Set<string>): Planni
 }
 
 function proposal(context: PlanningContext, steps: AiPlanStep[]): AiPlanProposal {
-  return addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic feasible logistics plan', steps }), context);
+  const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic physically valid logistics plan', steps }), context);
+  return { ...planned, timing: assessPlanTiming(planned, context) };
 }
 
 function proposalKey(value: AiPlanProposal) {
@@ -113,7 +111,7 @@ export function generatePlanCandidates(context: PlanningContext, facts: Planning
     for (const partial of partials) {
       for (const choice of choices) {
         const candidate = proposal(context, [...partial, ...choice]);
-        if (validatePlanProposal(candidate, partialContext(context, included)).length) continue;
+        if (validatePlanProposal(candidate, partialContext(context, included), { allowTargetLateness: true }).length) continue;
         const key = proposalKey(candidate);
         if (!seen.has(key)) {
           seen.add(key);
@@ -127,7 +125,8 @@ export function generatePlanCandidates(context: PlanningContext, facts: Planning
 
   return partials
     .map((steps) => proposal(context, steps))
-    .filter((candidate) => validatePlanProposal(candidate, context).length === 0 && evaluatePlanQuality(candidate, context, facts).length === 0)
+    .filter((candidate) => validatePlanProposal(candidate, context, { allowTargetLateness: true }).length === 0)
+    .sort((left, right) => (left.timing?.delayedBySeconds ?? 0) - (right.timing?.delayedBySeconds ?? 0) || evaluatePlanQuality(left, context, facts).length - evaluatePlanQuality(right, context, facts).length)
     .slice(0, maximumCandidates)
     .map((candidate, index) => ({ id: `candidate-${index + 1}`, proposal: candidate }));
 }
@@ -161,10 +160,12 @@ export function generateMultiDestinationCandidates(context: PlanningContext, des
     }
     if (!feasible) continue;
     for (const steps of partials) {
-      const proposal = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic multi-destination logistics plan', steps }), { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds });
-      if (validatePlanProposal(proposal, { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds }).length === 0) candidates.push(proposal);
+      const scopedContext = { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds };
+      const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic multi-destination logistics plan', steps }), scopedContext);
+      const proposal = { ...planned, timing: assessPlanTiming(planned, scopedContext) };
+      if (validatePlanProposal(proposal, scopedContext, { allowTargetLateness: true }).length === 0) candidates.push(proposal);
     }
   }
-  const unique = [...new Map(candidates.map((proposal) => [proposalKey(proposal), proposal])).values()].slice(0, maximumCandidates);
+  const unique = [...new Map(candidates.map((proposal) => [proposalKey(proposal), proposal])).values()].sort((left, right) => (left.timing?.delayedBySeconds ?? 0) - (right.timing?.delayedBySeconds ?? 0)).slice(0, maximumCandidates);
   return unique.map((proposal, index) => ({ id: `candidate-${index + 1}`, proposal }));
 }

@@ -48,7 +48,7 @@ export class PlanService {
     const { result, context } = await this.workflow({ userId, batchIds, destinationIds, deadline, ...(planId !== undefined ? { planId } : {}), ...(instruction ? { instruction } : {}) });
     if (result.status === 'NO_VALID_PROPOSAL_FOUND') return result;
     if (!destinationIds.length) throw new ConflictError('At least one plan destination is required');
-    const proposal = { summary: result.summary, steps: result.steps };
+    const proposal = { summary: result.summary, steps: result.steps, ...(result.timing ? { timing: result.timing } : {}) };
     const validationErrors = this.validate(proposal, context);
     if (validationErrors.length) {
       console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors });

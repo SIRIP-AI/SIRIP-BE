@@ -29,7 +29,7 @@ test('LangGraph asks the model to select an immutable deterministic candidate', 
     return new AIMessage(JSON.stringify({ candidateId: 'candidate-2' }));
   } } as PlanningModel;
   const result = await graph(model).invoke({ userId: '1', batchIds: ['7'], destinationId: '3', deadline: context.deadline, planId: null, instruction: 'Depart a little later' });
-  assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic feasible logistics plan');
+  assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic physically valid logistics plan');
   assert.match(prompt, /Depart a little later/);
   assert.match(prompt, /candidate-2/);
 });
@@ -38,7 +38,7 @@ test('LangGraph falls back to the first candidate when selector output is invali
   const model = { invoke: async () => new AIMessage('not json') } as unknown as PlanningModel;
   const result = await graph(model).invoke({ userId: '1', batchIds: ['7'], destinationId: '3', deadline: context.deadline, planId: null, instruction: null });
   assert.equal(result.result?.status, 'PROPOSAL');
-  assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic feasible logistics plan');
+  assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic physically valid logistics plan');
 });
 
 for (const [name, invoke] of [
@@ -48,7 +48,7 @@ for (const [name, invoke] of [
   test(`LangGraph falls back deterministically after ${name}`, async () => {
     const result = await graph({ invoke } as unknown as PlanningModel).invoke({ userId: '1', batchIds: ['7'], destinationId: '3', deadline: context.deadline, planId: null, instruction: null });
     assert.equal(result.result?.status, 'PROPOSAL');
-    assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic feasible logistics plan');
+    assert.equal(result.result?.status === 'PROPOSAL' ? result.result.summary : null, 'Deterministic physically valid logistics plan');
   });
 }
 
