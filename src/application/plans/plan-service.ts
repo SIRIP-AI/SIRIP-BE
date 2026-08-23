@@ -1,5 +1,7 @@
 import { ConflictError, RequestError } from '../../domain/errors';
 import type { AiPlanProposal, AiPlanResult, PlanList, PlanningActivePlan, PlanningContext, PlanView } from '../../domain/plans/plans';
+import { derivePlanningFacts } from '../../domain/plans/plans';
+import { generatePlanCandidates } from '../../domain/plans/plan-candidates';
 
 export type PlanValidator = (proposal: AiPlanProposal, context: PlanningContext) => string[];
 export type PlanWorkflowInput = { userId: bigint; batchIds: bigint[]; destinationId?: bigint; deadline: string | null; planId?: bigint; instruction?: string };
@@ -31,8 +33,25 @@ export class PlanService {
     return this.repository.get(userId, planId);
   }
 
-  async generateProposal(userId: bigint, batchIds: bigint[], destinationId: bigint, deadline: string, triggerEventId?: bigint) {
-    return this.generateAndSave(userId, batchIds, destinationId, deadline, undefined, undefined, triggerEventId);
+  async recommendOptions(userId: bigint, batchIds: bigint[], destinationIds: bigint[], deadline: string) {
+    const loaded = await this.repository.loadContext(userId, batchIds);
+    const destinations = destinationIds.map((destinationId) => {
+      const context = { ...loaded, selectedDestinationId: destinationId.toString(), deadline };
+      const resource = loaded.destinations.find(({ id }) => id === destinationId.toString());
+      const candidates = resource?.status === 'AVAILABLE' ? generatePlanCandidates(context, derivePlanningFacts(context)) : [];
+      return { id: destinationId.toString(), feasible: candidates.length > 0, candidateCount: candidates.length, travelMinutes: resource?.travelMinutes ?? null, reason: candidates.length ? `${candidates.length} validated option${candidates.length === 1 ? '' : 's'} with ${resource?.travelMinutes ?? 0} minutes travel.` : 'No validated plan currently reaches this destination.' };
+    }).sort((left, right) => Number(right.feasible) - Number(left.feasible) || (left.travelMinutes ?? Number.MAX_SAFE_INTEGER) - (right.travelMinutes ?? Number.MAX_SAFE_INTEGER));
+    const facts = derivePlanningFacts({ ...loaded, deadline });
+    return { batches: facts.batches.map((batch) => ({ ...batch, recommended: batch.urgencyRank === 1 || batch.resourceFlexibility === 'LOW', reason: batch.urgencyRank === 1 ? 'Earliest effective quality deadline.' : batch.resourceFlexibility === 'LOW' ? 'Limited vehicle flexibility.' : 'Eligible for planning.' })), destinations };
+  }
+
+  async generateProposal(userId: bigint, batchIds: bigint[], destinationInput: bigint | bigint[], deadline: string, triggerEventId?: bigint) {
+    if (!Array.isArray(destinationInput)) return this.generateAndSave(userId, batchIds, destinationInput, deadline, undefined, undefined, triggerEventId);
+    const destinationIds = Array.isArray(destinationInput) ? destinationInput : [destinationInput];
+    const options = await this.recommendOptions(userId, batchIds, destinationIds, deadline);
+    const chosen = options.destinations.find(({ feasible }) => feasible);
+    if (!chosen) return { status: 'NO_VALID_PROPOSAL_FOUND' as const, reason: 'No selected destination has a feasible validated plan.' };
+    return this.generateAndSave(userId, batchIds, BigInt(chosen.id), deadline, undefined, undefined, triggerEventId);
   }
 
   async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint) {

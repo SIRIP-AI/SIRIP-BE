@@ -8,6 +8,17 @@ function object(body: unknown) { if (!body || typeof body !== 'object' || Array.
 function text(body: Record<string, unknown>, field: string) { const value = body[field]; if (typeof value !== 'string' || !value.trim()) throw new RequestError(`${field} is required`, 400); if (value.trim().length > 100) throw new RequestError(`${field} must be at most 100 characters`, 400); return value.trim(); }
 function input(body: unknown): FishingTripInput { const value = object(body); for (const field of ['startedAt', 'endedAt', 'status']) if (field in value) throw new RequestError(`${field} cannot be provided for fishing trips`, 400); return { code: text(value, 'code'), vesselName: text(value, 'vesselName') }; }
 function id(value: string) { try { const parsed = BigInt(value); if (parsed <= 0n) throw new Error(); return parsed; } catch { throw new RequestError('Fishing trip ID must be a positive integer', 400); } }
+function completionInput(body: unknown) {
+  if (body === undefined || (body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0)) return null;
+  const value = object(body);
+  if (!Array.isArray(value.batches) || value.batches.length < 1 || value.batches.length > 100) throw new RequestError('batches must contain 1 to 100 landed batches', 400);
+  return value.batches.map((candidate, index) => {
+    const batch = object(candidate);
+    const weightKg = batch.weightKg;
+    if (typeof weightKg !== 'number' || !Number.isFinite(weightKg) || weightKg <= 0) throw new RequestError(`batches[${index}].weightKg must be greater than zero`, 400);
+    return { weightKg, grade: text(batch, 'grade'), sensorId: id(String(batch.sensorId ?? '')) };
+  });
+}
 function userId(locals: object) { return BigInt((locals as AuthLocals).user.id); }
 
 export function createFishingTripsRouter(repository: FishingTripRepository) {
@@ -15,7 +26,7 @@ export function createFishingTripsRouter(repository: FishingTripRepository) {
   router.get('/', async (_request, response) => response.json(await repository.list(userId(response.locals))));
   router.post('/', async (request, response) => response.status(201).json(await repository.create(userId(response.locals), input(request.body))));
   router.put('/:id', async (request, response) => response.json(await repository.update(userId(response.locals), id(request.params.id), input(request.body))));
-  router.post('/:id/complete', async (request, response) => response.json(await repository.complete(userId(response.locals), id(request.params.id))));
+  router.post('/:id/complete', async (request, response) => response.json(await repository.complete(userId(response.locals), id(request.params.id), completionInput(request.body))));
   router.delete('/:id', async (request, response) => { await repository.delete(userId(response.locals), id(request.params.id)); response.sendStatus(204); });
   return router;
 }

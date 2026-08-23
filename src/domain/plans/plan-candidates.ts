@@ -9,7 +9,8 @@ const maximumPartialPlans = 24;
 const maximumCandidates = 3;
 
 function completedState(context: PlanningContext, batchId: string) {
-  let vehicleId: string | undefined;
+  const batch = context.batches.find(({ id }) => id === batchId);
+  let vehicleId = batch?.location?.type === 'VEHICLE' ? batch.location.resourceId : undefined;
   let dispatched = false;
   for (const step of context.currentPlan?.steps.filter((candidate) => candidate.status === 'COMPLETED' && candidate.batchId === batchId) ?? []) {
     if (step.actionType === 'LOAD' && step.vehicleId) {
@@ -64,15 +65,21 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
             latestSafeAt: new Date(latestDispatch).toISOString(),
           };
           if (state.vehicleId) choices.push([dispatch]);
-          else choices.push([{
-            actionType: 'LOAD',
+          else {
+            const load: AiPlanStep = {
+              actionType: 'LOAD',
             batchId,
               vehicleId,
               scheduledAt: new Date(dispatchAt - stepMinutes * 60_000).toISOString(),
               rationale: `Load ${batch.code} into ${vehicle.code}, which has sufficient capacity and supports direct dispatch.`,
               timingRationale: `Loading starts ${stepMinutes} minutes before the selected departure so the batch is ready without avoidable waiting.`,
               latestSafeAt: new Date(latestDispatch - stepMinutes * 60_000).toISOString(),
-          }, dispatch]);
+            };
+            const storageId = batchFacts.feasibleColdStorageIds[0];
+            const shouldStore = (batch.location?.type ?? 'INTAKE') === 'INTAKE' && dispatchAt - now > 30 * 60_000;
+            if (shouldStore && storageId) choices.push([{ actionType: 'STORE', batchId, coldStorageId: storageId, scheduledAt: new Date(now + 60_000).toISOString(), rationale: `Protect ${batch.code} in cold storage while it waits for dispatch.`, timingRationale: 'Dispatch is more than 30 minutes away, so storage limits avoidable intake exposure.', latestSafeAt: load.scheduledAt }, load, dispatch]);
+            else choices.push([load, dispatch]);
+          }
           vehicleChoices += 1;
         }
       }

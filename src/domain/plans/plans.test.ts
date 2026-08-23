@@ -149,10 +149,10 @@ test('derives scarcity and rejects wasting the only capable vehicle when a valid
 
 test('rejects storage when removing it leaves the plan feasible', () => {
   const proposal = { summary: 'Unnecessary storage', steps: [
-    { actionType: 'STORE' as const, batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Store.' },
-    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
-    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
-    returnStep('2026-08-20T15:15:00.000Z'),
+    { actionType: 'STORE' as const, batchId: '7', coldStorageId: '1', scheduledAt: '2026-08-20T12:01:00.000Z', rationale: 'Store.' },
+    { actionType: 'LOAD' as const, batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T12:15:00.000Z', rationale: 'Load.' },
+    { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Dispatch.' },
+    returnStep('2026-08-20T14:30:00.000Z'),
   ] };
   assert.ok(evaluatePlanQuality(proposal, context).some(({ code }) => code === 'UNNECESSARY_STORAGE'));
 });
