@@ -15,40 +15,40 @@ function id(value: string, label: string) {
     if (parsed > 9_223_372_036_854_775_807n) throw new Error();
     return parsed;
   } catch {
-    throw new RequestError(`${label} must be a positive integer`, 400);
+    throw new RequestError(`${label} harus berupa bilangan bulat positif`, 400);
   }
 }
 
 function proposalRequest(body: unknown) {
-  if (typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
+  if (typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Isi permintaan harus berupa objek', 400);
   const request = body as Record<string, unknown>;
-  if (Object.keys(request).some((key) => key !== 'batchIds' && key !== 'destinationId' && key !== 'destinationIds' && key !== 'deadline' && key !== 'triggerEventId')) throw new RequestError('Request body contains unsupported fields', 400);
-  if (!Array.isArray(request.batchIds) || request.batchIds.length < 1 || request.batchIds.length > 100) throw new RequestError('batchIds must contain 1 to 100 IDs', 400);
+  if (Object.keys(request).some((key) => key !== 'batchIds' && key !== 'destinationId' && key !== 'destinationIds' && key !== 'deadline' && key !== 'triggerEventId')) throw new RequestError('Isi permintaan memuat field yang tidak didukung', 400);
+  if (!Array.isArray(request.batchIds) || request.batchIds.length < 1 || request.batchIds.length > 100) throw new RequestError('batchIds harus berisi 1 sampai 100 ID', 400);
   const batchIds = request.batchIds.map((value) => {
-    if (typeof value !== 'string') throw new RequestError('batchIds must contain positive integer strings', 400);
+    if (typeof value !== 'string') throw new RequestError('batchIds harus berisi string bilangan bulat positif', 400);
     return id(value, 'Batch ID');
   });
-  if (new Set(batchIds).size !== batchIds.length) throw new RequestError('batchIds must be distinct', 400);
+  if (new Set(batchIds).size !== batchIds.length) throw new RequestError('batchIds harus unik', 400);
   const rawDestinationIds = Array.isArray(request.destinationIds) ? request.destinationIds : request.destinationId === undefined ? [] : [request.destinationId];
-  if (rawDestinationIds.length < 1 || rawDestinationIds.length > 20) throw new RequestError('destinationIds must contain 1 to 20 IDs', 400);
-  const destinationIds = rawDestinationIds.map((value) => typeof value === 'string' ? id(value, 'destinationId') : (() => { throw new RequestError('destinationIds must contain positive integer strings', 400); })());
-  if (new Set(destinationIds).size !== destinationIds.length) throw new RequestError('destinationIds must be distinct', 400);
-  if (typeof request.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(request.deadline)) throw new RequestError('deadline must be an ISO datetime with timezone', 400);
+  if (rawDestinationIds.length < 1 || rawDestinationIds.length > 20) throw new RequestError('destinationIds harus berisi 1 sampai 20 ID', 400);
+  const destinationIds = rawDestinationIds.map((value) => typeof value === 'string' ? id(value, 'destinationId') : (() => { throw new RequestError('destinationIds harus berisi string bilangan bulat positif', 400); })());
+  if (new Set(destinationIds).size !== destinationIds.length) throw new RequestError('destinationIds harus unik', 400);
+  if (typeof request.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(request.deadline)) throw new RequestError('deadline harus berupa datetime ISO dengan zona waktu', 400);
   const parsedDeadline = new Date(request.deadline);
-  if (Number.isNaN(parsedDeadline.getTime()) || parsedDeadline.getTime() <= Date.now()) throw new RequestError('deadline must be in the future', 400);
+  if (Number.isNaN(parsedDeadline.getTime()) || parsedDeadline.getTime() <= Date.now()) throw new RequestError('deadline harus berada di masa depan', 400);
   const deadline = parsedDeadline.toISOString();
   const triggerEventId = request.triggerEventId === undefined || request.triggerEventId === null
     ? undefined
-    : typeof request.triggerEventId === 'string' ? id(request.triggerEventId, 'triggerEventId') : (() => { throw new RequestError('triggerEventId must be a positive integer', 400); })();
+    : typeof request.triggerEventId === 'string' ? id(request.triggerEventId, 'triggerEventId') : (() => { throw new RequestError('triggerEventId harus berupa bilangan bulat positif', 400); })();
   return { batchIds, destinationIds, deadline, ...(triggerEventId !== undefined ? { triggerEventId } : {}) };
 }
 
 function revisionInstruction(body: unknown) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Isi permintaan harus berupa objek', 400);
   const request = body as Record<string, unknown>;
-  if (Object.keys(request).some((key) => key !== 'instruction')) throw new RequestError('Request body contains unsupported fields', 400);
+  if (Object.keys(request).some((key) => key !== 'instruction')) throw new RequestError('Isi permintaan memuat field yang tidak didukung', 400);
   const instruction = typeof request.instruction === 'string' ? request.instruction.trim() : '';
-  if (!instruction || instruction.length > 2000) throw new RequestError('instruction must contain 1 to 2000 characters', 400);
+  if (!instruction || instruction.length > 2000) throw new RequestError('instruction harus berisi 1 sampai 2000 karakter', 400);
   return instruction;
 }
 

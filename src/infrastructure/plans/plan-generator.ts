@@ -47,14 +47,14 @@ function configuration(modelVariable: 'AI_PLANNING_MODEL' | 'AI_TELEGRAM_MODEL')
   const apiUrl = process.env.AI_API_URL?.trim();
   const apiKey = process.env.AI_API_KEY?.trim();
   const model = process.env[modelVariable]?.trim() || process.env.AI_MODEL?.trim();
-  if (!apiUrl || !apiKey || !model) throw new RequestError('AI planning is not configured', 503);
+  if (!apiUrl || !apiKey || !model) throw new RequestError('Perencanaan AI belum dikonfigurasi', 503);
   let url: URL;
   try {
     url = new URL(apiUrl);
   } catch {
-    throw new RequestError('AI planning is not configured', 503);
+    throw new RequestError('Perencanaan AI belum dikonfigurasi', 503);
   }
-  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || apiKey.length > 10_000 || model.length > 200) throw new RequestError('AI planning is not configured', 503);
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || apiKey.length > 10_000 || model.length > 200) throw new RequestError('Perencanaan AI belum dikonfigurasi', 503);
   return { endpoint: url.toString(), apiKey, model };
 }
 
@@ -142,11 +142,11 @@ function providerErrorLog(error: unknown) {
 export function planningProviderError(error: unknown) {
   const chain = errorChain(error);
   providerErrorLog(error);
-  if (chain.some((value) => value instanceof Error && value.message.includes(oversizedResponseMarker))) return new RequestError('AI provider returned an invalid response', 502);
-  if (chain.some((value) => value instanceof SyntaxError)) return new RequestError('AI provider returned an invalid response', 502);
-  if (chain.some((value) => value && typeof value === 'object' && typeof (value as { status?: unknown }).status === 'number')) return new RequestError('AI provider request failed', 502);
-  if (chain.some((value) => value instanceof Error && /timeout|connection|abort|fetch failed/i.test(`${value.name} ${value.message}`))) return new RequestError('AI provider is unavailable', 502);
-  return new RequestError('AI provider request failed', 502);
+  if (chain.some((value) => value instanceof Error && value.message.includes(oversizedResponseMarker))) return new RequestError('Penyedia AI mengembalikan respons yang tidak valid', 502);
+  if (chain.some((value) => value instanceof SyntaxError)) return new RequestError('Penyedia AI mengembalikan respons yang tidak valid', 502);
+  if (chain.some((value) => value && typeof value === 'object' && typeof (value as { status?: unknown }).status === 'number')) return new RequestError('Permintaan ke penyedia AI gagal', 502);
+  if (chain.some((value) => value instanceof Error && /timeout|connection|abort|fetch failed/i.test(`${value.name} ${value.message}`))) return new RequestError('Penyedia AI tidak tersedia', 502);
+  return new RequestError('Permintaan ke penyedia AI gagal', 502);
 }
 
 export function planningMessages(context: PlanningContext, facts: PlanningFacts, candidates: PlanCandidate[], instruction?: string) {
@@ -160,13 +160,13 @@ export function parsePlanSelection(content: string, candidates: PlanCandidate[])
   try {
     value = JSON.parse(normalizePlanResponse(content)) as unknown;
   } catch {
-    throw new RequestError('AI selector returned invalid JSON', 502);
+    throw new RequestError('Pemilih AI mengembalikan JSON yang tidak valid', 502);
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('AI selector returned an invalid selection', 502);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('Pemilih AI mengembalikan pilihan yang tidak valid', 502);
   const selection = value as Record<string, unknown>;
-  if (Object.keys(selection).some((key) => key !== 'candidateId') || typeof selection.candidateId !== 'string') throw new RequestError('AI selector returned an invalid selection', 502);
+  if (Object.keys(selection).some((key) => key !== 'candidateId') || typeof selection.candidateId !== 'string') throw new RequestError('Pemilih AI mengembalikan pilihan yang tidak valid', 502);
   const candidate = candidates.find(({ id }) => id === selection.candidateId);
-  if (!candidate) throw new RequestError('AI selector returned an invalid selection', 502);
+  if (!candidate) throw new RequestError('Pemilih AI mengembalikan pilihan yang tidak valid', 502);
   return candidate.proposal;
 }
 
@@ -174,16 +174,16 @@ export function deterministicSelectionSummary(proposal: PlanCandidate['proposal'
   if (!context.currentPlan) return proposal.summary;
   const currentVehicleIds = [...new Set(context.currentPlan.steps.filter(({ status }) => status === 'UPCOMING').flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []))];
   const nextVehicleIds = [...new Set(proposal.steps.flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []))];
-  const vehicleName = (id: string) => context.vehicles.find((vehicle) => vehicle.id === id)?.code ?? `vehicle ${id}`;
+  const vehicleName = (id: string) => context.vehicles.find((vehicle) => vehicle.id === id)?.code ?? `kendaraan ${id}`;
   const vehiclesChanged = JSON.stringify(currentVehicleIds) !== JSON.stringify(nextVehicleIds)
-    ? ` Vehicles: ${currentVehicleIds.map(vehicleName).join(', ') || 'none'} -> ${nextVehicleIds.map(vehicleName).join(', ') || 'none'}.`
+    ? ` Kendaraan: ${currentVehicleIds.map(vehicleName).join(', ') || 'tidak ada'} -> ${nextVehicleIds.map(vehicleName).join(', ') || 'tidak ada'}.`
     : '';
-  const trigger = instruction ? `Revision trigger: ${instruction.trim().replace(/\s+/g, ' ')} ` : 'Validated revision. ';
-  return `${trigger}${vehiclesChanged} Future steps and timing are derived from the selected validated candidate.`.slice(0, 1000);
+  const trigger = instruction ? `Pemicu revisi: ${instruction.trim().replace(/\s+/g, ' ')} ` : 'Revisi tervalidasi. ';
+  return `${trigger}${vehiclesChanged} Langkah dan waktu mendatang diturunkan dari kandidat tervalidasi yang dipilih.`.slice(0, 1000);
 }
 
 export function messageText(message: BaseMessage) {
-  if (typeof message.content !== 'string' || !message.content || message.content.length > maximumPlanResponseCharacters) throw new RequestError('AI provider returned an invalid response', 502);
+  if (typeof message.content !== 'string' || !message.content || message.content.length > maximumPlanResponseCharacters) throw new RequestError('Penyedia AI mengembalikan respons yang tidak valid', 502);
   return message.content;
 }
 

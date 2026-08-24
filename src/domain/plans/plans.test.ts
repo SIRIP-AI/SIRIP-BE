@@ -26,20 +26,20 @@ test('parses proposal and no-valid-proposal results strictly', () => {
 
 test('requires dispatch to the selected destination for every batch', () => {
   const errors = validatePlanProposal({ summary: 'Inspect only', steps: [{ actionType: 'INSPECT', batchId: '7', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Inspect.' }] }, context);
-  assert.ok(errors.includes('Active batch 7 is not dispatched to the selected destination'));
+  assert.ok(errors.includes('Batch aktif 7 tidak dikirim ke tujuan yang dipilih'));
 });
 
 test('rejects another destination and arrival after the quality deadline', () => {
   const wrongDestination = validatePlanProposal({ summary: 'Wrong destination', steps: [{ actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T12:30:00.000Z', rationale: 'Load.' }, { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '4', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Dispatch.' }] }, context);
-  assert.ok(wrongDestination.some((error) => error.includes('does not use the selected destination')));
+  assert.ok(wrongDestination.some((error) => error.includes('tidak menggunakan tujuan yang dipilih')));
 
   const expired = validatePlanProposal({ summary: 'Too late', steps: [{ actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-21T11:30:00.000Z', rationale: 'Load.' }, { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-21T12:00:00.000Z', rationale: 'Dispatch.' }] }, context);
-  assert.ok(expired.some((error) => error.includes('quality deadline')));
+  assert.ok(expired.some((error) => error.includes('tenggat mutu batch')));
 });
 
 test('rejects destination arrival after the plan deadline', () => {
   const errors = validatePlanProposal({ summary: 'Late arrival', steps: [{ actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-21T09:00:00.000Z', rationale: 'Load.' }, { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-21T09:30:00.000Z', rationale: 'Dispatch.' }] }, context);
-  assert.ok(errors.some((error) => error.includes('plan deadline')));
+  assert.ok(errors.some((error) => error.includes('tenggat rencana')));
 });
 
 test('requires dispatch to use the preceding load vehicle without forcing storage', () => {
@@ -54,7 +54,7 @@ test('requires dispatch to use the preceding load vehicle without forcing storag
     { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:00:00.000Z', rationale: 'Load.' },
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '9', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
   ] }, context);
-  assert.ok(mismatched.some((error) => error.includes('vehicle from the preceding load')));
+  assert.ok(mismatched.some((error) => error.includes('kendaraan dari pemuatan sebelumnya')));
 });
 
 test('requires exactly one return at the deterministic round-trip time', () => {
@@ -63,9 +63,9 @@ test('requires exactly one return at the deterministic round-trip time', () => {
     { actionType: 'DISPATCH' as const, batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
   ];
   const late = validatePlanProposal({ summary: 'Late return', steps: [...steps, returnStep('2026-08-20T15:30:00.000Z')] }, context);
-  assert.ok(late.some((error) => error.includes('exactly one return-to-base')));
+  assert.ok(late.some((error) => error.includes('tepat satu langkah RETURN_TO_BASE')));
   const duplicate = validatePlanProposal({ summary: 'Duplicate return', steps: [...steps, returnStep('2026-08-20T15:15:00.000Z'), returnStep('2026-08-20T15:15:00.000Z')] }, context);
-  assert.ok(duplicate.some((error) => error.includes('duplicates a vehicle return')));
+  assert.ok(duplicate.some((error) => error.includes('menduplikasi kepulangan kendaraan')));
 });
 
 test('allows sequential resource reuse and rejects concurrent reserved weight', () => {
@@ -84,7 +84,7 @@ test('allows sequential resource reuse and rejects concurrent reserved weight', 
   ] };
   assert.deepEqual(validatePlanProposal(proposal, shared), []);
   const reserved = { ...shared, resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 55, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z' }] };
-  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('Vehicle Truck exceeds its 60 kg concurrent capacity')));
+  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('Kendaraan Truck melampaui kapasitas bersamaan 60 kg')));
 });
 
 test('rejects an overlapping vehicle commitment even when capacity is sufficient', () => {
@@ -94,7 +94,7 @@ test('rejects an overlapping vehicle commitment even when capacity is sufficient
     returnStep('2026-08-20T15:15:00.000Z'),
   ] };
   const reserved = { ...context, vehicles: [{ ...context.vehicles[0]!, capacityKg: 1_000 }], resourceOccupancies: [{ resourceType: 'VEHICLE' as const, resourceId: '2', batchId: '99', weightKg: 10, start: '2026-08-20T12:30:00.000Z', end: '2026-08-20T14:00:00.000Z', destinationId: '9', dispatchAt: '2026-08-20T12:45:00.000Z' }] };
-  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('overlapping incompatible trips')));
+  assert.ok(validatePlanProposal(proposal, reserved).some((error) => error.includes('perjalanan tumpang tindih yang tidak kompatibel')));
 });
 
 test('releases storage on load and enforces one store and load per batch', () => {
@@ -113,8 +113,8 @@ test('releases storage on load and enforces one store and load per batch', () =>
     { actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T13:05:00.000Z', rationale: 'Load again.' },
     { actionType: 'DISPATCH', batchId: '7', vehicleId: '2', destinationId: '3', scheduledAt: '2026-08-20T13:15:00.000Z', rationale: 'Dispatch.' },
   ] }, context);
-  assert.ok(duplicate.some((error) => error.includes('stores a batch more than once')));
-  assert.ok(duplicate.some((error) => error.includes('loads a batch more than once')));
+  assert.ok(duplicate.some((error) => error.includes('menyimpan batch lebih dari satu kali')));
+  assert.ok(duplicate.some((error) => error.includes('memuat batch lebih dari satu kali')));
 });
 
 test('uses a completed predecessor load as the unmatched load for dispatch', () => {

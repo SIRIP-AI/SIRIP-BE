@@ -343,7 +343,7 @@ export class PlanRepository implements PlanRepositoryPort {
 
   async get(userId: bigint, planId: bigint) {
     const plan = await this.database.plan.findFirst({ where: { id: planId, userId }, include: planInclude });
-    if (!plan) throw new NotFoundError('Plan');
+    if (!plan) throw new NotFoundError('Rencana');
     return serializePlan(plan);
   }
 
@@ -356,7 +356,7 @@ export class PlanRepository implements PlanRepositoryPort {
       await lockUser(transaction, userId);
       if (options.triggerEventId !== undefined) {
         const triggerEvent = await transaction.operationalEvent.findFirst({ where: { id: options.triggerEventId, userId }, select: { id: true } });
-        if (!triggerEvent) throw new NotFoundError('Operational event');
+        if (!triggerEvent) throw new NotFoundError('Peristiwa operasional');
       }
       const currentPlan = expectedPlan ? await transaction.plan.findFirst({
         where: { id: BigInt(expectedPlan.id), userId },
@@ -384,11 +384,11 @@ export class PlanRepository implements PlanRepositoryPort {
         deadline: currentPlan.deadline?.toISOString() ?? null,
         steps: currentPlan.steps.map(planningStep),
       } : null;
-      if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Current plan changed while generating the proposal');
-      if (currentSnapshot && deadline !== currentSnapshot.deadline) throw new ConflictError('Plan deadline changed while generating the proposal');
-      if (currentSnapshot && JSON.stringify(currentSnapshot.destinationIds) !== JSON.stringify(destinationIds.map(String))) throw new ConflictError('Plan destination scope changed while generating the proposal');
-      if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Proposal changed while generating its replacement');
-      if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Active plan changed while generating its revision');
+      if (planSnapshot(currentSnapshot) !== planSnapshot(expectedPlan)) throw new ConflictError('Rencana saat ini berubah selama pembuatan usulan');
+      if (currentSnapshot && deadline !== currentSnapshot.deadline) throw new ConflictError('Tenggat rencana berubah selama pembuatan usulan');
+      if (currentSnapshot && JSON.stringify(currentSnapshot.destinationIds) !== JSON.stringify(destinationIds.map(String))) throw new ConflictError('Cakupan tujuan rencana berubah selama pembuatan usulan');
+      if (options.replaceProposalId !== undefined && (currentPlan?.id !== options.replaceProposalId || currentPlan.status !== 'PROPOSED')) throw new ConflictError('Usulan berubah selama pembuatan penggantinya');
+      if (currentPlan && options.replaceProposalId === undefined && currentPlan.status !== 'ACTIVE') throw new ConflictError('Rencana aktif berubah selama pembuatan revisinya');
       const latest = await transaction.plan.aggregate({ where: { userId }, _max: { version: true } });
       const completed = currentPlan?.steps.filter((step) => step.status === 'COMPLETED') ?? [];
       const nextSequence = completed.reduce((maximum, step) => Math.max(maximum, step.sequence), 0) + 1;
@@ -440,13 +440,13 @@ export class PlanRepository implements PlanRepositoryPort {
           steps: { orderBy: { sequence: 'asc' }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, scheduledAt: true, rationale: true, timingRationale: true, latestSafeAt: true } },
         },
       });
-      if (!proposal) throw new NotFoundError('Plan');
-      if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
+      if (!proposal) throw new NotFoundError('Rencana');
+      if (proposal.status !== 'PROPOSED') throw new ConflictError('Rencana bukan usulan');
       const scope = proposal.batches.map(({ batchId }) => batchId);
-      if (!scope.length) throw new ConflictError('Plan proposal has no batch scope');
+      if (!scope.length) throw new ConflictError('Usulan rencana tidak memiliki cakupan batch');
       if (proposal.previousPlanId) {
         const predecessor = await transaction.plan.findUnique({ where: { id: proposal.previousPlanId }, select: { status: true } });
-        if (predecessor?.status !== 'ACTIVE') throw new ConflictError('Plan proposal is stale');
+        if (predecessor?.status !== 'ACTIVE') throw new ConflictError('Usulan rencana sudah tidak mutakhir');
       }
       const destinationIds = proposal.acceptableDestinations.map(({ destinationId }) => destinationId.toString());
       const context = {
@@ -455,7 +455,7 @@ export class PlanRepository implements PlanRepositoryPort {
         acceptableDestinationIds: destinationIds,
         deadline: proposal.deadline?.toISOString() ?? null,
       };
-      if (context.batches.length !== scope.length) throw new ConflictError('Plan proposal is no longer valid');
+      if (context.batches.length !== scope.length) throw new ConflictError('Usulan rencana tidak lagi valid');
       const persisted: AiPlanProposal = {
         summary: proposal.summary,
         steps: proposal.steps.filter(({ status }) => status === 'UPCOMING').map((step) => ({
@@ -473,12 +473,12 @@ export class PlanRepository implements PlanRepositoryPort {
       const validationErrors = validate(persisted, context);
       if (validationErrors.length) {
         console.warn('[Plan approval validation rejected]', { planId: planId.toString(), errors: validationErrors });
-        throw new ConflictError('Plan proposal is no longer valid');
+        throw new ConflictError('Usulan rencana tidak lagi valid');
       }
       const freshTiming = assessPlanTiming(persisted, context);
-      if (proposal.timingStatus !== freshTiming.status || Math.ceil(proposal.delayedBySeconds / 60) !== Math.ceil(freshTiming.delayedBySeconds / 60)) throw new ConflictError('Plan proposal timing changed and requires renewed review');
+      if (proposal.timingStatus !== freshTiming.status || Math.ceil(proposal.delayedBySeconds / 60) !== Math.ceil(freshTiming.delayedBySeconds / 60)) throw new ConflictError('Waktu usulan rencana berubah dan perlu ditinjau ulang');
       const overlap = await transaction.planBatch.findFirst({ where: { batchId: { in: scope }, plan: { userId, status: 'ACTIVE', ...(proposal.previousPlanId ? { id: { not: proposal.previousPlanId } } : {}) } } });
-      if (overlap) throw new ConflictError('A batch is already assigned to another active plan');
+      if (overlap) throw new ConflictError('Batch sudah ditetapkan ke rencana aktif lain');
       if (proposal.previousPlanId) await transaction.plan.update({ where: { id: proposal.previousPlanId }, data: { status: 'SUPERSEDED' } });
       return serializePlan(await transaction.plan.update({
         where: { id: planId },
@@ -492,8 +492,8 @@ export class PlanRepository implements PlanRepositoryPort {
     return this.database.$transaction(async (transaction) => {
       await lockUser(transaction, userId);
       const proposal = await transaction.plan.findFirst({ where: { id: planId, userId } });
-      if (!proposal) throw new NotFoundError('Plan');
-      if (proposal.status !== 'PROPOSED') throw new ConflictError('Plan is not a proposal');
+      if (!proposal) throw new NotFoundError('Rencana');
+      if (proposal.status !== 'PROPOSED') throw new ConflictError('Rencana bukan usulan');
       return serializePlan(await transaction.plan.update({ where: { id: planId }, data: { status: 'DISMISSED' }, include: planInclude }));
     });
   }
@@ -503,49 +503,49 @@ export class PlanRepository implements PlanRepositoryPort {
       await lockUser(transaction, userId);
       await transaction.$queryRaw`SELECT ps."id" FROM "plan_steps" ps JOIN "plans" p ON p."id" = ps."plan_id" WHERE p."user_id" = ${userId} AND p."id" = ${planId} AND ps."id" = ${stepId} FOR UPDATE OF p, ps`;
       const plan = await transaction.plan.findFirst({ where: { id: planId, userId }, select: { status: true } });
-      if (!plan) throw new NotFoundError('Plan');
+      if (!plan) throw new NotFoundError('Rencana');
       const step = await transaction.planStep.findFirst({ where: { id: stepId, planId }, select: { status: true, actionType: true, batchId: true, coldStorageId: true, vehicleId: true, destinationId: true, sequence: true, scheduledAt: true, batch: { select: { deletedAt: true, weightKg: true, locationType: true, currentColdStorageId: true, currentVehicleId: true, currentDestinationId: true } } } });
-      if (!step) throw new NotFoundError('Plan step');
-      if (plan.status !== 'ACTIVE') throw new ConflictError('Plan is not active');
-      if (step.status !== 'UPCOMING') throw new ConflictError('Plan step is not upcoming');
-      if (step.batch?.deletedAt) throw new ConflictError('Plan step batch is no longer active');
+      if (!step) throw new NotFoundError('Langkah rencana');
+      if (plan.status !== 'ACTIVE') throw new ConflictError('Rencana tidak aktif');
+      if (step.status !== 'UPCOMING') throw new ConflictError('Langkah rencana bukan langkah mendatang');
+      if (step.batch?.deletedAt) throw new ConflictError('Batch pada langkah rencana tidak lagi aktif');
       if (step.actionType === 'LOAD' && step.vehicleId) {
         const pendingReturn = await transaction.planStep.findFirst({ where: { vehicleId: step.vehicleId, actionType: 'RETURN_TO_BASE', status: 'UPCOMING', scheduledAt: { lte: step.scheduledAt }, plan: { userId, status: 'ACTIVE' }, OR: [{ planId: { not: planId } }, { planId, sequence: { lt: step.sequence } }] }, select: { id: true } });
-        if (pendingReturn) throw new ConflictError('Vehicle must be marked returned before it can be loaded again');
+        if (pendingReturn) throw new ConflictError('Kendaraan harus ditandai sudah kembali sebelum dapat dimuat lagi');
       }
       if (step.actionType === 'DISPATCH' && step.batchId) {
         const pendingLoad = await transaction.planStep.findFirst({ where: { planId, batchId: step.batchId, actionType: 'LOAD', status: 'UPCOMING', sequence: { lt: step.sequence } }, select: { id: true } });
-        if (pendingLoad) throw new ConflictError('Batch must be marked loaded before it can be dispatched');
+        if (pendingLoad) throw new ConflictError('Batch harus ditandai sudah dimuat sebelum dapat dikirim');
       }
       if (step.actionType === 'HANDOVER' && step.batchId) {
         const pendingDispatch = await transaction.planStep.findFirst({ where: { planId, batchId: step.batchId, actionType: 'DISPATCH', status: 'UPCOMING', sequence: { lt: step.sequence } }, select: { id: true } });
-        if (pendingDispatch) throw new ConflictError('Batch must be dispatched before handover');
+        if (pendingDispatch) throw new ConflictError('Batch harus dikirim sebelum serah terima');
       }
       if (step.actionType === 'RETURN_TO_BASE' && step.vehicleId) {
         const pendingDispatch = await transaction.planStep.findFirst({ where: { planId, vehicleId: step.vehicleId, actionType: 'DISPATCH', status: 'UPCOMING', sequence: { lt: step.sequence } }, select: { id: true } });
-        if (pendingDispatch) throw new ConflictError('Vehicle cannot be marked returned before its dispatch is completed');
+        if (pendingDispatch) throw new ConflictError('Kendaraan tidak dapat ditandai sudah kembali sebelum pengirimannya selesai');
       }
       const completedAt = new Date();
       if (step.actionType === 'STORE' && step.batchId && step.coldStorageId && step.batch) {
-        if (step.batch.locationType !== 'INTAKE') throw new ConflictError('Only a batch at intake can be stored');
+        if (step.batch.locationType !== 'INTAKE') throw new ConflictError('Hanya batch di area penerimaan yang dapat disimpan');
         const storage = await transaction.coldStorage.findFirst({ where: { id: step.coldStorageId, userId, operationalStatus: 'AVAILABLE' }, select: { capacityKg: true } });
-        if (!storage) throw new ConflictError('Cold storage is unavailable');
+        if (!storage) throw new ConflictError('Penyimpanan dingin tidak tersedia');
         const occupied = await transaction.batch.aggregate({ where: { userId, deletedAt: null, locationType: 'COLD_STORAGE', currentColdStorageId: step.coldStorageId }, _sum: { weightKg: true } });
-        if ((occupied._sum.weightKg ?? 0) + step.batch.weightKg > storage.capacityKg) throw new ConflictError('Cold storage no longer has enough capacity');
+        if ((occupied._sum.weightKg ?? 0) + step.batch.weightKg > storage.capacityKg) throw new ConflictError('Penyimpanan dingin tidak lagi memiliki kapasitas yang cukup');
         await transaction.batch.update({ where: { id: step.batchId }, data: { locationType: 'COLD_STORAGE', currentColdStorageId: step.coldStorageId, currentVehicleId: null, currentDestinationId: null, locationUpdatedAt: completedAt } });
       }
       if (step.actionType === 'LOAD' && step.batchId && step.vehicleId && step.batch) {
-        if (step.batch.locationType !== 'INTAKE' && step.batch.locationType !== 'COLD_STORAGE') throw new ConflictError('Batch is not available for loading');
+        if (step.batch.locationType !== 'INTAKE' && step.batch.locationType !== 'COLD_STORAGE') throw new ConflictError('Batch tidak tersedia untuk dimuat');
         const vehicle = await transaction.vehicle.findFirst({ where: { id: step.vehicleId, userId, operationalStatus: 'AVAILABLE' }, select: { capacityKg: true } });
-        if (!vehicle) throw new ConflictError('Vehicle is unavailable');
+        if (!vehicle) throw new ConflictError('Kendaraan tidak tersedia');
         const loaded = await transaction.batch.aggregate({ where: { userId, deletedAt: null, locationType: 'VEHICLE', currentVehicleId: step.vehicleId }, _sum: { weightKg: true } });
-        if ((loaded._sum.weightKg ?? 0) + step.batch.weightKg > vehicle.capacityKg) throw new ConflictError('Vehicle no longer has enough capacity');
+        if ((loaded._sum.weightKg ?? 0) + step.batch.weightKg > vehicle.capacityKg) throw new ConflictError('Kendaraan tidak lagi memiliki kapasitas yang cukup');
         await transaction.batch.update({ where: { id: step.batchId }, data: { locationType: 'VEHICLE', currentColdStorageId: null, currentVehicleId: step.vehicleId, currentDestinationId: null, locationUpdatedAt: completedAt } });
       }
       if (step.actionType === 'HANDOVER' && step.destinationId && step.batch?.locationType === 'DESTINATION' && step.batch.currentDestinationId === step.destinationId) {
         // Dispatch already fulfilled legacy generated handovers.
       } else if ((step.actionType === 'DISPATCH' || step.actionType === 'HANDOVER') && step.batchId && step.vehicleId && step.destinationId && step.batch) {
-        if (step.batch.locationType !== 'VEHICLE' || step.batch.currentVehicleId !== step.vehicleId) throw new ConflictError('Batch is not on the planned vehicle');
+        if (step.batch.locationType !== 'VEHICLE' || step.batch.currentVehicleId !== step.vehicleId) throw new ConflictError('Batch tidak berada di kendaraan yang direncanakan');
         await transaction.batch.update({ where: { id: step.batchId }, data: { status: 'HANDED_OVER', handedOverAt: completedAt, locationType: 'DESTINATION', currentColdStorageId: null, currentVehicleId: null, currentDestinationId: step.destinationId, locationUpdatedAt: completedAt } });
         const sessions = await transaction.sensorSession.findMany({ where: { batchId: step.batchId, status: 'ACTIVE' }, select: { sensorId: true } });
         await transaction.sensorSession.updateMany({ where: { batchId: step.batchId, status: 'ACTIVE' }, data: { status: 'COMPLETED', endedAt: completedAt } });

@@ -13,8 +13,8 @@ function response(trip: FishingTripResponse) {
 
 function translate(error: unknown): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    if (error.code === 'P2002') throw new ConflictError('A fishing trip with that code already exists');
-    if (error.code === 'P2025') throw new NotFoundError('Fishing trip');
+    if (error.code === 'P2002') throw new ConflictError('Perjalanan penangkapan dengan kode tersebut sudah ada');
+    if (error.code === 'P2025') throw new NotFoundError('Perjalanan penangkapan');
   }
   throw error;
 }
@@ -38,16 +38,16 @@ export class FishingTripRepository {
     return this.database.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
       const trip = await transaction.fishingTrip.findFirst({ where: { id, userId, deletedAt: null }, include });
-      if (!trip) throw new NotFoundError('Fishing trip');
-      if (trip.status !== 'ACTIVE') throw new ConflictError('Fishing trip is already completed');
+      if (!trip) throw new NotFoundError('Perjalanan penangkapan');
+      if (trip.status !== 'ACTIVE') throw new ConflictError('Perjalanan penangkapan sudah selesai');
       if (batches === null) {
-        if (!trip._count.batches) throw new ConflictError('At least one landed batch is required to complete the trip');
+        if (!trip._count.batches) throw new ConflictError('Setidaknya satu batch hasil pendaratan diperlukan untuk menyelesaikan perjalanan');
         return response(await transaction.fishingTrip.update({ where: { id }, data: { status: 'COMPLETED', endedAt: new Date() }, include }));
       }
       const sensorIds = batches.map(({ sensorId }) => sensorId);
-      if (new Set(sensorIds.map(String)).size !== sensorIds.length) throw new ConflictError('Each landed batch requires a different sensor');
+      if (new Set(sensorIds.map(String)).size !== sensorIds.length) throw new ConflictError('Setiap batch hasil pendaratan memerlukan sensor yang berbeda');
       const sensors = await transaction.sensor.findMany({ where: { id: { in: sensorIds }, userId, deletedAt: null, status: 'AVAILABLE', provisioningStatus: 'PROVISIONED' }, select: { id: true } });
-      if (sensors.length !== sensorIds.length) throw new ConflictError('Every landed batch requires an available provisioned sensor');
+      if (sensors.length !== sensorIds.length) throw new ConflictError('Setiap batch hasil pendaratan memerlukan sensor tersedia yang telah diprovisioning');
       const completedAt = new Date();
       const created = [];
       for (const [index, batch] of batches.entries()) {
@@ -63,8 +63,8 @@ export class FishingTripRepository {
 
   async delete(userId: bigint, id: bigint) {
     const trip = await this.database.fishingTrip.findFirst({ where: { id, userId, deletedAt: null }, include });
-    if (!trip) throw new NotFoundError('Fishing trip');
-    if (trip._count.batches) throw new ConflictError('Fishing trips with batches cannot be deleted');
+    if (!trip) throw new NotFoundError('Perjalanan penangkapan');
+    if (trip._count.batches) throw new ConflictError('Perjalanan penangkapan yang memiliki batch tidak dapat dihapus');
     await this.database.fishingTrip.update({ where: { id, userId }, data: { deletedAt: new Date() } });
   }
 }

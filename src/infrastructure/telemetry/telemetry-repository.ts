@@ -8,7 +8,9 @@ export type TelemetryInput = {
   deviceUid: string;
   temperature: number;
   sequenceNumber: number;
+  readingUid: string;
   measuredAt: Date;
+  syncRemaining: number;
 };
 
 export class TelemetryRepository {
@@ -25,66 +27,66 @@ export class TelemetryRepository {
   async ingestMany(inputs: TelemetryInput[]) {
     const first = inputs[0];
     if (!first) return;
-    if (inputs.some((input) => input.sensorId !== first.sensorId || input.deviceUid !== first.deviceUid)) throw new ConflictError('All readings must target the same sensor');
-    const sensor = await this.database.sensor.findUnique({
-      where: { deviceUid: first.deviceUid },
-      include: { sessions: { where: { status: 'ACTIVE' }, orderBy: { startedAt: 'desc' }, take: 1 } },
-    });
-    if (!sensor || sensor.deletedAt || sensor.provisioningStatus !== 'PROVISIONED' || sensor.code !== first.sensorId) throw new NotFoundError('Provisioned sensor');
-    const resolvedSession = sensor.sessions[0];
-    if (!resolvedSession) throw new ConflictError('Sensor must be assigned before telemetry can be stored');
+    if (inputs.some((input) => input.sensorId !== first.sensorId || input.deviceUid !== first.deviceUid)) throw new ConflictError('Semua pembacaan harus ditujukan ke sensor yang sama');
+    const sensor = await this.database.sensor.findUnique({ where: { deviceUid: first.deviceUid } });
+    if (!sensor || sensor.deletedAt || sensor.provisioningStatus !== 'PROVISIONED' || sensor.code !== first.sensorId) throw new NotFoundError('Sensor yang telah diprovisioning');
 
-    const readingsBySequence = new Map<number, TelemetryInput>();
+    const byUid = new Map<string, TelemetryInput>();
     for (const input of inputs) {
-      const duplicate = readingsBySequence.get(input.sequenceNumber);
-      if (duplicate && (duplicate.temperature !== input.temperature || duplicate.measuredAt.getTime() !== input.measuredAt.getTime())) throw new ConflictError('Reading identity has conflicting values');
-      readingsBySequence.set(input.sequenceNumber, input);
+      const duplicate = byUid.get(input.readingUid);
+      if (duplicate && (duplicate.temperature !== input.temperature || duplicate.measuredAt.getTime() !== input.measuredAt.getTime())) throw new ConflictError('Identitas pembacaan memiliki nilai yang bertentangan');
+      byUid.set(input.readingUid, input);
     }
-    const readings = [...readingsBySequence.values()];
-
+    const readings = [...byUid.values()];
+    const syncedAt = new Date();
     const notifications = await this.database.$transaction(async (transaction) => {
-      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${resolvedSession.id})`;
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${sensor.id})`;
       const currentSensor = await transaction.sensor.findUnique({ where: { deviceUid: first.deviceUid } });
-      if (!currentSensor || currentSensor.id !== sensor.id || currentSensor.deletedAt || currentSensor.provisioningStatus !== 'PROVISIONED' || currentSensor.code !== first.sensorId) throw new NotFoundError('Provisioned sensor');
-      const session = await transaction.sensorSession.findFirst({ where: { id: resolvedSession.id, sensorId: sensor.id, status: 'ACTIVE' } });
-      if (!session) throw new ConflictError('Sensor assignment changed before telemetry could be stored');
+      if (!currentSensor || currentSensor.id !== sensor.id || currentSensor.deletedAt || currentSensor.provisioningStatus !== 'PROVISIONED' || currentSensor.code !== first.sensorId) throw new NotFoundError('Sensor yang telah diprovisioning');
 
-      const existing = await transaction.temperatureReading.findMany({
-        where: { sensorSessionId: session.id, sequenceNumber: { in: readings.map(({ sequenceNumber }) => BigInt(sequenceNumber)) } },
-      });
-      const existingBySequence = new Map(existing.map((reading) => [reading.sequenceNumber.toString(), reading]));
+      const existing = await transaction.temperatureReading.findMany({ where: { readingUid: { in: readings.map(({ readingUid }) => readingUid) } } });
+      const existingByUid = new Map(existing.map((reading) => [reading.readingUid, reading]));
       const pending = readings.filter((input) => {
-        const replay = existingBySequence.get(input.sequenceNumber.toString());
+        const replay = existingByUid.get(input.readingUid);
         if (!replay) return true;
-        if (replay.temperatureC !== input.temperature || replay.measuredAt.getTime() !== input.measuredAt.getTime()) throw new ConflictError('Reading identity has conflicting values');
+        if (replay.sequenceNumber !== BigInt(input.sequenceNumber) || replay.temperatureC !== input.temperature || replay.measuredAt.getTime() !== input.measuredAt.getTime()) throw new ConflictError('Identitas pembacaan memiliki nilai yang bertentangan');
         return false;
       });
-      const syncedAt = new Date();
-      const receivedAtStart = syncedAt.getTime() - pending.length;
-      for (const [index, input] of pending.entries()) {
+
+      const minimum = pending.reduce((value, reading) => Math.min(value, reading.measuredAt.getTime()), Number.POSITIVE_INFINITY);
+      const maximum = pending.reduce((value, reading) => Math.max(value, reading.measuredAt.getTime()), Number.NEGATIVE_INFINITY);
+      const sessions = pending.length ? await transaction.sensorSession.findMany({
+        where: { sensorId: sensor.id, startedAt: { lte: new Date(maximum) }, OR: [{ endedAt: null }, { endedAt: { gt: new Date(minimum) } }] },
+        orderBy: { startedAt: 'asc' },
+      }) : [];
+      const affectedSessionIds = new Set<bigint>();
+      for (const input of pending) {
+        const session = sessions.find((candidate) => candidate.startedAt <= input.measuredAt && (!candidate.endedAt || input.measuredAt < candidate.endedAt));
+        if (!session) throw new ConflictError(`Pembacaan ${input.readingUid} tidak termasuk dalam sesi penugasan sensor`, 'READING_OUTSIDE_SENSOR_SESSION');
         await transaction.temperatureReading.create({
-          data: {
-            sensorSessionId: session.id,
-            sequenceNumber: BigInt(input.sequenceNumber),
-            temperatureC: input.temperature,
-            measuredAt: input.measuredAt,
-            receivedAt: new Date(receivedAtStart + index),
-            readingUid: `session:${session.id}:${input.sequenceNumber}`,
-          },
+          data: { sensorSessionId: session.id, sequenceNumber: BigInt(input.sequenceNumber), temperatureC: input.temperature, measuredAt: input.measuredAt, receivedAt: syncedAt, readingUid: input.readingUid },
         });
+        affectedSessionIds.add(session.id);
       }
 
-      const retained = await transaction.temperatureReading.findMany({
-        where: { sensorSession: { batchId: session.batchId } },
-        orderBy: [{ measuredAt: 'asc' }, { sequenceNumber: 'asc' }, { id: 'asc' }],
-        select: { id: true, sequenceNumber: true, temperatureC: true, measuredAt: true },
-      });
-      const quality = calculateQualityState(retained);
-      if (!quality) throw new ConflictError('Batch has no retained telemetry');
-      const batch = await transaction.batch.update({ where: { id: session.batchId }, data: quality });
-      const created = await this.monitoring.processTelemetry(transaction, { userId: batch.userId, batchId: session.batchId, batchCode: batch.code, sensorId: sensor.id, sensorCode: sensor.code, syncedAt, readings: retained });
-      await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt, ...(sensor.status === 'ERROR' ? {} : { status: 'ASSIGNED' }) } });
-      await transaction.sensorSession.update({ where: { id: session.id }, data: { lastSyncedAt: syncedAt } });
+      const affectedSessions = await transaction.sensorSession.findMany({ where: { id: { in: [...affectedSessionIds] } }, select: { id: true, batchId: true } });
+      const affectedBatchIds = [...new Set(affectedSessions.map(({ batchId }) => batchId))];
+      const created = [];
+      for (const batchId of affectedBatchIds) {
+        const retained = await transaction.temperatureReading.findMany({
+          where: { sensorSession: { batchId } },
+          orderBy: [{ measuredAt: 'asc' }, { sequenceNumber: 'asc' }, { id: 'asc' }],
+          select: { id: true, sequenceNumber: true, temperatureC: true, measuredAt: true },
+        });
+        const quality = calculateQualityState(retained);
+        if (!quality) throw new ConflictError('Batch tidak memiliki telemetri tersimpan');
+        const batch = await transaction.batch.update({ where: { id: batchId }, data: quality });
+        created.push(...await this.monitoring.processTelemetry(transaction, { userId: batch.userId, batchId, batchCode: batch.code, sensorId: sensor.id, sensorCode: sensor.code, syncedAt, readings: retained }));
+      }
+
+      const activeSession = await transaction.sensorSession.findFirst({ where: { sensorId: sensor.id, status: 'ACTIVE' }, orderBy: { startedAt: 'desc' } });
+      await transaction.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: syncedAt, pendingReadingCount: readings.at(-1)?.syncRemaining ?? 0, ...(sensor.status === 'ERROR' ? {} : { status: activeSession ? 'ASSIGNED' : 'AVAILABLE' }) } });
+      if (activeSession) await transaction.sensorSession.update({ where: { id: activeSession.id }, data: { lastSyncedAt: syncedAt } });
       return created;
     });
     await this.monitoring.notify(notifications);

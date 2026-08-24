@@ -391,8 +391,8 @@ export function addReturnToBaseSteps(proposal: AiPlanProposal, context: Planning
       vehicleId: dispatch.vehicleId,
       destinationId: dispatch.destinationId,
       scheduledAt: new Date(expectedReturnAt).toISOString(),
-      rationale: 'Return the vehicle to base after completing the shared delivery trip.',
-      timingRationale: `The expected return allows ${destination.travelMinutes} minutes outbound and ${destination.travelMinutes} minutes back${nextLoadAt !== undefined ? ' before the vehicle is reused' : ''}.`,
+      rationale: 'Kembalikan kendaraan ke pangkalan setelah menyelesaikan perjalanan pengiriman bersama.',
+      timingRationale: `Perkiraan waktu kembali menyediakan ${destination.travelMinutes} menit untuk perjalanan pergi dan ${destination.travelMinutes} menit untuk perjalanan pulang${nextLoadAt !== undefined ? ' sebelum kendaraan digunakan kembali' : ''}.`,
       latestSafeAt: new Date(latestSafeAt).toISOString(),
     });
   }
@@ -434,49 +434,49 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     }
   }
 
-  if (!proposal.summary.trim() || proposal.summary.length > 1000) errors.push('Plan summary is invalid');
-  if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Plan must contain 1 to 100 future steps');
-  if (Number.isNaN(now.getTime())) errors.push('Planning context time is invalid');
-  if (deadline && (Number.isNaN(deadline.getTime()) || (!options.allowTargetLateness && deadline.getTime() <= now.getTime()))) errors.push('Plan deadline must be a valid future datetime');
-  if (context.selectedDestinationId && (!selectedDestination || selectedDestination.status !== 'AVAILABLE')) errors.push('Selected destination is unavailable or unconfigured');
-  for (const destinationId of acceptableDestinationIds) if (destinations.get(destinationId)?.status !== 'AVAILABLE') errors.push(`Acceptable destination ${destinationId} is unavailable or unconfigured`);
-  for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} has no quality state`);
+  if (!proposal.summary.trim() || proposal.summary.length > 1000) errors.push('Ringkasan rencana tidak valid');
+  if (proposal.steps.length < 1 || proposal.steps.length > 100) errors.push('Rencana harus memuat 1 hingga 100 langkah mendatang');
+  if (Number.isNaN(now.getTime())) errors.push('Waktu konteks perencanaan tidak valid');
+  if (deadline && (Number.isNaN(deadline.getTime()) || (!options.allowTargetLateness && deadline.getTime() <= now.getTime()))) errors.push('Tenggat rencana harus berupa waktu mendatang yang valid');
+  if (context.selectedDestinationId && (!selectedDestination || selectedDestination.status !== 'AVAILABLE')) errors.push('Tujuan yang dipilih tidak tersedia atau belum dikonfigurasi');
+  for (const destinationId of acceptableDestinationIds) if (destinations.get(destinationId)?.status !== 'AVAILABLE') errors.push(`Tujuan yang dapat diterima ${destinationId} tidak tersedia atau belum dikonfigurasi`);
+  for (const batch of context.batches) if (!batch.quality) errors.push(`Batch ${batch.id} tidak memiliki status mutu`);
 
   proposal.steps.forEach((step, index) => {
     const scheduledAt = new Date(step.scheduledAt);
     const batch = step.batchId ? batches.get(step.batchId) : undefined;
-    const label = `Step ${index + 1} (${step.actionType}${batch ? ` ${batch.code}` : ''})`;
+    const label = `Langkah ${index + 1} (${step.actionType}${batch ? ` ${batch.code}` : ''})`;
     if (step.actionType === 'RETURN_TO_BASE') {
-      if (step.batchId !== undefined) errors.push(`${label} must be a vehicle-level step without a batch`);
-    } else if (!step.batchId || !positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} references an inactive or unconfigured batch`);
+      if (step.batchId !== undefined) errors.push(`${label} harus berupa langkah tingkat kendaraan tanpa batch`);
+    } else if (!step.batchId || !positiveId.test(step.batchId) || !batch || !activeBatchStatuses.includes(batch.status)) errors.push(`${label} merujuk pada batch yang tidak aktif atau belum dikonfigurasi`);
     else covered.add(batch.id);
-    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= now.getTime()) errors.push(`${label} must be scheduled in the future`);
-    if (step.latestSafeAt && (!isoDateTime.test(step.latestSafeAt) || !Number.isFinite(Date.parse(step.latestSafeAt)) || Date.parse(step.latestSafeAt) < scheduledAt.getTime())) errors.push(`${label} has an invalid latest safe time`);
-    if (step.timingRationale !== undefined && (!step.timingRationale.trim() || step.timingRationale.length > 1000)) errors.push(`${label} has an invalid timing rationale`);
-    if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < previousTime) errors.push(`${label} is not in chronological order`);
+    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= now.getTime()) errors.push(`${label} harus dijadwalkan pada waktu mendatang`);
+    if (step.latestSafeAt && (!isoDateTime.test(step.latestSafeAt) || !Number.isFinite(Date.parse(step.latestSafeAt)) || Date.parse(step.latestSafeAt) < scheduledAt.getTime())) errors.push(`${label} memiliki batas waktu aman yang tidak valid`);
+    if (step.timingRationale !== undefined && (!step.timingRationale.trim() || step.timingRationale.length > 1000)) errors.push(`${label} memiliki alasan waktu yang tidak valid`);
+    if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < previousTime) errors.push(`${label} tidak tersusun secara kronologis`);
     if (!Number.isNaN(scheduledAt.getTime())) previousTime = scheduledAt.getTime();
-    if (!resourceCombination(step)) errors.push(`${label} has an illegal action/resource combination`);
-    if (step.batchId && dispatched.has(step.batchId)) errors.push(`${label} schedules work after handover`);
-    if (step.actionType === 'INSPECT' && batch?.status !== 'INSPECTION_HOLD') errors.push(`${label} invents an inspection requirement`);
+    if (!resourceCombination(step)) errors.push(`${label} memiliki kombinasi tindakan/sumber daya yang tidak diizinkan`);
+    if (step.batchId && dispatched.has(step.batchId)) errors.push(`${label} menjadwalkan pekerjaan setelah serah terima`);
+    if (step.actionType === 'INSPECT' && batch?.status !== 'INSPECTION_HOLD') errors.push(`${label} membuat persyaratan pemeriksaan yang tidak ada`);
 
     const coldStorage = step.coldStorageId ? coldStorages.get(step.coldStorageId) : undefined;
-    if (step.coldStorageId && (!positiveId.test(step.coldStorageId) || !coldStorage)) errors.push(`${label} references an unconfigured cold storage`);
+    if (step.coldStorageId && (!positiveId.test(step.coldStorageId) || !coldStorage)) errors.push(`${label} merujuk pada penyimpanan dingin yang belum dikonfigurasi`);
     if (step.actionType === 'STORE' && coldStorage) {
-      if (coldStorage.operationalStatus !== 'AVAILABLE' || coldStorage.availableCapacityKg <= 0) errors.push(`${label} uses unavailable cold storage`);
-      if (batch && batch.weightKg > coldStorage.availableCapacityKg) errors.push(`${label} weighs ${batch.weightKg} kg but ${coldStorage.name} has ${coldStorage.availableCapacityKg} kg available`);
-      if (batch && storedAt.has(batch.id)) errors.push(`${label} stores a batch more than once`);
+      if (coldStorage.operationalStatus !== 'AVAILABLE' || coldStorage.availableCapacityKg <= 0) errors.push(`${label} menggunakan penyimpanan dingin yang tidak tersedia`);
+      if (batch && batch.weightKg > coldStorage.availableCapacityKg) errors.push(`${label} berbobot ${batch.weightKg} kg, tetapi ${coldStorage.name} hanya memiliki kapasitas tersedia ${coldStorage.availableCapacityKg} kg`);
+      if (batch && storedAt.has(batch.id)) errors.push(`${label} menyimpan batch lebih dari satu kali`);
       else if (batch) storedAt.set(batch.id, { resourceId: coldStorage.id, start: step.scheduledAt });
     }
 
     const vehicle = step.vehicleId ? vehicles.get(step.vehicleId) : undefined;
-    if (step.vehicleId && (!positiveId.test(step.vehicleId) || !vehicle)) errors.push(`${label} references an unconfigured vehicle`);
+    if (step.vehicleId && (!positiveId.test(step.vehicleId) || !vehicle)) errors.push(`${label} merujuk pada kendaraan yang belum dikonfigurasi`);
     if ((step.actionType === 'LOAD' || step.actionType === 'DISPATCH') && vehicle) {
-      if (vehicle.operationalStatus !== 'AVAILABLE') errors.push(`${label} uses an unavailable vehicle`);
-      if (batch && batch.weightKg > vehicle.capacityKg) errors.push(`${label} weighs ${batch.weightKg} kg but ${vehicle.code} carries ${vehicle.capacityKg} kg`);
-      if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < now.getTime() + vehicle.delayMinutes * 60_000) errors.push(`${label} does not account for vehicle delay`);
-      if (!Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} at ${scheduledAt.toISOString()} is outside ${vehicle.code} availability ${JSON.stringify(vehicle.availabilityIntervals)}`);
+      if (vehicle.operationalStatus !== 'AVAILABLE') errors.push(`${label} menggunakan kendaraan yang tidak tersedia`);
+      if (batch && batch.weightKg > vehicle.capacityKg) errors.push(`${label} berbobot ${batch.weightKg} kg, tetapi kapasitas ${vehicle.code} hanya ${vehicle.capacityKg} kg`);
+      if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() < now.getTime() + vehicle.delayMinutes * 60_000) errors.push(`${label} tidak memperhitungkan keterlambatan kendaraan`);
+      if (!Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} pada ${scheduledAt.toISOString()} berada di luar waktu ketersediaan ${vehicle.code} ${JSON.stringify(vehicle.availabilityIntervals)}`);
       if (batch && step.actionType === 'LOAD') {
-        if (loadedVehicle.has(batch.id)) errors.push(`${label} loads a batch more than once`);
+        if (loadedVehicle.has(batch.id)) errors.push(`${label} memuat batch lebih dari satu kali`);
         else {
           loadedVehicle.set(batch.id, vehicle.id);
           loadedAt.set(batch.id, { resourceId: vehicle.id, start: step.scheduledAt });
@@ -489,50 +489,50 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
     }
 
     const destination = step.destinationId ? destinations.get(step.destinationId) : undefined;
-    if (step.destinationId && (!positiveId.test(step.destinationId) || !destination)) errors.push(`${label} references an unconfigured destination`);
+    if (step.destinationId && (!positiveId.test(step.destinationId) || !destination)) errors.push(`${label} merujuk pada tujuan yang belum dikonfigurasi`);
     if (step.actionType === 'DISPATCH' && destination) {
-      if (destination.status !== 'AVAILABLE') errors.push(`${label} uses an unavailable destination`);
+      if (destination.status !== 'AVAILABLE') errors.push(`${label} menggunakan tujuan yang tidak tersedia`);
       const arrival = new Date(scheduledAt.getTime() + destination.travelMinutes * 60_000);
-      if (!Number.isNaN(arrival.getTime()) && !inIntervals(arrival, destination.receivingIntervals)) errors.push(`${label} arrives at ${arrival.toISOString()}, outside ${destination.name} receiving intervals ${JSON.stringify(destination.receivingIntervals)}`);
+      if (!Number.isNaN(arrival.getTime()) && !inIntervals(arrival, destination.receivingIntervals)) errors.push(`${label} tiba pada ${arrival.toISOString()}, di luar interval penerimaan ${destination.name} ${JSON.stringify(destination.receivingIntervals)}`);
       if (step.actionType === 'DISPATCH' && batch) {
         const load = loadedAt.get(batch.id);
-        if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !load) errors.push(`${label} must use the vehicle from the preceding load, which must be unmatched`);
+        if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !load) errors.push(`${label} harus menggunakan kendaraan dari pemuatan sebelumnya yang belum dipasangkan`);
         else {
           const physical = occupancies.find((occupancy) => occupancy.resourceType === 'VEHICLE' && occupancy.batchId === batch.id && occupancy.end === null);
           const expectedReturnAt = scheduledAt.getTime() + destination.travelMinutes * 2 * 60_000;
           const returnSteps = proposal.steps.filter((candidate) => candidate.actionType === 'RETURN_TO_BASE' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && Date.parse(candidate.scheduledAt) === expectedReturnAt);
           const returnStep = returnSteps[0];
-          if (returnSteps.length !== 1) errors.push(`${label} must have exactly one return-to-base step at ${new Date(expectedReturnAt).toISOString()}`);
+          if (returnSteps.length !== 1) errors.push(`${label} harus memiliki tepat satu langkah RETURN_TO_BASE pada ${new Date(expectedReturnAt).toISOString()}`);
           const occupiedUntil = returnStep?.scheduledAt ?? null;
           if (physical) physical.end = occupiedUntil;
           else occupancies.push({ resourceType: 'VEHICLE', resourceId: load.resourceId, batchId: batch.id, weightKg: batch.weightKg, start: load.start, end: occupiedUntil, destinationId: destination.id, dispatchAt: step.scheduledAt });
         }
-        if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
-        if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} does not use an acceptable destination`);
+        if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} tidak menggunakan tujuan yang dipilih`);
+        if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} tidak menggunakan tujuan yang dapat diterima`);
         else { departed.add(batch.id); if (!requiresHandover) dispatched.add(batch.id); }
         if (batch.quality && !Number.isNaN(arrival.getTime())) {
           const deadline = now.getTime() + batch.quality.remainingQualityWindowDays * 86_400_000;
-          if (!options.allowTargetLateness && arrival.getTime() > deadline) errors.push(`${label} arrives after the batch quality deadline`);
+          if (!options.allowTargetLateness && arrival.getTime() > deadline) errors.push(`${label} tiba setelah tenggat mutu batch`);
         }
-        if (!options.allowTargetLateness && deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} arrives after the plan deadline`);
+        if (!options.allowTargetLateness && deadline && !Number.isNaN(deadline.getTime()) && !Number.isNaN(arrival.getTime()) && arrival.getTime() > deadline.getTime()) errors.push(`${label} tiba setelah tenggat rencana`);
       }
     }
     if (step.actionType === 'HANDOVER' && batch && destination) {
-      if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !departed.has(batch.id)) errors.push(`${label} requires the batch to be dispatched on the same vehicle`);
+      if (!step.vehicleId || loadedVehicle.get(batch.id) !== step.vehicleId || !departed.has(batch.id)) errors.push(`${label} mengharuskan batch dikirim dengan kendaraan yang sama`);
       const dispatch = proposal.steps.find((candidate) => candidate.actionType === 'DISPATCH' && candidate.batchId === batch.id && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId);
-      if (!dispatch || Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 60_000 !== scheduledAt.getTime()) errors.push(`${label} must occur at destination arrival`);
-      if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} does not use the selected destination`);
-      if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} does not use an acceptable destination`);
+      if (!dispatch || Date.parse(dispatch.scheduledAt) + destination.travelMinutes * 60_000 !== scheduledAt.getTime()) errors.push(`${label} harus terjadi saat tiba di tujuan`);
+      if (context.selectedDestinationId && step.destinationId !== context.selectedDestinationId) errors.push(`${label} tidak menggunakan tujuan yang dipilih`);
+      if (acceptableDestinationIds.size && (!step.destinationId || !acceptableDestinationIds.has(step.destinationId))) errors.push(`${label} tidak menggunakan tujuan yang dapat diterima`);
       else dispatched.add(batch.id);
     }
     if (step.actionType === 'RETURN_TO_BASE') {
-      if (!step.vehicleId || !vehicle) errors.push(`${label} references an unconfigured vehicle`);
-      if (!step.destinationId || !destination) errors.push(`${label} references an unconfigured destination`);
-      if (vehicle && !Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} is outside ${vehicle.code} availability`);
+      if (!step.vehicleId || !vehicle) errors.push(`${label} merujuk pada kendaraan yang belum dikonfigurasi`);
+      if (!step.destinationId || !destination) errors.push(`${label} merujuk pada tujuan yang belum dikonfigurasi`);
+      if (vehicle && !Number.isNaN(scheduledAt.getTime()) && !inIntervals(scheduledAt, vehicle.availabilityIntervals)) errors.push(`${label} berada di luar waktu ketersediaan ${vehicle.code}`);
       const matchingDispatch = proposal.steps.some((candidate) => candidate.actionType === 'DISPATCH' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && Date.parse(candidate.scheduledAt) + (destination?.travelMinutes ?? 0) * 2 * 60_000 === scheduledAt.getTime());
       const duplicateReturns = proposal.steps.filter((candidate) => candidate.actionType === 'RETURN_TO_BASE' && candidate.vehicleId === step.vehicleId && candidate.destinationId === step.destinationId && candidate.scheduledAt === step.scheduledAt).length;
-      if (!matchingDispatch) errors.push(`${label} has no matching round trip`);
-      if (duplicateReturns !== 1) errors.push(`${label} duplicates a vehicle return`);
+      if (!matchingDispatch) errors.push(`${label} tidak memiliki perjalanan pulang-pergi yang sesuai`);
+      if (duplicateReturns !== 1) errors.push(`${label} menduplikasi kepulangan kendaraan`);
     }
   });
 
@@ -549,7 +549,7 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
       let occupiedKg = 0;
       if (events.some((event) => (occupiedKg += event.delta) > capacity)) {
         const name = resourceType === 'COLD_STORAGE' ? coldStorages.get(resourceId)?.name : vehicles.get(resourceId)?.code;
-        errors.push(`${resourceType === 'COLD_STORAGE' ? 'Cold storage' : 'Vehicle'} ${name ?? resourceId} exceeds its ${capacity} kg concurrent capacity`);
+        errors.push(`${resourceType === 'COLD_STORAGE' ? 'Penyimpanan dingin' : 'Kendaraan'} ${name ?? resourceId} melampaui kapasitas bersamaan ${capacity} kg`);
       }
     }
   }
@@ -564,11 +564,11 @@ export function validatePlanProposal(proposal: AiPlanProposal, context: Planning
       const sharedTrip = left.destinationId !== undefined && left.destinationId === right.destinationId
         && left.dispatchAt !== undefined && left.dispatchAt === right.dispatchAt
         && left.end !== null && left.end === right.end;
-      if (!sharedTrip) errors.push(`Vehicle ${vehicles.get(left.resourceId)?.code ?? left.resourceId} has overlapping incompatible trips`);
+      if (!sharedTrip) errors.push(`Kendaraan ${vehicles.get(left.resourceId)?.code ?? left.resourceId} memiliki perjalanan tumpang tindih yang tidak kompatibel`);
     }
   }
-  for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Active batch ${batch.id} is not covered by the plan`);
-  if (context.selectedDestinationId || acceptableDestinationIds.size) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(context.selectedDestinationId ? `Active batch ${batch.id} is not dispatched to the selected destination` : `Active batch ${batch.id} is not handed over to an acceptable destination`);
+  for (const batch of context.batches) if (!covered.has(batch.id)) errors.push(`Batch aktif ${batch.id} tidak tercakup dalam rencana`);
+  if (context.selectedDestinationId || acceptableDestinationIds.size) for (const batch of context.batches) if (!dispatched.has(batch.id)) errors.push(context.selectedDestinationId ? `Batch aktif ${batch.id} tidak dikirim ke tujuan yang dipilih` : `Batch aktif ${batch.id} tidak diserahterimakan ke tujuan yang dapat diterima`);
   return errors;
 }
 
@@ -594,7 +594,7 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
     const load = proposal.steps.find((candidate) => candidate.batchId === step.batchId && candidate.actionType === 'LOAD');
     if (load && Date.parse(load.scheduledAt) - Date.parse(context.now) <= 30 * 60_000 && validatePlanProposal(withoutStorage, context).length === 0) {
       const batch = context.batches.find(({ id }) => id === step.batchId);
-      issues.push({ code: 'UNNECESSARY_STORAGE', message: `${batch?.code ?? `Batch ${step.batchId}`} is stored even though the same load and dispatch plan is feasible without storage.` });
+      issues.push({ code: 'UNNECESSARY_STORAGE', message: `${batch?.code ?? `Batch ${step.batchId}`} disimpan meskipun rencana pemuatan dan pengiriman yang sama layak dilakukan tanpa penyimpanan.` });
     }
   }
 
@@ -617,7 +617,7 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
           const constrainedBatch = context.batches.find(({ id }) => id === constrained.batchId);
           const flexibleBatch = context.batches.find(({ id }) => id === flexible.batchId);
           const scarceVehicle = context.vehicles.find(({ id }) => id === scarceVehicleId);
-          issues.push({ code: 'SCARCE_RESOURCE_MISALLOCATION', message: `${scarceVehicle?.code ?? `Vehicle ${scarceVehicleId}`} is the only feasible vehicle for ${constrainedBatch?.code ?? constrained.batchId}, but is used earlier for flexible batch ${flexibleBatch?.code ?? flexible.batchId}; a validated alternative allocation avoids that delay.` });
+          issues.push({ code: 'SCARCE_RESOURCE_MISALLOCATION', message: `${scarceVehicle?.code ?? `Kendaraan ${scarceVehicleId}`} adalah satu-satunya kendaraan yang layak untuk ${constrainedBatch?.code ?? constrained.batchId}, tetapi digunakan lebih dahulu untuk batch fleksibel ${flexibleBatch?.code ?? flexible.batchId}; alokasi alternatif tervalidasi menghindari keterlambatan tersebut.` });
           break;
         }
       }
@@ -640,7 +640,7 @@ export function evaluatePlanQuality(proposal: AiPlanProposal, context: PlanningC
       if (validatePlanProposal(candidate, context).length === 0) {
         const urgentBatch = context.batches.find(({ id }) => id === urgent.batchId);
         const otherBatch = context.batches.find(({ id }) => id === laterPriority.batchId);
-        issues.push({ code: 'QUALITY_PRIORITY_INVERSION', message: `${urgentBatch?.code ?? urgent.batchId} has an earlier effective deadline than ${otherBatch?.code ?? laterPriority.batchId}, and a validated schedule swap serves it first.` });
+        issues.push({ code: 'QUALITY_PRIORITY_INVERSION', message: `${urgentBatch?.code ?? urgent.batchId} memiliki tenggat efektif lebih awal daripada ${otherBatch?.code ?? laterPriority.batchId}, dan pertukaran jadwal tervalidasi melayaninya lebih dahulu.` });
       }
     }
   }
@@ -657,7 +657,7 @@ export function validateSensiblePlanProposal(proposal: AiPlanProposal, context: 
 export function assessPlanTiming(proposal: AiPlanProposal, context: PlanningContext): PlanTimingAssessment {
   const formatDuration = (seconds: number) => {
     const minutes = Math.ceil(seconds / 60); const hours = Math.floor(minutes / 60); const remainder = minutes % 60;
-    return [hours ? `${hours} hour${hours === 1 ? '' : 's'}` : '', remainder ? `${remainder} minute${remainder === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ') || 'less than one minute';
+    return [hours ? `${hours} jam` : '', remainder ? `${remainder} menit` : ''].filter(Boolean).join(' ') || 'kurang dari satu menit';
   };
   const reasons: PlanTimingReason[] = [];
   for (const step of proposal.steps.filter((candidate) => candidate.actionType === 'DISPATCH' && candidate.batchId && candidate.destinationId)) {
@@ -666,13 +666,13 @@ export function assessPlanTiming(proposal: AiPlanProposal, context: PlanningCont
     if (!batch || !destination) continue;
     const feasibleAt = new Date(Date.parse(step.scheduledAt) + destination.travelMinutes * 60_000).toISOString();
     const targets = [
-      ...(context.deadline ? [{ code: 'PLAN_DEADLINE_MISSED' as const, severity: 'WARNING' as const, targetAt: context.deadline, label: 'plan arrival deadline' }] : []),
-      ...(batch.quality ? [{ code: 'QUALITY_DEADLINE_MISSED' as const, severity: 'CRITICAL' as const, targetAt: new Date(Date.parse(context.now) + batch.quality.remainingQualityWindowDays * 86_400_000).toISOString(), label: `${batch.code} quality deadline` }] : []),
+      ...(context.deadline ? [{ code: 'PLAN_DEADLINE_MISSED' as const, severity: 'WARNING' as const, targetAt: context.deadline, label: 'tenggat kedatangan rencana' }] : []),
+      ...(batch.quality ? [{ code: 'QUALITY_DEADLINE_MISSED' as const, severity: 'CRITICAL' as const, targetAt: new Date(Date.parse(context.now) + batch.quality.remainingQualityWindowDays * 86_400_000).toISOString(), label: `tenggat mutu ${batch.code}` }] : []),
     ];
     for (const target of targets) {
       const delaySeconds = Math.max(0, Math.ceil((Date.parse(feasibleAt) - Date.parse(target.targetAt)) / 1000));
       if (!delaySeconds) continue;
-      reasons.push({ code: target.code, severity: target.severity, batchId: batch.id, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: target.targetAt, feasibleAt, delaySeconds, message: `${batch.code} is projected to arrive ${formatDuration(delaySeconds)} after its ${target.label}.` });
+      reasons.push({ code: target.code, severity: target.severity, batchId: batch.id, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: target.targetAt, feasibleAt, delaySeconds, message: `${batch.code} diperkirakan tiba ${formatDuration(delaySeconds)} setelah ${target.label}.` });
     }
   }
   const delayedBySeconds = reasons.reduce((maximum, reason) => Math.max(maximum, reason.delaySeconds), 0);
@@ -683,13 +683,13 @@ export function assessPlanTiming(proposal: AiPlanProposal, context: PlanningCont
       const receiving = destination?.receivingIntervals.find(({ start, end }) => Date.parse(reason.feasibleAt) >= Date.parse(start) && Date.parse(reason.feasibleAt) <= Date.parse(end));
       if (step && destination && receiving && reason.targetAt && Date.parse(receiving.start) > Date.parse(reason.targetAt) && !reasons.some(({ code, batchId }) => code === 'NEXT_RECEIVING_WINDOW' && batchId === reason.batchId)) {
         const waitSeconds = Math.ceil((Date.parse(receiving.start) - Date.parse(reason.targetAt)) / 1000);
-        reasons.push({ code: 'NEXT_RECEIVING_WINDOW', severity: reason.severity, batchId: reason.batchId, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: reason.targetAt, feasibleAt: receiving.start, delaySeconds: waitSeconds, message: `${destination.name}'s next valid receiving window starts ${formatDuration(waitSeconds)} after the missed target.` });
+        reasons.push({ code: 'NEXT_RECEIVING_WINDOW', severity: reason.severity, batchId: reason.batchId, vehicleId: step.vehicleId ?? null, destinationId: destination.id, targetAt: reason.targetAt, feasibleAt: receiving.start, delaySeconds: waitSeconds, message: `Jendela penerimaan valid berikutnya di ${destination.name} dimulai ${formatDuration(waitSeconds)} setelah target yang terlewat.` });
       }
     }
     const vehicleIds = new Set(reasons.flatMap(({ vehicleId }) => vehicleId ? [vehicleId] : []));
     for (const vehicleId of vehicleIds) {
       const vehicle = context.vehicles.find(({ id }) => id === vehicleId);
-      if (vehicle?.delayMinutes) reasons.push({ code: 'VEHICLE_DELAY', severity: 'WARNING', batchId: null, vehicleId, destinationId: null, targetAt: null, feasibleAt: new Date(Date.parse(context.now) + vehicle.delayMinutes * 60_000).toISOString(), delaySeconds: vehicle.delayMinutes * 60, message: `${vehicle.code} is delayed ${vehicle.delayMinutes} minutes.` });
+      if (vehicle?.delayMinutes) reasons.push({ code: 'VEHICLE_DELAY', severity: 'WARNING', batchId: null, vehicleId, destinationId: null, targetAt: null, feasibleAt: new Date(Date.parse(context.now) + vehicle.delayMinutes * 60_000).toISOString(), delaySeconds: vehicle.delayMinutes * 60, message: `${vehicle.code} terlambat ${vehicle.delayMinutes} menit.` });
     }
   }
   return { status: delayedBySeconds ? 'DELAYED' : 'ON_TIME', delayedBySeconds, reasons };

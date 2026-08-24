@@ -8,7 +8,7 @@ export function createTelegramWebhookRouter(service: TelegramService) {
   const router = Router();
   router.post('/webhook', async (request, response) => {
     const secret = request.headers['x-telegram-bot-api-secret-token'];
-    if (!service.verifySecret(typeof secret === 'string' ? secret : undefined)) throw new RequestError('Invalid Telegram webhook secret', 401);
+    if (!service.verifySecret(typeof secret === 'string' ? secret : undefined)) throw new RequestError('Secret webhook Telegram tidak valid', 401);
     await service.receive(request.body);
     response.sendStatus(204);
   });

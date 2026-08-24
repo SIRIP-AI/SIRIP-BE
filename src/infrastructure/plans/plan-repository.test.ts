@@ -94,7 +94,7 @@ test('does not complete a later load before the vehicle return is confirmed', as
   };
   const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
 
-  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 5n), /marked returned/);
+  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 5n), /ditandai sudah kembali/);
   assert.deepEqual((dependencyWhere as { plan: unknown }).plan, { userId: 1n, status: 'ACTIVE' });
   assert.deepEqual((dependencyWhere as { scheduledAt: unknown }).scheduledAt, { lte: new Date('2026-08-20T16:00:00Z') });
 });
@@ -112,7 +112,7 @@ test('does not complete dispatch before its load', async () => {
   };
   const database = { $transaction: async (callback: (client: typeof transaction) => Promise<unknown>) => callback(transaction) } as unknown as Database;
 
-  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 2n), /marked loaded/);
+  await assert.rejects(() => new PlanRepository(database).completeStep(1n, 10n, 2n), /ditandai sudah dimuat/);
 });
 
 test('completing dispatch removes the batch from its truck', async () => {

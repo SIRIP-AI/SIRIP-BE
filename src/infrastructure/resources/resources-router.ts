@@ -15,35 +15,35 @@ import type { AuthLocals } from '../auth/auth-router';
 import type { ResourceRepository } from './resource-repository';
 
 function bodyObject(body: unknown) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Request body must be an object', 400);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Isi permintaan harus berupa objek', 400);
   return body as Record<string, unknown>;
 }
 
 function text(body: Record<string, unknown>, field: string) {
   const value = body[field];
-  if (typeof value !== 'string' || !value.trim()) throw new RequestError(`${field} is required`, 400);
-  if (value.trim().length > 100) throw new RequestError(`${field} must be at most 100 characters`, 400);
+  if (typeof value !== 'string' || !value.trim()) throw new RequestError(`${field} wajib diisi`, 400);
+  if (value.trim().length > 100) throw new RequestError(`${field} maksimal 100 karakter`, 400);
   return value.trim();
 }
 
 function positiveNumber(body: Record<string, unknown>, field: string, allowZero = false) {
   const value = body[field];
   if (typeof value !== 'number' || !Number.isFinite(value) || (allowZero ? value < 0 : value <= 0)) {
-    throw new RequestError(`${field} must be ${allowZero ? 'zero or greater' : 'greater than zero'}`, 400);
+    throw new RequestError(`${field} harus ${allowZero ? 'nol atau lebih' : 'lebih besar dari nol'}`, 400);
   }
   return value;
 }
 
 function integer(body: Record<string, unknown>, field: string) {
   const value = positiveNumber(body, field, true);
-  if (!Number.isInteger(value)) throw new RequestError(`${field} must be a whole number`, 400);
+  if (!Number.isInteger(value)) throw new RequestError(`${field} harus berupa bilangan bulat`, 400);
   return value;
 }
 
 function status<const T extends readonly string[]>(body: Record<string, unknown>, field: string, values: T): T[number] {
   const value = body[field];
   if (typeof value !== 'string' || !values.includes(value)) {
-    throw new RequestError(`${field} must be one of: ${values.join(', ')}`, 400);
+    throw new RequestError(`${field} harus salah satu dari: ${values.join(', ')}`, 400);
   }
   return value as T[number];
 }
@@ -51,15 +51,15 @@ function status<const T extends readonly string[]>(body: Record<string, unknown>
 function nullableText(body: Record<string, unknown>, field: string) {
   const value = body[field];
   if (value === null || value === '') return null;
-  if (typeof value !== 'string') throw new RequestError(`${field} must be text`, 400);
-  if (value.trim().length > 500) throw new RequestError(`${field} must be at most 500 characters`, 400);
+  if (typeof value !== 'string') throw new RequestError(`${field} harus berupa teks`, 400);
+  if (value.trim().length > 500) throw new RequestError(`${field} maksimal 500 karakter`, 400);
   return value.trim() || null;
 }
 
 function time(body: Record<string, unknown>, field: string) {
   const value = body[field];
   if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
-    throw new RequestError(`${field} must use HH:mm format`, 400);
+    throw new RequestError(`${field} harus menggunakan format HH:mm`, 400);
   }
   return value;
 }
@@ -68,13 +68,13 @@ function nullableTime(body: Record<string, unknown>, field: string) {
   const value = body[field];
   if (value === null || value === '') return null;
   if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
-    throw new RequestError(`${field} must use HH:mm format`, 400);
+    throw new RequestError(`${field} harus menggunakan format HH:mm`, 400);
   }
   return value;
 }
 
 function rejectField(body: Record<string, unknown>, field: string) {
-  if (field in body) throw new RequestError(`${field} cannot be changed through resource configuration`, 400);
+  if (field in body) throw new RequestError(`${field} tidak dapat diubah melalui konfigurasi sumber daya`, 400);
 }
 
 function resourceId(value: string) {
@@ -83,7 +83,7 @@ function resourceId(value: string) {
     if (id <= 0n) throw new Error();
     return id;
   } catch {
-    throw new RequestError('Resource ID must be a positive integer', 400);
+    throw new RequestError('ID sumber daya harus berupa bilangan bulat positif', 400);
   }
 }
 
@@ -91,7 +91,7 @@ function coldStorageInput(body: unknown): ColdStorageInput {
   const value = bodyObject(body);
   const capacityKg = positiveNumber(value, 'capacityKg');
   const availableCapacityKg = positiveNumber(value, 'availableCapacityKg', true);
-  if (availableCapacityKg > capacityKg) throw new RequestError('availableCapacityKg cannot exceed capacityKg', 400);
+  if (availableCapacityKg > capacityKg) throw new RequestError('availableCapacityKg tidak boleh melebihi capacityKg', 400);
   rejectField(value, 'status');
   return { name: text(value, 'name'), capacityKg, availableCapacityKg, operationalStatus: status(value, 'operationalStatus', resourceOperationalStatuses) };
 }
@@ -103,8 +103,8 @@ function vehicleInput(body: unknown): VehicleInput {
   rejectField(value, 'delayPersistent');
   const availabilityStart = nullableTime(value, 'availabilityStart');
   const availabilityEnd = nullableTime(value, 'availabilityEnd');
-  if ((availabilityStart === null) !== (availabilityEnd === null)) throw new RequestError('availabilityStart and availabilityEnd must both be provided', 400);
-  if (availabilityStart && availabilityEnd && availabilityEnd <= availabilityStart) throw new RequestError('availabilityEnd must be after availabilityStart', 400);
+  if ((availabilityStart === null) !== (availabilityEnd === null)) throw new RequestError('availabilityStart dan availabilityEnd harus diberikan bersamaan', 400);
+  if (availabilityStart && availabilityEnd && availabilityEnd <= availabilityStart) throw new RequestError('availabilityEnd harus setelah availabilityStart', 400);
   return {
     code: text(value, 'code'),
     capacityKg: positiveNumber(value, 'capacityKg'),
@@ -119,7 +119,7 @@ function destinationInput(body: unknown): DestinationInput {
   const value = bodyObject(body);
   const receivingStart = time(value, 'receivingStart');
   const receivingEnd = time(value, 'receivingEnd');
-  if (receivingEnd <= receivingStart) throw new RequestError('receivingEnd must be after receivingStart', 400);
+  if (receivingEnd <= receivingStart) throw new RequestError('receivingEnd harus setelah receivingStart', 400);
   return {
     name: text(value, 'name'),
     address: text(value, 'address'),

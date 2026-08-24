@@ -39,7 +39,7 @@ test('logs sanitized Gemini provider errors while returning a safe request error
       status: 400,
       error: { code: 'INVALID_ARGUMENT', type: 'invalid_request_error', message: 'Bad request at ?key=secret' },
     });
-    assert.equal(result.message, 'AI provider request failed');
+    assert.equal(result.message, 'Permintaan ke penyedia AI gagal');
     assert.deepEqual(entries, [[
       '[AI provider request failed]',
       {

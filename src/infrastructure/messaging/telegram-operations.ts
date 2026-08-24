@@ -37,10 +37,10 @@ export type PreparedTelegramTurn = { userId: bigint; input: string; receivedAt: 
 export type PreparedTelegramResult = { kind: 'READY'; turn: PreparedTelegramTurn } | { kind: 'REPLY'; reply: TelegramReply };
 
 function formatWIB(date: Date | string | null | undefined): string {
-  if (!date) return 'never';
+  if (!date) return 'belum pernah';
   const parsed = typeof date === 'string' ? new Date(date) : date;
-  if (Number.isNaN(parsed.getTime())) return 'never';
-  return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+  if (Number.isNaN(parsed.getTime())) return 'belum pernah';
+  return parsed.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
 }
 
 function html(value: unknown) {
@@ -51,13 +51,13 @@ function duration(seconds: number) {
   const minutes = Math.ceil(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
-  return [hours ? `${hours} hour${hours === 1 ? '' : 's'}` : '', remainder ? `${remainder} minute${remainder === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ') || '0 minutes';
+  return [hours ? `${hours} jam` : '', remainder ? `${remainder} menit` : ''].filter(Boolean).join(' ') || '0 menit';
 }
 
 export function telegramPlanTimingText(plan: PlanView) {
   if (plan.timing.status === 'ON_TIME') return '';
   const critical = plan.timing.reasons.some(({ severity }) => severity === 'CRITICAL');
-  return [`⚠️ WARNING · Plan delayed ${duration(plan.timing.delayedBySeconds)}`, ...(critical ? ['CRITICAL quality timing risk'] : []), ...plan.timing.reasons.map(({ message }) => `- ${message}`)].join('\n');
+  return [`⚠️ WARNING · Rencana terlambat ${duration(plan.timing.delayedBySeconds)}`, ...(critical ? ['CRITICAL risiko waktu mutu'] : []), ...plan.timing.reasons.map(({ message }) => `- ${message}`)].join('\n');
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -191,9 +191,9 @@ export function resolvePlanReference(plans: PlanView[], reference: string) {
 }
 
 function proposalText(plan: PlanView) {
-  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`);
+  const steps = plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `${step.sequence}. ${step.actionType} ${step.batch?.code ?? 'kendaraan'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} pada ${formatWIB(step.scheduledAt)}`);
   const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-  return [`Plan v${plan.version} proposal`, `Reason: ${reason}`, ...(telegramPlanTimingText(plan) ? ['', telegramPlanTimingText(plan)] : []), ...steps].join('\n');
+  return [`Usulan rencana v${plan.version}`, `Alasan: ${reason}`, ...(telegramPlanTimingText(plan) ? ['', telegramPlanTimingText(plan)] : []), ...steps].join('\n');
 }
 
 export class TelegramOperations {
@@ -201,14 +201,14 @@ export class TelegramOperations {
 
   async monitoringImpact(alert: MonitoringAlert): Promise<TelegramReply> {
     const affected = await this.database.plan.findMany({ where: { userId: alert.userId, status: 'ACTIVE', batches: { some: { batchId: alert.batchId } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
-    const heading = `${alert.severity === 'CRITICAL' ? '🚨' : '⚠️'} <b>${html(alert.title)}</b>\n\n<b>Batch</b>\n${html(alert.batchCode)}${alert.sensorCode ? ` · ${html(alert.sensorCode)}` : ''}\n\n<b>Severity</b>\n${alert.severity}\n\n${html(alert.description)}`;
-    if (!affected.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nNo active plan directly includes this batch.` };
+    const heading = `${alert.severity === 'CRITICAL' ? '🚨' : '⚠️'} <b>${html(alert.title)}</b>\n\n<b>Batch</b>\n${html(alert.batchCode)}${alert.sensorCode ? ` · ${html(alert.sensorCode)}` : ''}\n\n<b>Keparahan</b>\n${alert.severity}\n\n${html(alert.description)}`;
+    if (!affected.length) return { format: 'HTML', text: `${heading}\n\n<b>Dampak pada rencana</b>\nTidak ada rencana aktif yang langsung mencakup batch ini.` };
     const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(alert.userId, plan.id) })));
     const impacted = assessments.filter(({ errors }) => errors.length > 0);
-    if (!impacted.length) return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\nThe affected active plans are still feasible with the current operational facts.` };
-    const instruction = `Revise future steps to account for monitoring alert ${alert.eventId}: ${alert.title} for batch ${alert.batchCode}.`;
+    if (!impacted.length) return { format: 'HTML', text: `${heading}\n\n<b>Dampak pada rencana</b>\nRencana aktif yang terdampak masih layak berdasarkan fakta operasional saat ini.` };
+    const instruction = `Revisi langkah mendatang untuk memperhitungkan peringatan pemantauan ${alert.eventId}: ${alert.title} untuk batch ${alert.batchCode}.`;
     await this.savePending(alert.userId, { kind: 'REPLAN', eventId: alert.eventId.toString(), planIds: impacted.map(({ id }) => id.toString()), instruction });
-    return { format: 'HTML', text: `${heading}\n\n<b>Plan impact</b>\n${impacted.map(({ version }) => `V${version} is no longer valid under current operational constraints.`).join('\n')}\n\n<i>No proposal will be created unless you choose Replan.</i>`, buttons: [...impacted.map((plan) => [{ text: `Replan V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
+    return { format: 'HTML', text: `${heading}\n\n<b>Dampak pada rencana</b>\n${impacted.map(({ version }) => `V${version} tidak lagi valid berdasarkan batasan operasional saat ini.`).join('\n')}\n\n<i>Usulan tidak akan dibuat kecuali Anda memilih Rencanakan ulang.</i>`, buttons: [...impacted.map((plan) => [{ text: `Rencanakan ulang V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Pertahankan rencana saat ini', callback_data: 'replan:cancel' }]] };
   }
 
   async handle(userId: bigint, text: string | null, callback: string | null, receivedAt = new Date()): Promise<TelegramReply> {
@@ -229,11 +229,11 @@ export class TelegramOperations {
     const conversation = await this.loadConversation(userId, receivedAt);
     const current = conversation.pending;
     const input = text?.trim() ?? '';
-    if (!input) return { kind: 'REPLY', reply: { text: 'Please send an operational question or report.' } };
+    if (!input) return { kind: 'REPLY', reply: { text: 'Silakan kirim pertanyaan atau laporan operasional.' } };
     const snapshot = await loadTelegramOperationalSnapshot(this.database, this.plans, userId);
     const extracted = await extractTelegramRequest(this.model, snapshot, conversation.messages, current, input);
     const inbound: ChatMessage = { role: 'user', text: input.slice(0, maximumHistoryText), timestamp: receivedAt.toISOString() };
-    if (!extracted) return { kind: 'REPLY', reply: await this.remember(userId, conversation.messages, inbound, { text: 'I could not understand that request right now. Please try again.' }, receivedAt, current) };
+    if (!extracted) return { kind: 'REPLY', reply: await this.remember(userId, conversation.messages, inbound, { text: 'Saya belum dapat memahami permintaan tersebut. Silakan coba lagi.' }, receivedAt, current) };
     return { kind: 'READY', turn: { userId, input, receivedAt, conversation, extraction: extracted, inbound } };
   }
 
@@ -247,20 +247,20 @@ export class TelegramOperations {
   }
 
   private async interpreted(userId: bigint, input: string, extraction: TelegramExtraction, current: State | null, receivedAt: Date): Promise<TelegramReply> {
-    if (extraction.intent === 'CANCEL') { await this.clearPending(userId); return { text: 'Canceled. Nothing was changed.' }; }
+    if (extraction.intent === 'CANCEL') { await this.clearPending(userId); return { text: 'Dibatalkan. Tidak ada perubahan.' }; }
     if (extraction.intent === 'CONFIRM') return this.typedConfirm(userId, current);
     if (current?.kind === 'PROPOSAL' && extraction.intent === 'PROPOSAL_EDIT' && extraction.instruction) {
       await this.savePending(userId, { kind: 'EDIT_CONFIRM', planId: current.planId, instruction: extraction.instruction });
-      return { format: 'HTML', text: `<b>Plan edit preview</b>\n\n<b>Requested change</b>\n${html(extraction.instruction)}\n\n<i>No plan has changed yet.</i>`, buttons: [[{ text: 'Confirm edit', callback_data: 'edit:confirm' }, { text: 'Cancel', callback_data: 'edit:cancel' }]] };
+      return { format: 'HTML', text: `<b>Pratinjau perubahan rencana</b>\n\n<b>Perubahan yang diminta</b>\n${html(extraction.instruction)}\n\n<i>Belum ada rencana yang diubah.</i>`, buttons: [[{ text: 'Konfirmasi perubahan', callback_data: 'edit:confirm' }, { text: 'Batal', callback_data: 'edit:cancel' }]] };
     }
     if (extraction.intent === 'REPLAN') {
-      if (!extraction.planRef || !extraction.instruction) return this.clarify(userId, extraction, receivedAt, 'Which active plan should I revise, and what should change? Please include its ID, version, or exact batch code.');
+      if (!extraction.planRef || !extraction.instruction) return this.clarify(userId, extraction, receivedAt, 'Rencana aktif mana yang harus direvisi, dan apa yang harus diubah? Sertakan ID, versi, atau kode batch yang tepat.');
       const plan = await this.resolvePlan(userId, extraction.planRef);
-      if (!plan) return this.clarify(userId, extraction, receivedAt, 'I could not identify one active plan. Please use its ID, version, or exact batch code.');
+      if (!plan) return this.clarify(userId, extraction, receivedAt, 'Saya tidak dapat mengidentifikasi satu rencana aktif. Gunakan ID, versi, atau kode batch yang tepat.');
       await this.savePending(userId, { kind: 'REPLAN_CONFIRM', planId: plan.id, instruction: extraction.instruction });
-      return { format: 'HTML', text: `<b>Replan preview</b>\n\n<b>Plan</b>\nV${plan.version} · ${plan.batches.map((batch) => html(batch.code)).join(', ')}\n\n<b>Instruction</b>\n${html(extraction.instruction)}\n\n<i>The active plan remains unchanged until a proposal is approved.</i>`, buttons: [[{ text: 'Confirm replan', callback_data: 'replan:confirm' }, { text: 'Cancel', callback_data: 'replan:cancel' }]] };
+      return { format: 'HTML', text: `<b>Pratinjau perencanaan ulang</b>\n\n<b>Rencana</b>\nV${plan.version} · ${plan.batches.map((batch) => html(batch.code)).join(', ')}\n\n<b>Instruksi</b>\n${html(extraction.instruction)}\n\n<i>Rencana aktif tetap tidak berubah sampai usulan disetujui.</i>`, buttons: [[{ text: 'Konfirmasi perencanaan ulang', callback_data: 'replan:confirm' }, { text: 'Batal', callback_data: 'replan:cancel' }]] };
     }
-    if (extraction.intent === 'QUERY' && extraction.missingFields.includes('queryMetric')) return this.clarify(userId, extraction, receivedAt, 'Do you mean total, available, or occupied cold-storage capacity?');
+    if (extraction.intent === 'QUERY' && extraction.missingFields.includes('queryMetric')) return this.clarify(userId, extraction, receivedAt, 'Apakah yang dimaksud kapasitas total, tersedia, atau terpakai pada penyimpanan dingin?');
     if (extraction.intent === 'QUERY' && extraction.query) {
       const result = await executeTelegramQuery(this.database, userId, extraction.query);
       return { text: await composeTelegramQueryResponse(this.model, input, result.facts, result.fallback) };
@@ -275,14 +275,14 @@ export class TelegramOperations {
       return this.query(userId, broad as QueryKind, 0, input, resourceScope);
     }
     const reportReceivedAt = current?.kind === 'CLARIFY' ? new Date(current.receivedAt) : receivedAt;
-    if (extraction.intent !== 'REPORT') return { text: 'I can help with operational questions, supported reports, and revisions to existing plans.' };
+    if (extraction.intent !== 'REPORT') return { text: 'Saya dapat membantu menjawab pertanyaan operasional, mencatat laporan yang didukung, dan merevisi rencana yang ada.' };
     const parsed = await this.parseReport(userId, extraction, input, reportReceivedAt);
     if ('question' in parsed) {
       await this.savePending(userId, { kind: 'CLARIFY', slots: extraction, receivedAt: reportReceivedAt.toISOString() });
       return { text: parsed.question };
     }
     await this.savePending(userId, { kind: 'REPORT_CONFIRM', report: parsed.report, slots: extraction });
-    return { format: 'HTML', text: `<b>Report preview</b>\n\n<b>Reported condition</b>\n${html(this.reportText(parsed.report))}\n\n<b>Occurrence</b>\n${html(formatWIB(parsed.report.occurredAt))}\n\n<i>This report has not been recorded yet.</i>`, buttons: [[{ text: 'Confirm report', callback_data: 'report:confirm' }, { text: 'Cancel', callback_data: 'report:cancel' }]] };
+    return { format: 'HTML', text: `<b>Pratinjau laporan</b>\n\n<b>Kondisi yang dilaporkan</b>\n${html(this.reportText(parsed.report))}\n\n<b>Waktu kejadian</b>\n${html(formatWIB(parsed.report.occurredAt))}\n\n<i>Laporan ini belum dicatat.</i>`, buttons: [[{ text: 'Konfirmasi laporan', callback_data: 'report:confirm' }, { text: 'Batal', callback_data: 'report:cancel' }]] };
   }
 
   private async resolvePlan(userId: bigint, reference: string) {
@@ -293,7 +293,7 @@ export class TelegramOperations {
   private async exactQuery(userId: bigint, input: string, extraction: TelegramExtraction): Promise<TelegramReply | null> {
     if (/\b(how many|count|jumlah)\b.*\bbatches?\b|\bbatches?\b.*\b(how many|count|jumlah)\b/i.test(input)) {
       const count = await this.database.batch.count({ where: { userId, deletedAt: null } });
-      return { text: `${count} batch${count === 1 ? '' : 'es'}.` };
+      return { text: `${count} batch.` };
     }
     const batches = await this.database.batch.findMany({
       where: { userId, deletedAt: null },
@@ -303,15 +303,15 @@ export class TelegramOperations {
     const batch = extraction.entityType === 'batch' ? batches.find((item) => item.code.toLowerCase() === lowered) : undefined;
     if (batch) {
       const sensor = batch.sensorSessions[0]?.sensor;
-      return { text: `${batch.code}: ${batch.status}\nTemperature: ${batch.currentTemperatureC === null ? 'unknown' : `${batch.currentTemperatureC.toFixed(1)} C`}\nQuality age: ${batch.equivalentQualityAgeDays === null ? 'unknown' : `${batch.equivalentQualityAgeDays.toFixed(1)} days`}\nRemaining quality: ${batch.remainingQualityWindowDays === null ? 'unknown' : `${batch.remainingQualityWindowDays.toFixed(1)} days`}\nSensor: ${sensor ? `${sensor.code} (${sensor.status})` : 'none'}` };
+      return { text: `${batch.code}: ${batch.status}\nSuhu: ${batch.currentTemperatureC === null ? 'tidak diketahui' : `${batch.currentTemperatureC.toFixed(1)} C`}\nUmur mutu: ${batch.equivalentQualityAgeDays === null ? 'tidak diketahui' : `${batch.equivalentQualityAgeDays.toFixed(1)} hari`}\nSisa mutu: ${batch.remainingQualityWindowDays === null ? 'tidak diketahui' : `${batch.remainingQualityWindowDays.toFixed(1)} hari`}\nSensor: ${sensor ? `${sensor.code} (${sensor.status})` : 'tidak ada'}` };
     }
     if (/\b(current|active)\s+plan\b|\bplan\b.*\b(current|active)\b/i.test(input)) {
       const list = await this.plans.list(userId);
       const matches = list.activePlans;
-      if (!matches.length) return { text: 'There are no active plans right now.' };
+      if (!matches.length) return { text: 'Saat ini tidak ada rencana aktif.' };
       const lines = matches.flatMap((plan) => {
         const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
-        return [`Plan v${plan.version} ACTIVE: ${reason}`, ...(telegramPlanTimingText(plan) ? [telegramPlanTimingText(plan)] : []), ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)];
+        return [`Rencana v${plan.version} ACTIVE: ${reason}`, ...(telegramPlanTimingText(plan) ? [telegramPlanTimingText(plan)] : []), ...plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `#${step.sequence} ${step.actionType} ${step.batch?.code ?? 'kendaraan'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} pada ${formatWIB(step.scheduledAt)}`)];
       });
       return { text: lines.join('\n') };
     }
@@ -319,13 +319,13 @@ export class TelegramOperations {
     if (planReference) {
       const list = await this.plans.list(userId);
       const plan = resolvePlanReference([...list.activePlans, ...list.proposedPlans, ...list.history], planReference);
-      return plan ? { text: proposalText(plan).replace(' proposal', ` ${plan.status}`) } : { text: 'I could not find that plan.' };
+      return plan ? { text: proposalText(plan).replace('Usulan rencana', `Rencana`).replace(`v${plan.version}`, `v${plan.version} ${plan.status}`) } : { text: 'Rencana tersebut tidak ditemukan.' };
     }
     const sensors = await this.database.sensor.findMany({ where: { userId, deletedAt: null }, select: { code: true, status: true, provisioningStatus: true, lastSeenAt: true, sessions: { where: { status: 'ACTIVE' }, take: 1, select: { batch: { select: { code: true } }, lastSyncedAt: true } } } });
     const sensor = extraction.entityType === 'sensor' ? sensors.find((item) => item.code.toLowerCase() === lowered) : undefined;
     if (sensor) {
       const session = sensor.sessions[0];
-      return { text: `${sensor.code}: ${sensor.status}, ${sensor.provisioningStatus}\nBatch: ${session?.batch.code ?? 'unassigned'}\nLast seen: ${formatWIB(sensor.lastSeenAt)}\nLast synced: ${formatWIB(session?.lastSyncedAt)}` };
+      return { text: `${sensor.code}: ${sensor.status}, ${sensor.provisioningStatus}\nBatch: ${session?.batch.code ?? 'belum ditetapkan'}\nTerakhir terlihat: ${formatWIB(sensor.lastSeenAt)}\nTerakhir disinkronkan: ${formatWIB(session?.lastSyncedAt)}` };
     }
     if (extraction.entityType === 'vehicle' || extraction.entityType === 'storage' || extraction.entityType === 'destination') {
       const [vehicles, storages, destinations] = await Promise.all([
@@ -334,11 +334,11 @@ export class TelegramOperations {
         this.database.destination.findMany({ where: { userId }, select: { name: true, status: true } }),
       ]);
       const vehicle = extraction.entityType === 'vehicle' ? vehicles.find((item) => item.code.toLowerCase() === lowered) : undefined;
-      if (vehicle) return { text: `Truck ${vehicle.code}: ${vehicle.operationalStatus}${vehicle.delayMinutes ? `, delayed ${vehicle.delayMinutes} minutes` : ', no delay'}` };
+      if (vehicle) return { text: `Truk ${vehicle.code}: ${vehicle.operationalStatus}${vehicle.delayMinutes ? `, terlambat ${vehicle.delayMinutes} menit` : ', tidak terlambat'}` };
       const storage = extraction.entityType === 'storage' ? storages.find((item) => item.name.toLowerCase() === lowered) : undefined;
-      if (storage) return { text: `Storage ${storage.name}: ${storage.operationalStatus}, ${Math.max(0, storage.capacityKg - storage.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free` };
+      if (storage) return { text: `Penyimpanan ${storage.name}: ${storage.operationalStatus}, ${Math.max(0, storage.capacityKg - storage.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))} kg tersedia` };
       const destination = extraction.entityType === 'destination' ? destinations.find((item) => item.name.toLowerCase() === lowered) : undefined;
-      if (destination) return { text: `Destination ${destination.name}: ${destination.status}` };
+      if (destination) return { text: `Tujuan ${destination.name}: ${destination.status}` };
     }
     return null;
   }
@@ -347,16 +347,17 @@ export class TelegramOperations {
     const rows = await this.queryRows(userId, kind, resourceScope);
     const start = page * pageSize;
     const shown = rows.slice(start, start + pageSize);
-    const text = shown.length ? `${kind[0]?.toUpperCase()}${kind.slice(1)} (${start + 1}-${start + shown.length} of ${rows.length})\n${shown.join('\n')}` : `No ${kind} found right now.`;
+    const labels: Record<QueryKind, string> = { batches: 'Batch', plans: 'Rencana', steps: 'Langkah', alerts: 'Peringatan', sensors: 'Sensor', resources: 'Sumber daya' };
+    const text = shown.length ? `${labels[kind]} (${start + 1}-${start + shown.length} dari ${rows.length})\n${shown.join('\n')}` : `${labels[kind]} tidak ditemukan saat ini.`;
     const composed = await composeTelegramQueryResponse(this.model, question, { kind, range: shown.length ? { from: start + 1, to: start + shown.length, total: rows.length } : null, rows: shown }, text);
     const scopeSuffix = kind === 'resources' && resourceScope ? `:${resourceScope}` : '';
-    return { text: composed, ...(start + pageSize < rows.length ? { buttons: [[{ text: 'Show more', callback_data: `more:${kind}:${page + 1}${scopeSuffix}` }]] } : {}) };
+    return { text: composed, ...(start + pageSize < rows.length ? { buttons: [[{ text: 'Tampilkan lebih banyak', callback_data: `more:${kind}:${page + 1}${scopeSuffix}` }]] } : {}) };
   }
 
   private async queryRows(userId: bigint, kind: QueryKind, resourceScope?: ResourceScope): Promise<string[]> {
-    if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, ${item.remainingQualityWindowDays.toFixed(1)} days remaining`}`));
-    if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, last seen ${formatWIB(item.lastSeenAt)}`));
-    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, structuredData: true, occurredAt: true } }).then((items) => items.map((item) => { const data = record(item.structuredData); const alert = record(data?.alert); return `${item.type}: ${typeof alert?.description === 'string' ? alert.description : item.rawMessage ?? 'Active operational alert'} (${formatWIB(item.occurredAt)})`; }));
+    if (kind === 'batches') return this.database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { receivedAt: 'desc' }, select: { code: true, status: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}${item.remainingQualityWindowDays === null ? '' : `, tersisa ${item.remainingQualityWindowDays.toFixed(1)} hari`}`));
+    if (kind === 'sensors') return this.database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, lastSeenAt: true } }).then((items) => items.map((item) => `${item.code}: ${item.status}, terakhir terlihat ${formatWIB(item.lastSeenAt)}`));
+    if (kind === 'alerts') return this.database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, rawMessage: true, structuredData: true, occurredAt: true } }).then((items) => items.map((item) => { const data = record(item.structuredData); const alert = record(data?.alert); return `${item.type}: ${typeof alert?.description === 'string' ? alert.description : item.rawMessage ?? 'Peringatan operasional aktif'} (${formatWIB(item.occurredAt)})`; }));
     if (kind === 'resources') {
       const [vehicles, storages, destinations] = await Promise.all([
         this.database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' } }),
@@ -364,9 +365,9 @@ export class TelegramOperations {
         this.database.destination.findMany({ where: { userId }, orderBy: { name: 'asc' } }),
       ]);
       const rows = {
-        vehicle: vehicles.map((item) => `Truck ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, delayed ${item.delayMinutes}m` : ''}`),
-        storage: storages.map((item) => `Storage ${item.name}: ${item.operationalStatus}, ${Math.max(0, item.capacityKg - item.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))}kg free`),
-        destination: destinations.map((item) => `Destination ${item.name}: ${item.status}`),
+        vehicle: vehicles.map((item) => `Truk ${item.code}: ${item.operationalStatus}${item.delayMinutes ? `, terlambat ${item.delayMinutes} menit` : ''}`),
+        storage: storages.map((item) => `Penyimpanan ${item.name}: ${item.operationalStatus}, ${Math.max(0, item.capacityKg - item.currentBatches.reduce((sum, batch) => sum + batch.weightKg, 0))} kg tersedia`),
+        destination: destinations.map((item) => `Tujuan ${item.name}: ${item.status}`),
       };
       return resourceScope ? rows[resourceScope] : [...rows.vehicle, ...rows.storage, ...rows.destination];
     }
@@ -376,7 +377,7 @@ export class TelegramOperations {
       const reason = plan.summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, (match) => formatWIB(match));
       return `v${plan.version} ${plan.status}${plan.timing.status === 'DELAYED' ? `, DELAYED ${duration(plan.timing.delayedBySeconds)}` : ''}: ${plan.batches.map((batch) => batch.code).join(', ')} - ${reason}`;
     });
-    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch?.code ?? 'vehicle'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} at ${formatWIB(step.scheduledAt)}`)).sort();
+    return plans.flatMap((plan) => plan.steps.filter((step) => step.status === 'UPCOMING').map((step) => `v${plan.version} #${step.sequence}: ${step.actionType} ${step.batch?.code ?? 'kendaraan'}${step.resources.length ? ` -> ${step.resources.map((resource) => resource.name).join(' -> ')}` : ''} pada ${formatWIB(step.scheduledAt)}`)).sort();
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {
@@ -395,44 +396,44 @@ export class TelegramOperations {
     const make = (kind: ReportKind, item: { id: bigint }, entityName: string, value: Report['value']): { report: Report } => ({ report: { kind, entityId: item.id.toString(), entityName, value, occurredAt: at, rawMessage: text, ...(extraction.planRef ? { planRef: extraction.planRef } : {}) } });
     const vehicles = extraction.entityType === 'vehicle' ? matches(resources[0], (item) => item.code) : [];
     if (extraction.status === 'DELAYED' || extraction.delayMinutes !== null) {
-      if (vehicles.length !== 1) return { question: vehicles.length ? 'Which truck did you mean?' : 'Which configured truck is delayed?' };
-      if (extraction.delayMinutes === null) return { question: 'How many minutes is the truck delayed?' };
+      if (vehicles.length !== 1) return { question: vehicles.length ? 'Truk mana yang dimaksud?' : 'Truk terkonfigurasi mana yang terlambat?' };
+      if (extraction.delayMinutes === null) return { question: 'Berapa menit keterlambatan truk tersebut?' };
       return make('VEHICLE_DELAY', vehicles[0]!, vehicles[0]!.code, extraction.delayMinutes);
     }
     if (extraction.entityType === 'vehicle') {
-      if (vehicles.length !== 1) return { question: 'Which configured truck do you mean?' };
-      if (!unavailable && !recovered) return { question: 'Is the truck unavailable or recovered?' };
+      if (vehicles.length !== 1) return { question: 'Truk terkonfigurasi mana yang dimaksud?' };
+      if (!unavailable && !recovered) return { question: 'Apakah truk tidak tersedia atau sudah pulih?' };
       return make('VEHICLE_STATUS', vehicles[0]!, vehicles[0]!.code, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
     }
     const storages = extraction.entityType === 'storage' ? matches(resources[1], (item) => item.name) : [];
     if (extraction.entityType === 'storage') {
-      if (storages.length !== 1) return { question: 'Which configured cold storage do you mean?' };
-      if (!unavailable && !recovered) return { question: 'Is the cold storage unavailable or recovered?' };
+      if (storages.length !== 1) return { question: 'Penyimpanan dingin terkonfigurasi mana yang dimaksud?' };
+      if (!unavailable && !recovered) return { question: 'Apakah penyimpanan dingin tidak tersedia atau sudah pulih?' };
       return make('STORAGE_STATUS', storages[0]!, storages[0]!.name, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
     }
     const destinations = extraction.entityType === 'destination' ? matches(resources[2], (item) => item.name) : [];
     if (extraction.entityType === 'destination') {
-      if (destinations.length !== 1) return { question: 'Which configured destination do you mean?' };
-      if (!unavailable && !recovered) return { question: 'Is the destination unavailable or recovered?' };
+      if (destinations.length !== 1) return { question: 'Tujuan terkonfigurasi mana yang dimaksud?' };
+      if (!unavailable && !recovered) return { question: 'Apakah tujuan tidak tersedia atau sudah pulih?' };
       return make('DESTINATION_STATUS', destinations[0]!, destinations[0]!.name, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
     }
     const batches = extraction.entityType === 'batch' ? matches(resources[3], (item) => item.code) : [];
     if (extraction.entityType === 'batch') {
-      if (batches.length !== 1) return { question: 'Which active batch do you mean?' };
-      if (!extraction.status) return { question: 'Is the batch entering inspection hold or recovering?' };
+      if (batches.length !== 1) return { question: 'Batch aktif mana yang dimaksud?' };
+      if (!extraction.status) return { question: 'Apakah batch memasuki penahanan inspeksi atau sedang pulih?' };
       return make('BATCH_STATUS', batches[0]!, batches[0]!.code, recovered ? 'ACTIVE' : 'INSPECTION_HOLD');
     }
     const sensors = extraction.entityType === 'sensor' ? matches(resources[4], (item) => item.code) : [];
     if (extraction.entityType === 'sensor') {
-      if (sensors.length !== 1) return { question: 'Which configured sensor do you mean?' };
-      if (!extraction.status) return { question: 'Is the sensor in error or recovered?' };
+      if (sensors.length !== 1) return { question: 'Sensor terkonfigurasi mana yang dimaksud?' };
+      if (!extraction.status) return { question: 'Apakah sensor mengalami kesalahan atau sudah pulih?' };
       return make('SENSOR_STATUS', sensors[0]!, sensors[0]!.code, recovered ? 'AVAILABLE' : 'ERROR');
     }
-    return { question: 'I can query batches, plans, next steps, alerts, sensors, or resources. For a report, include the configured name/code and whether it is delayed, unavailable, affected, or recovered.' };
+    return { question: 'Saya dapat mencari batch, rencana, langkah berikutnya, peringatan, sensor, atau sumber daya. Untuk laporan, sertakan nama/kode terkonfigurasi dan apakah kondisinya terlambat, tidak tersedia, terdampak, atau sudah pulih.' };
   }
 
   private reportText(report: Report) {
-    if (report.kind === 'VEHICLE_DELAY') return `${report.entityName} delayed ${report.value} minutes`;
+    if (report.kind === 'VEHICLE_DELAY') return `${report.entityName} terlambat ${report.value} menit`;
     return `${report.entityName} -> ${report.value}`;
   }
 
@@ -445,7 +446,7 @@ export class TelegramOperations {
     if (current?.kind === 'REPLAN_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction, current.triggerEventId ? BigInt(current.triggerEventId) : undefined);
     if (current?.kind === 'EDIT_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction);
     if (current?.kind === 'REPLAN' && current.planIds.length === 1) return this.revise(userId, BigInt(current.planIds[0]!), current.instruction, BigInt(current.eventId));
-    if (current?.kind === 'REPLAN') return { text: 'More than one active plan is affected. Please select the plan to revise using the buttons above.' };
+    if (current?.kind === 'REPLAN') return { text: 'Lebih dari satu rencana aktif terdampak. Pilih rencana yang akan direvisi melalui tombol di atas.' };
     if (current?.kind === 'PROPOSAL') {
       await this.savePending(userId, { kind: 'APPROVE_CONFIRM', planId: current.planId });
       return this.approvalConfirmation(current.planId);
@@ -453,37 +454,37 @@ export class TelegramOperations {
     if (current?.kind === 'APPROVE_CONFIRM') {
       return this.approve(userId, current.planId);
     }
-    return { text: 'There is no pending action to confirm right now.' };
+    return { text: 'Saat ini tidak ada tindakan tertunda untuk dikonfirmasi.' };
   }
 
   private callbackLabel(callback: string) {
-    if (callback === 'report:confirm') return 'Confirm report';
-    if (callback === 'report:cancel') return 'Cancel report';
-    if (callback === 'replan:confirm') return 'Confirm replan';
-    if (callback === 'replan:cancel') return 'Cancel replan';
-    if (callback === 'edit:confirm') return 'Confirm edit';
-    if (callback === 'edit:cancel') return 'Cancel edit';
-    if (callback === 'proposal:cancel') return 'Cancel approval';
-    if (callback.startsWith('approve-final:')) return 'Confirm plan approval';
-    if (callback.startsWith('approve:')) return 'Approve proposal';
-    if (callback.startsWith('dismiss:')) return 'Dismiss proposal';
-    if (callback.startsWith('replan:')) return 'Select plan revision';
-    if (callback.startsWith('more:')) return 'Show more';
+    if (callback === 'report:confirm') return 'Konfirmasi laporan';
+    if (callback === 'report:cancel') return 'Batalkan laporan';
+    if (callback === 'replan:confirm') return 'Konfirmasi perencanaan ulang';
+    if (callback === 'replan:cancel') return 'Batalkan perencanaan ulang';
+    if (callback === 'edit:confirm') return 'Konfirmasi perubahan';
+    if (callback === 'edit:cancel') return 'Batalkan perubahan';
+    if (callback === 'proposal:cancel') return 'Batalkan persetujuan';
+    if (callback.startsWith('approve-final:')) return 'Konfirmasi persetujuan rencana';
+    if (callback.startsWith('approve:')) return 'Setujui usulan';
+    if (callback.startsWith('dismiss:')) return 'Tolak usulan';
+    if (callback.startsWith('replan:')) return 'Pilih revisi rencana';
+    if (callback.startsWith('more:')) return 'Tampilkan lebih banyak';
     return null;
   }
 
   private async callback(userId: bigint, callback: string, current: State | null): Promise<TelegramReply> {
     const more = /^more:(batches|plans|steps|alerts|sensors|resources):(\d+)(?::(vehicle|storage|destination))?$/.exec(callback);
-    if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Show more', more[3] as ResourceScope | undefined);
-    if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Report canceled. No operational state was changed.' }; }
+    if (more?.[1] && more[2]) return this.query(userId, more[1] as QueryKind, Number(more[2]), 'Tampilkan lebih banyak', more[3] as ResourceScope | undefined);
+    if (callback === 'report:cancel') { await this.clearPending(userId); return { text: 'Laporan dibatalkan. Tidak ada status operasional yang diubah.' }; }
     if (callback === 'report:confirm' && current?.kind === 'REPORT_CONFIRM') return this.confirmReport(userId, current.report);
-    if (callback === 'replan:cancel' && (current?.kind === 'REPLAN' || current?.kind === 'REPLAN_CONFIRM')) { await this.clearPending(userId); return { text: 'Replan canceled. No planner request was made.' }; }
-    if (callback === 'edit:cancel' && current?.kind === 'EDIT_CONFIRM') { await this.clearPending(userId); return { text: 'Edit canceled. No planner request was made.' }; }
+    if (callback === 'replan:cancel' && (current?.kind === 'REPLAN' || current?.kind === 'REPLAN_CONFIRM')) { await this.clearPending(userId); return { text: 'Perencanaan ulang dibatalkan. Tidak ada permintaan yang dikirim ke perencana.' }; }
+    if (callback === 'edit:cancel' && current?.kind === 'EDIT_CONFIRM') { await this.clearPending(userId); return { text: 'Perubahan dibatalkan. Tidak ada permintaan yang dikirim ke perencana.' }; }
     if (callback === 'replan:confirm' && current?.kind === 'REPLAN_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction, current.triggerEventId ? BigInt(current.triggerEventId) : undefined);
     if (callback === 'edit:confirm' && current?.kind === 'EDIT_CONFIRM') return this.revise(userId, BigInt(current.planId), current.instruction);
     if (callback.startsWith('replan:') && current?.kind === 'REPLAN') {
       const planId = callback.slice(7);
-      if (!current.planIds.includes(planId)) return { text: '⚠️ This action has expired.' };
+      if (!current.planIds.includes(planId)) return { text: '⚠️ Tindakan ini sudah kedaluwarsa.' };
       return this.revise(userId, BigInt(planId), current.instruction, BigInt(current.eventId));
     }
     if (callback.startsWith('approve:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
@@ -494,10 +495,10 @@ export class TelegramOperations {
       return this.approve(userId, current.planId);
     }
     if (callback.startsWith('dismiss:') && current?.kind === 'PROPOSAL' && callback.slice(8) === current.planId) {
-      const plan = await this.plans.dismiss(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `✅ Plan v${plan.version} was dismissed.` };
+      const plan = await this.plans.dismiss(userId, BigInt(current.planId)); await this.clearPending(userId); return { text: `✅ Rencana v${plan.version} ditolak.` };
     }
-    if (callback === 'proposal:cancel') { await this.clearPending(userId); return { text: 'Approval canceled. The proposal remains pending.' }; }
-    return { text: '⚠️ This action has expired. Please send your request again.' };
+    if (callback === 'proposal:cancel') { await this.clearPending(userId); return { text: 'Persetujuan dibatalkan. Usulan tetap tertunda.' }; }
+    return { text: '⚠️ Tindakan ini sudah kedaluwarsa. Silakan kirim ulang permintaan Anda.' };
   }
 
   private async confirmReport(userId: bigint, report: Report): Promise<TelegramReply> {
@@ -522,12 +523,12 @@ export class TelegramOperations {
       return transaction.operationalEvent.create({ data, select: { id: true } });
     });
     const affected = await this.database.plan.findMany({ where: { userId, status: 'ACTIVE', steps: { some: { status: 'UPCOMING', ...(report.kind.startsWith('VEHICLE') ? { vehicleId: entityId } : report.kind === 'STORAGE_STATUS' ? { coldStorageId: entityId } : report.kind === 'DESTINATION_STATUS' ? { destinationId: entityId } : report.kind === 'BATCH_STATUS' ? { batchId: entityId } : { batch: { sensorSessions: { some: { sensorId: entityId, status: 'ACTIVE' } } } }) } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
-    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { format: 'HTML', text: `✅ <b>Report recorded</b>\n\n${html(this.reportText(report))}\n\n<b>Plan impact</b>\nNo active plan has an affected upcoming step.` }; }
-    const instruction = `Revise future steps to account for this confirmed operational report: ${this.reportText(report)}.`;
+    if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { format: 'HTML', text: `✅ <b>Laporan dicatat</b>\n\n${html(this.reportText(report))}\n\n<b>Dampak pada rencana</b>\nTidak ada rencana aktif dengan langkah mendatang yang terdampak.` }; }
+    const instruction = `Revisi langkah mendatang untuk memperhitungkan laporan operasional yang telah dikonfirmasi ini: ${this.reportText(report)}.`;
     const assessments = await Promise.all(affected.map(async (plan) => ({ ...plan, errors: await this.plans.assess(userId, plan.id) })));
     await this.savePending(userId, { kind: 'REPLAN', eventId: event.id.toString(), planIds: affected.map((plan) => plan.id.toString()), instruction });
-    const assessmentText = assessments.map((plan) => `<b>V${plan.version}</b> · ${plan.errors.length ? 'Replanning recommended\nThe confirmed condition makes one or more upcoming steps infeasible under current operational constraints.' : 'Current plan remains feasible\nIts upcoming steps still satisfy current timing, resource, destination, and quality constraints.'}`).join('\n\n');
-    return { format: 'HTML', text: `✅ <b>Report recorded</b>\n\n${html(this.reportText(report))}\n\n<b>Plan impact</b>\n${assessmentText}\n\n<i>You can revise a plan even when it remains feasible.</i>`, buttons: [...affected.map((plan) => [{ text: assessments.find(({ id }) => id === plan.id)!.errors.length ? `Revise V${plan.version}` : `Replan V${plan.version} anyway`, callback_data: `replan:${plan.id}` }]), [{ text: 'Keep current plan', callback_data: 'replan:cancel' }]] };
+    const assessmentText = assessments.map((plan) => `<b>V${plan.version}</b> · ${plan.errors.length ? 'Perencanaan ulang disarankan\nKondisi yang dikonfirmasi membuat satu atau beberapa langkah mendatang tidak layak berdasarkan batasan operasional saat ini.' : 'Rencana saat ini tetap layak\nLangkah mendatangnya masih memenuhi batasan waktu, sumber daya, tujuan, dan mutu saat ini.'}`).join('\n\n');
+    return { format: 'HTML', text: `✅ <b>Laporan dicatat</b>\n\n${html(this.reportText(report))}\n\n<b>Dampak pada rencana</b>\n${assessmentText}\n\n<i>Anda tetap dapat merevisi rencana meskipun rencana tersebut masih layak.</i>`, buttons: [...affected.map((plan) => [{ text: assessments.find(({ id }) => id === plan.id)!.errors.length ? `Revisi V${plan.version}` : `Tetap rencanakan ulang V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Pertahankan rencana saat ini', callback_data: 'replan:cancel' }]] };
   }
 
   private eventType(kind: ReportKind): 'TRUCK_DELAY' | 'STORAGE_CHANGE' | 'DESTINATION_CHANGE' | 'INSPECTION_HOLD' | 'OTHER' {
@@ -542,25 +543,25 @@ export class TelegramOperations {
     const result = await this.plans.revise(userId, planId, instruction, triggerEventId);
     if (result.status === 'NO_VALID_PROPOSAL_FOUND') {
       await this.clearPending(userId);
-      return { text: `I could not find a valid revision proposal: ${result.reason}\n\nThe active plan remains unchanged.` };
+      return { text: `Usulan revisi yang valid tidak ditemukan: ${result.reason}\n\nRencana aktif tetap tidak berubah.` };
     }
     await this.savePending(userId, { kind: 'PROPOSAL', planId: result.proposal.id });
-    return { format: 'HTML', text: `<b>Revision proposal · V${result.proposal.version}</b>\n\n${html(proposalText(result.proposal).split('\n').slice(1).join('\n'))}\n\n<i>The active plan remains unchanged until final approval.</i>\nReply with a natural-language edit or choose an action.`, buttons: [[{ text: 'Approve', callback_data: `approve:${result.proposal.id}` }, { text: 'Dismiss', callback_data: `dismiss:${result.proposal.id}` }]] };
+    return { format: 'HTML', text: `<b>Usulan revisi · V${result.proposal.version}</b>\n\n${html(proposalText(result.proposal).split('\n').slice(1).join('\n'))}\n\n<i>Rencana aktif tetap tidak berubah sampai persetujuan akhir.</i>\nBalas dengan perubahan dalam bahasa sehari-hari atau pilih tindakan.`, buttons: [[{ text: 'Setujui', callback_data: `approve:${result.proposal.id}` }, { text: 'Tolak', callback_data: `dismiss:${result.proposal.id}` }]] };
   }
 
   private approvalConfirmation(planId: string): TelegramReply {
-    return { format: 'HTML', text: '<b>Final confirmation</b>\n\nActivate this proposal and supersede its active predecessor?\n\n<i>Current operational facts will be revalidated before activation.</i>', buttons: [[{ text: 'Yes, approve', callback_data: `approve-final:${planId}` }, { text: 'Cancel', callback_data: 'proposal:cancel' }]] };
+    return { format: 'HTML', text: '<b>Konfirmasi akhir</b>\n\nAktifkan usulan ini dan gantikan rencana aktif sebelumnya?\n\n<i>Fakta operasional saat ini akan divalidasi ulang sebelum aktivasi.</i>', buttons: [[{ text: 'Ya, setujui', callback_data: `approve-final:${planId}` }, { text: 'Batal', callback_data: 'proposal:cancel' }]] };
   }
 
   private async approve(userId: bigint, planId: string): Promise<TelegramReply> {
     try {
       const plan = await this.plans.approve(userId, BigInt(planId));
       await this.clearPending(userId);
-      return { format: 'HTML', text: `✅ <b>Plan activated</b>\n\nPlan <b>V${plan.version}</b> is now active. Its predecessor has been superseded.` };
+      return { format: 'HTML', text: `✅ <b>Rencana diaktifkan</b>\n\nRencana <b>V${plan.version}</b> kini aktif. Rencana sebelumnya telah digantikan.` };
     } catch (error) {
       if (!(error instanceof ConflictError)) throw error;
       await this.clearPending(userId);
-      return { format: 'HTML', text: '⚠️ <b>Proposal expired</b>\n\nOperational conditions changed, so this proposal is no longer valid. The active plan remains unchanged.\n\nPlease request a new revision using the latest facts.' };
+      return { format: 'HTML', text: '⚠️ <b>Usulan kedaluwarsa</b>\n\nKondisi operasional berubah sehingga usulan ini tidak lagi valid. Rencana aktif tetap tidak berubah.\n\nSilakan minta revisi baru berdasarkan fakta terbaru.' };
     }
   }
 

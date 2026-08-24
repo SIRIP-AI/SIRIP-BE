@@ -11,6 +11,7 @@ import { FishingTripRepository } from '../fishing-trips/fishing-trip-repository'
 import { createFishingTripsRouter } from '../fishing-trips/fishing-trips-router';
 import { createDemoRouter } from '../demo/demo-router';
 import { DemoService } from '../demo/demo-service';
+import { TelemetryBlocklist } from '../demo/telemetry-blocklist';
 import { OverviewRepository } from '../overview/overview-repository';
 import { createOverviewRouter } from '../overview/overview-router';
 import { PlanRepository } from '../plans/plan-repository';
@@ -32,7 +33,7 @@ export function createApp(database: Database, telegram: TelegramService) {
   app.use((request, response, next) => {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Access-Control-Allow-Credentials', 'true');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-sensor-api-key');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     if (request.method === 'OPTIONS') return response.sendStatus(204);
     next();
@@ -42,9 +43,10 @@ export function createApp(database: Database, telegram: TelegramService) {
   app.use('/api/integrations/telegram', createTelegramWebhookRouter(telegram));
   app.use('/api/auth', createAuthRouter(auth));
   const telemetry = new TelemetryRepository(database, telegram);
-  app.use('/api/telemetry', createTelemetryRouter(telemetry));
+  const telemetryBlocklist = new TelemetryBlocklist();
+  app.use('/api/telemetry', createTelemetryRouter(telemetry, telemetryBlocklist));
   app.use('/api', requireAuth(auth));
-  app.use('/api/debug', createDemoRouter(new DemoService(database, telemetry)));
+  app.use('/api/debug', createDemoRouter(new DemoService(database, telemetry, telemetryBlocklist)));
   app.use('/api/integrations/telegram', createTelegramAccountRouter(telegram));
   app.use('/api', createOverviewRouter(new OverviewRepository(database)), createResourcesRouter(new ResourceRepository(database)));
   app.use('/api/fishing-trips', createFishingTripsRouter(new FishingTripRepository(database)));
@@ -55,14 +57,14 @@ export function createApp(database: Database, telegram: TelegramService) {
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {
-      response.status(error.status).json({ error: error.message });
+      response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
       return;
     }
     if (error instanceof SyntaxError && 'status' in error && error.status === 400) {
-      response.status(400).json({ error: 'Request body must contain valid JSON' });
+      response.status(400).json({ error: 'Isi permintaan harus berisi JSON yang valid' });
       return;
     }
-    response.status(500).json({ error: 'Internal server error' });
+    response.status(500).json({ error: 'Kesalahan internal server' });
   };
   app.use(errorHandler);
 

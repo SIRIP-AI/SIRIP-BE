@@ -27,26 +27,31 @@ function quantity(value: number) {
 }
 
 function unit(metric: NonNullable<OperationalQuery['metric']>) {
-  if (metric === 'delayMinutes') return ' minutes';
-  if (metric === 'delayedBySeconds') return ' seconds';
-  if (metric === 'remainingQualityWindowDays') return ' days';
+  if (metric === 'delayMinutes') return ' menit';
+  if (metric === 'delayedBySeconds') return ' detik';
+  if (metric === 'remainingQualityWindowDays') return ' hari';
   return ' kg';
 }
 
 function plural(dataset: OperationalQuery['dataset']) {
-  if (dataset === 'batch') return 'batches';
-  if (dataset === 'storage') return 'storage locations';
-  return `${dataset}s`;
+  if (dataset === 'batch') return 'batch';
+  if (dataset === 'storage') return 'lokasi penyimpanan';
+  if (dataset === 'vehicle') return 'kendaraan';
+  if (dataset === 'destination') return 'tujuan';
+  if (dataset === 'plan') return 'rencana';
+  if (dataset === 'step') return 'langkah';
+  if (dataset === 'sensor') return 'sensor';
+  return 'peringatan';
 }
 
 function metricLabel(metric: NonNullable<OperationalQuery['metric']>) {
-  if (metric === 'capacityKg') return 'capacity';
-  if (metric === 'availableCapacityKg') return 'available capacity';
-  if (metric === 'occupiedCapacityKg') return 'occupied capacity';
-  if (metric === 'delayMinutes') return 'delay';
-  if (metric === 'delayedBySeconds') return 'plan delay';
-  if (metric === 'remainingQualityWindowDays') return 'remaining quality window';
-  return 'weight';
+  if (metric === 'capacityKg') return 'kapasitas';
+  if (metric === 'availableCapacityKg') return 'kapasitas tersedia';
+  if (metric === 'occupiedCapacityKg') return 'kapasitas terpakai';
+  if (metric === 'delayMinutes') return 'keterlambatan';
+  if (metric === 'delayedBySeconds') return 'keterlambatan rencana';
+  if (metric === 'remainingQualityWindowDays') return 'sisa jendela mutu';
+  return 'berat';
 }
 
 async function loadRows(database: Database, userId: bigint, dataset: OperationalQuery['dataset']): Promise<QueryRow[]> {
@@ -65,15 +70,15 @@ async function loadRows(database: Database, userId: bigint, dataset: Operational
   if (dataset === 'vehicle') return database.vehicle.findMany({ where: { userId }, orderBy: { code: 'asc' }, select: { code: true, capacityKg: true, operationalStatus: true, delayMinutes: true, planSteps: { where: { status: 'UPCOMING', plan: { userId, status: 'ACTIVE' } }, take: 1, select: { id: true } } } }).then((items) => items.map((item) => ({ label: item.code, status: item.operationalStatus === 'UNAVAILABLE' ? 'UNAVAILABLE' : item.planSteps.length ? 'ASSIGNED' : 'AVAILABLE', metrics: { capacityKg: item.capacityKg, delayMinutes: item.delayMinutes } })));
   if (dataset === 'destination') return database.destination.findMany({ where: { userId }, orderBy: { name: 'asc' }, select: { name: true, status: true } }).then((items) => items.map((item) => ({ label: item.name, status: item.status, metrics: {} })));
   if (dataset === 'batch') return database.batch.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true, weightKg: true, remainingQualityWindowDays: true } }).then((items) => items.map((item) => ({ label: item.code, status: item.status, metrics: { weightKg: item.weightKg, ...(item.remainingQualityWindowDays === null ? {} : { remainingQualityWindowDays: item.remainingQualityWindowDays }) } })));
-  if (dataset === 'plan') return database.plan.findMany({ where: { userId }, orderBy: { version: 'asc' }, select: { version: true, status: true, timingStatus: true, delayedBySeconds: true } }).then((items) => items.map((item) => ({ label: `Plan v${item.version}`, status: item.status, statuses: [item.timingStatus], metrics: { delayedBySeconds: item.delayedBySeconds } })));
-  if (dataset === 'step') return database.planStep.findMany({ where: { plan: { userId } }, orderBy: [{ plan: { version: 'asc' } }, { sequence: 'asc' }], select: { sequence: true, status: true, plan: { select: { version: true } } } }).then((items) => items.map((item) => ({ label: `Plan v${item.plan.version} step ${item.sequence}`, status: item.status, metrics: {} })));
+  if (dataset === 'plan') return database.plan.findMany({ where: { userId }, orderBy: { version: 'asc' }, select: { version: true, status: true, timingStatus: true, delayedBySeconds: true } }).then((items) => items.map((item) => ({ label: `Rencana v${item.version}`, status: item.status, statuses: [item.timingStatus], metrics: { delayedBySeconds: item.delayedBySeconds } })));
+  if (dataset === 'step') return database.planStep.findMany({ where: { plan: { userId } }, orderBy: [{ plan: { version: 'asc' } }, { sequence: 'asc' }], select: { sequence: true, status: true, plan: { select: { version: true } } } }).then((items) => items.map((item) => ({ label: `Rencana v${item.plan.version} langkah ${item.sequence}`, status: item.status, metrics: {} })));
   if (dataset === 'sensor') return database.sensor.findMany({ where: { userId, deletedAt: null }, orderBy: { code: 'asc' }, select: { code: true, status: true } }).then((items) => items.map((item) => ({ label: item.code, status: item.status, metrics: {} })));
-  return database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, occurredAt: true } }).then((items) => items.map((item) => ({ label: `${item.type} at ${item.occurredAt.toISOString()}`, status: 'ACTIVE', metrics: {} })));
+  return database.operationalEvent.findMany({ where: { userId, structuredData: { path: ['alert', 'active'], equals: true } }, orderBy: { occurredAt: 'desc' }, select: { type: true, occurredAt: true } }).then((items) => items.map((item) => ({ label: `${item.type} pada ${item.occurredAt.toISOString()}`, status: 'ACTIVE', metrics: {} })));
 }
 
 export async function executeTelegramQuery(database: Database, userId: bigint, query: OperationalQuery) {
   if (query.metric && !metricsByDataset[query.dataset].includes(query.metric)) {
-    return { facts: { error: 'unsupported_metric', dataset: query.dataset, metric: query.metric }, fallback: `That metric is not available for ${plural(query.dataset)}.` };
+    return { facts: { error: 'unsupported_metric', dataset: query.dataset, metric: query.metric }, fallback: `Metrik tersebut tidak tersedia untuk ${plural(query.dataset)}.` };
   }
   let rows = await loadRows(database, userId, query.dataset);
   const status = query.status?.toUpperCase();
@@ -83,7 +88,7 @@ export async function executeTelegramQuery(database: Database, userId: bigint, q
     return value !== undefined && compare(value, query.operator!, query.threshold!);
   });
   if (query.operation === 'COUNT') {
-    const fallback = rows.length === 0 ? `No matching ${plural(query.dataset)} found.` : `Found ${rows.length} ${rows.length === 1 ? query.dataset : plural(query.dataset)}.`;
+    const fallback = rows.length === 0 ? `${plural(query.dataset)} yang sesuai tidak ditemukan.` : `Ditemukan ${rows.length} ${plural(query.dataset)}.`;
     return { facts: { dataset: query.dataset, operation: query.operation, status: query.status, comparison: query.metric ? { metric: query.metric, operator: query.operator, threshold: query.threshold } : null, count: rows.length }, fallback };
   }
   if (query.operation === 'SUM' && query.metric) {
@@ -92,6 +97,6 @@ export async function executeTelegramQuery(database: Database, userId: bigint, q
     return { facts: { dataset: query.dataset, operation: query.operation, metric: query.metric, status: query.status, total }, fallback };
   }
   const displayed = rows.slice(0, 5).map((row) => ({ label: row.label, status: row.status, ...(query.metric && row.metrics[query.metric] !== undefined ? { value: row.metrics[query.metric], metric: query.metric } : {}) }));
-  const fallback = rows.length ? `${plural(query.dataset)[0]!.toUpperCase()}${plural(query.dataset).slice(1)} (1-${displayed.length} of ${rows.length})\n${displayed.map((row) => `${row.label}: ${row.status ?? 'unknown'}${'value' in row ? `, ${quantity(row.value!)}${unit(row.metric!)}` : ''}`).join('\n')}` : `No ${plural(query.dataset)} found.`;
+  const fallback = rows.length ? `${plural(query.dataset)[0]!.toUpperCase()}${plural(query.dataset).slice(1)} (1-${displayed.length} dari ${rows.length})\n${displayed.map((row) => `${row.label}: ${row.status ?? 'tidak diketahui'}${'value' in row ? `, ${quantity(row.value!)}${unit(row.metric!)}` : ''}`).join('\n')}` : `${plural(query.dataset)} tidak ditemukan.`;
   return { facts: { dataset: query.dataset, operation: query.operation, total: rows.length, rows: displayed }, fallback };
 }

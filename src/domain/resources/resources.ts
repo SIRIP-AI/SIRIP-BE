@@ -55,15 +55,16 @@ export type SensorProvisioningStatus = typeof sensorProvisioningStatuses[number]
 
 export const sensorOfflineThresholdMs = 20 * 60 * 1000;
 
-export const connectivityStatuses = ['ONLINE', 'OFFLINE', 'ERROR', 'NEVER_CONNECTED', 'UNASSIGNED'] as const;
+export const connectivityStatuses = ['ONLINE', 'SYNCING', 'OFFLINE', 'ERROR', 'NEVER_CONNECTED', 'UNASSIGNED'] as const;
 export type ConnectivityStatus = typeof connectivityStatuses[number];
 
-export function connectivityStatus(sensor: { status: string; lastSeenAt: Date | null } | null | undefined, now: Date, lastSignalAt = sensor?.lastSeenAt ?? null): ConnectivityStatus {
+export function connectivityStatus(sensor: { status: string; lastSeenAt: Date | null; pendingReadingCount?: number } | null | undefined, now: Date, lastSignalAt = sensor?.lastSeenAt ?? null): ConnectivityStatus {
   if (!sensor) return 'UNASSIGNED';
   if (sensor.status === 'ERROR') return 'ERROR';
   if (sensor.status === 'OFFLINE') return 'OFFLINE';
   if (!lastSignalAt) return 'NEVER_CONNECTED';
-  return now.getTime() - lastSignalAt.getTime() > sensorOfflineThresholdMs ? 'OFFLINE' : 'ONLINE';
+  if (now.getTime() - lastSignalAt.getTime() > sensorOfflineThresholdMs) return 'OFFLINE';
+  return sensor.pendingReadingCount ? 'SYNCING' : 'ONLINE';
 }
 
 export type SensorInput = {

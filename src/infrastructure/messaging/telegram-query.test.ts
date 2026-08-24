@@ -21,7 +21,7 @@ test('filtered storage count uses authoritative batch occupancy and user scope',
 
   assert.deepEqual(memory.where(), { userId: 9n });
   assert.equal((result.facts as { count: number }).count, 1);
-  assert.equal(result.fallback, 'Found 1 storage.');
+  assert.equal(result.fallback, 'Ditemukan 1 lokasi penyimpanan.');
 });
 
 test('storage totals sum computed occupied capacity', async () => {
@@ -33,7 +33,7 @@ test('storage totals sum computed occupied capacity', async () => {
   const result = await executeTelegramQuery(memory.database, 9n, { dataset: 'storage', operation: 'SUM', metric: 'occupiedCapacityKg', operator: null, threshold: null, status: null });
 
   assert.equal((result.facts as { total: number }).total, 525.5);
-  assert.equal(result.fallback, 'Total occupied capacity: 525.5 kg.');
+  assert.equal(result.fallback, 'Total kapasitas terpakai: 525.5 kg.');
 });
 
 test('ambiguous storage threshold is a valid clarification extraction', () => {

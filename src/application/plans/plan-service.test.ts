@@ -40,7 +40,7 @@ test('revising a proposal keeps its scope and requests transactional replacement
     dismissProposal: async () => view('DISMISSED'),
     completeStep: async () => view('ACTIVE'),
   };
-  const proposal: AiPlanProposal = { summary: 'Revised', steps: [step], timing: { status: 'DELAYED', delayedBySeconds: 900, reasons: [{ code: 'PLAN_DEADLINE_MISSED', severity: 'WARNING', batchId: '7', vehicleId: null, destinationId: '3', targetAt: deadline, feasibleAt: '2026-08-25T12:15:00.000Z', delaySeconds: 900, message: 'B-7 arrives 15 minutes after the plan deadline.' }] } };
+  const proposal: AiPlanProposal = { summary: 'Revised', steps: [step], timing: { status: 'DELAYED', delayedBySeconds: 900, reasons: [{ code: 'PLAN_DEADLINE_MISSED', severity: 'WARNING', batchId: '7', vehicleId: null, destinationId: '3', targetAt: deadline, feasibleAt: '2026-08-25T12:15:00.000Z', delaySeconds: 900, message: 'B-7 tiba 15 menit setelah tenggat rencana.' }] } };
   const service = new PlanService(repository, async (request) => {
     generationInstruction = request.instruction;
     generationDeadline = request.deadline;

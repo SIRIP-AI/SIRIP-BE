@@ -7,16 +7,16 @@ import { composeTelegramQueryResponse } from './telegram-response-composer';
 
 test('query composer receives only question and validated facts and unwraps a response envelope', async () => {
   let captured: BaseMessage[] = [];
-  const model = () => ({ invoke: async (messages: BaseMessage[]) => { captured = messages; return new AIMessage('{"text":"TR-01 is available."}'); } }) as TelegramInterpretationModel;
+  const model = () => ({ invoke: async (messages: BaseMessage[]) => { captured = messages; return new AIMessage('{"text":"TR-01 tersedia."}'); } }) as TelegramInterpretationModel;
   const text = await composeTelegramQueryResponse(model, 'Truck status?', { code: 'TR-01', status: 'AVAILABLE' }, 'fallback');
-  assert.equal(text, 'TR-01 is available.');
+  assert.equal(text, 'TR-01 tersedia.');
   assert.equal(captured.length, 2);
   const instructions = String(captured[0]?.content);
-  assert.match(instructions, /warm, friendly, professional plain-text/);
-  assert.match(instructions, /at most one relevant emoji/);
-  assert.match(instructions, /Preserve every ID, code, status meaning, measurement, timestamp, unknown value, pagination range, and total/);
-  assert.match(instructions, /render enum statuses as natural labels without changing their meaning/);
-  assert.match(instructions, /Do not add facts, calculations, filler, advice, suggested actions/);
+  assert.match(instructions, /berbahasa Indonesia yang hangat, ramah, profesional/);
+  assert.match(instructions, /maksimal satu emoji yang relevan/);
+  assert.match(instructions, /Pertahankan setiap ID, kode, makna status, pengukuran, timestamp, nilai yang tidak diketahui, rentang halaman, dan total/);
+  assert.match(instructions, /status enum sebagai label bahasa Indonesia yang alami tanpa mengubah maknanya/);
+  assert.match(instructions, /Jangan tambahkan fakta, perhitungan, basa-basi, saran, tindakan yang disarankan/);
   assert.deepEqual(JSON.parse(String(captured[1]?.content)), { question: 'Truck status?', validatedFacts: { code: 'TR-01', status: 'AVAILABLE' } });
 });
 
@@ -24,19 +24,19 @@ test('query composer passes exact validated measurements, timestamps, and pagina
   let payload: unknown;
   const model = () => ({ invoke: async (messages: BaseMessage[]) => {
     payload = JSON.parse(String(messages[1]?.content));
-    return new AIMessage('{"text":"B-07: 3.8 days at 2026-08-21T10:00:00.000Z (1-1 of 1)."}');
+    return new AIMessage('{"text":"B-07: 3,8 hari pada 2026-08-21T10:00:00.000Z (1-1 dari 1)."}');
   } }) as TelegramInterpretationModel;
   const facts = { code: 'B-07', remainingDays: 3.8, observedAt: '2026-08-21T10:00:00.000Z', range: { from: 1, to: 1, total: 1 } };
 
   const text = await composeTelegramQueryResponse(model, 'Batch status?', facts, 'fallback');
 
   assert.deepEqual(payload, { question: 'Batch status?', validatedFacts: facts });
-  assert.equal(text, 'B-07: 3.8 days at 2026-08-21T10:00:00.000Z (1-1 of 1).');
+  assert.equal(text, 'B-07: 3,8 hari pada 2026-08-21T10:00:00.000Z (1-1 dari 1).');
 });
 
-test('query composer accepts the legacy answer envelope without exposing JSON', async () => {
-  const model = () => ({ invoke: async () => new AIMessage('{"answer":"You have 3 trucks."}') }) as unknown as TelegramInterpretationModel;
-  assert.equal(await composeTelegramQueryResponse(model, 'How many trucks?', {}, 'fallback'), 'You have 3 trucks.');
+test('query composer rejects the unsupported answer envelope', async () => {
+  const model = () => ({ invoke: async () => new AIMessage('{"answer":"Anda memiliki 3 truk."}') }) as unknown as TelegramInterpretationModel;
+  assert.equal(await composeTelegramQueryResponse(model, 'Berapa jumlah truk?', {}, 'jawaban aman'), 'jawaban aman');
 });
 
 test('query composer rejects malformed JSON instead of displaying it', async () => {

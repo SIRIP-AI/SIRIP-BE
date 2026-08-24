@@ -260,6 +260,7 @@ model Sensor {
   status             SensorStatus
   provisioningStatus SensorProvisioningStatus @default(PENDING) @map("provisioning_status")
   lastSeenAt         DateTime?                @map("last_seen_at") @db.Timestamptz
+  pendingReadingCount Int                      @default(0) @map("pending_reading_count")
   createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz
   deletedAt          DateTime?                @map("deleted_at") @db.Timestamptz
   user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)

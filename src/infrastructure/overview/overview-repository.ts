@@ -124,7 +124,7 @@ export class OverviewRepository {
         currentTemperatureC: batch.currentTemperatureC,
         remainingQualityWindowDays: batch.remainingQualityWindowDays,
         qualityStatus,
-        sensor: sensor ? { code: sensor.code, connectivityStatus: connectivityStatus(sensor, now, session ? session.lastSyncedAt ?? session.startedAt : sensor.lastSeenAt) } : null,
+        sensor: sensor ? { code: sensor.code, connectivityStatus: connectivityStatus(sensor, now) } : null,
       };
     }).sort((left, right) => {
       const rank = { CRITICAL: 0, WARNING: 1, NORMAL: 2, UNKNOWN: 3 };

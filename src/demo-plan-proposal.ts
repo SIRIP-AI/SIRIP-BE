@@ -25,7 +25,6 @@ const demoAccount = {
   password: 'SiripPlanDemo2026!',
 };
 const mockApiKey = 'sirip-demo-key';
-const mockSensorApiKey = 'sirip-demo-sensor-key';
 const mockModel = 'sirip-demo-model';
 
 async function removeDemoAccount(database: Database) {
@@ -86,11 +85,11 @@ function mockAiServer() {
       const scheduledAt = (minutes: number) => new Date(base + minutes * 60_000).toISOString();
       const proposal = {
         status: 'PROPOSAL',
-        summary: 'Store, load, and dispatch the monitored demo batch.',
+        summary: 'Simpan, muat, dan kirim batch demo yang dipantau.',
         steps: [
-          { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60), rationale: 'Hold until the vehicle is ready.' },
-          { actionType: 'LOAD', batchId: batch.id, vehicleId: vehicle.id, scheduledAt: scheduledAt(120), rationale: 'Load the available vehicle.' },
-          { actionType: 'DISPATCH', batchId: batch.id, vehicleId: vehicle.id, destinationId: destination.id, scheduledAt: scheduledAt(180), rationale: 'Dispatch within the receiving window.' },
+          { actionType: 'STORE', batchId: batch.id, coldStorageId: coldStorage.id, scheduledAt: scheduledAt(60), rationale: 'Tahan hingga kendaraan siap.' },
+          { actionType: 'LOAD', batchId: batch.id, vehicleId: vehicle.id, scheduledAt: scheduledAt(120), rationale: 'Muat ke kendaraan yang tersedia.' },
+          { actionType: 'DISPATCH', batchId: batch.id, vehicleId: vehicle.id, destinationId: destination.id, scheduledAt: scheduledAt(180), rationale: 'Kirim dalam jendela penerimaan.' },
         ],
       };
       calls += 1;
@@ -118,7 +117,7 @@ async function close(server: Server | null) {
 async function request<T>(baseUrl: string, path: string, method = 'GET', body?: object, cookie = '', expectedStatus = 200) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { ...(path === '/telemetry' ? { 'x-sensor-api-key': mockSensorApiKey } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
@@ -133,7 +132,7 @@ async function run() {
   let apiServer: Server | null = null;
   let completed = false;
   let databaseReady = false;
-  const environment = new Map(['AI_API_URL', 'AI_API_KEY', 'AI_MODEL', 'COOKIE_SECURE', 'SENSOR_API_KEY'].map((key) => [key, process.env[key]]));
+  const environment = new Map(['AI_API_URL', 'AI_API_KEY', 'AI_MODEL', 'COOKIE_SECURE'].map((key) => [key, process.env[key]]));
 
   try {
     await removeDemoAccount(database);
@@ -143,7 +142,6 @@ async function run() {
     process.env.AI_API_KEY = mockApiKey;
     process.env.AI_MODEL = mockModel;
     process.env.COOKIE_SECURE = 'false';
-    process.env.SENSOR_API_KEY = mockSensorApiKey;
     const planRepository = new PlanRepository(database);
     const planService = new PlanService(planRepository, createPlanWorkflow(createPlanGraph({ repository: planRepository, validate: validateApprovablePlanProposal })), validateApprovablePlanProposal);
     const telegramOperations = new TelegramOperations(database, planService);
@@ -157,13 +155,13 @@ async function run() {
     assert.ok(cookie.startsWith('sirip_session='));
 
     const coldStorage = (await request<{ id: string }>(baseUrl, '/cold-storages', 'POST', {
-      name: 'Demo Cold Room', capacityKg: 1000, availableCapacityKg: 1000, operationalStatus: 'AVAILABLE',
+      name: 'Ruang Dingin Demo', capacityKg: 1000, availableCapacityKg: 1000, operationalStatus: 'AVAILABLE',
     }, cookie, 201)).data;
     const vehicle = (await request<{ id: string }>(baseUrl, '/vehicles', 'POST', {
       code: 'DEMO-TRUCK', capacityKg: 1000, operationalStatus: 'AVAILABLE', restriction: null, availabilityStart: null, availabilityEnd: null,
     }, cookie, 201)).data;
     const destination = (await request<{ id: string }>(baseUrl, '/destinations', 'POST', {
-      name: 'Demo Processor', address: 'Demo receiving dock', travelMinutes: 0, receivingStart: '00:00', receivingEnd: '23:59', status: 'AVAILABLE', notes: null,
+      name: 'Pengolah Demo', address: 'Dermaga penerimaan demo', travelMinutes: 0, receivingStart: '00:00', receivingEnd: '23:59', status: 'AVAILABLE', notes: null,
     }, cookie, 201)).data;
     const trip = (await request<{ id: string }>(baseUrl, '/fishing-trips', 'POST', {
       code: 'DEMO-TRIP', vesselName: 'KM Demo',

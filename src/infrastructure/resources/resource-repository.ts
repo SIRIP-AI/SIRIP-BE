@@ -106,6 +106,7 @@ function sensorResponse(resource: {
   status: string;
   provisioningStatus: string;
   lastSeenAt: Date | null;
+  pendingReadingCount: number;
   createdAt: Date;
   sessions: Array<{ batch: { code: string }; startedAt: Date; lastSyncedAt: Date | null }>;
 }) {
@@ -116,8 +117,9 @@ function sensorResponse(resource: {
     deviceUid: resource.deviceUid,
     status: resource.status,
     provisioningStatus: resource.provisioningStatus,
-    connectivityStatus: connectivityStatus(resource, new Date(), session ? session.lastSyncedAt ?? session.startedAt : resource.lastSeenAt),
+    connectivityStatus: connectivityStatus(resource, new Date()),
     lastSeenAt: resource.lastSeenAt?.toISOString() ?? null,
+    pendingReadingCount: resource.pendingReadingCount,
     createdAt: resource.createdAt.toISOString(),
     assignment: session ? { batchCode: session.batch.code, lastSyncedAt: session.lastSyncedAt?.toISOString() ?? null } : null,
   };
@@ -146,9 +148,9 @@ function coldStorageInclude(userId: bigint) { return { currentBatches: { where: 
 
 function translateDatabaseError(error: unknown): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    if (error.code === 'P2002') throw new ConflictError('A resource with that name or code already exists');
-    if (error.code === 'P2003') throw new ConflictError('This resource is used by operational history and cannot be deleted');
-    if (error.code === 'P2025') throw new NotFoundError('Resource');
+    if (error.code === 'P2002') throw new ConflictError('Sumber daya dengan nama atau kode tersebut sudah ada');
+    if (error.code === 'P2003') throw new ConflictError('Sumber daya ini digunakan dalam riwayat operasional dan tidak dapat dihapus');
+    if (error.code === 'P2025') throw new NotFoundError('Sumber daya');
   }
   throw error;
 }
@@ -171,11 +173,11 @@ export class ResourceRepository {
   async updateColdStorage(userId: bigint, id: bigint, input: ColdStorageInput) {
     try {
       const existing = await this.database.coldStorage.findFirst({ where: { id, userId }, include: coldStorageInclude(userId) });
-      if (!existing) throw new NotFoundError('Resource');
+       if (!existing) throw new NotFoundError('Sumber daya');
       const occupiedCapacityKg = existing.currentBatches.reduce((total, batch) => total + batch.weightKg, 0);
-      if (input.capacityKg < occupiedCapacityKg) throw new ConflictError(`Capacity cannot be less than ${occupiedCapacityKg} kg currently stored`);
+      if (input.capacityKg < occupiedCapacityKg) throw new ConflictError(`Kapasitas tidak boleh kurang dari ${occupiedCapacityKg} kg yang sedang disimpan`);
       if (occupiedCapacityKg >= existing.capacityKg && existing.operationalStatus !== input.operationalStatus) {
-        throw new ConflictError('Operational status cannot be changed while cold storage is full');
+        throw new ConflictError('Status operasional tidak dapat diubah saat penyimpanan dingin penuh');
       }
       return coldStorageResponse(await this.database.coldStorage.update({ where: { id, userId }, data: { ...input, availableCapacityKg: input.capacityKg }, include: coldStorageInclude(userId) }));
     } catch (error) {
@@ -282,7 +284,7 @@ export class ResourceRepository {
             include: sensorInclude(userId),
           }));
         }
-        throw new ConflictError('A resource with that name or code already exists');
+        throw new ConflictError('Sumber daya dengan nama atau kode tersebut sudah ada');
       }
       return sensorResponse(await this.database.sensor.create({
         data: { ...input, userId, status: 'AVAILABLE' },
@@ -299,6 +301,9 @@ export class ResourceRepository {
 
   async updateSensor(userId: bigint, id: bigint, input: SensorInput) {
     try {
+      const existing = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null } });
+      if (!existing) throw new NotFoundError('Sumber daya');
+      if (existing.code !== input.code || existing.deviceUid !== input.deviceUid) throw new ConflictError('ID sensor dan UID perangkat tidak dapat diubah setelah persiapan provisi');
       return sensorResponse(await this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: input, include: sensorInclude(userId) }));
     } catch (error) {
       translateDatabaseError(error);
@@ -307,8 +312,8 @@ export class ResourceRepository {
 
   async deleteSensor(userId: bigint, id: bigint) {
     const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: { sessions: { where: { status: 'ACTIVE' }, select: { id: true }, take: 1 } } });
-    if (!sensor) throw new NotFoundError('Resource');
-    if (sensor.sessions.length) throw new ConflictError('Unassign the sensor before deleting it');
+    if (!sensor) throw new NotFoundError('Sumber daya');
+    if (sensor.sessions.length) throw new ConflictError('Lepaskan penetapan sensor sebelum menghapusnya');
     await this.database.sensor.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
@@ -324,12 +329,12 @@ export class ResourceRepository {
     try {
       const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) });
       if (!sensor) throw new NotFoundError('Sensor');
-      if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provision the sensor before assigning it');
-      if (sensor.sessions.length) throw new ConflictError('Sensor is already assigned');
+      if (sensor.provisioningStatus !== 'PROVISIONED') throw new ConflictError('Provisioning sensor harus diselesaikan sebelum sensor ditetapkan');
+      if (sensor.sessions.length) throw new ConflictError('Sensor sudah ditetapkan');
       const batch = await this.database.batch.findFirst({
         where: { userId, code: input.batchCode, deletedAt: null, status: { in: ['MONITORING', 'ACTIVE', 'INSPECTION_HOLD'] }, sensorSessions: { none: { status: 'ACTIVE' } } },
       });
-      if (!batch) throw new NotFoundError('Assignable batch');
+      if (!batch) throw new NotFoundError('Batch yang dapat ditetapkan');
       await this.database.$transaction([
         this.database.sensorSession.create({ data: { sensorId: id, batchId: batch.id, startedAt: new Date(), status: 'ACTIVE' } }),
         this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: { status: 'ASSIGNED' } }),
@@ -345,7 +350,7 @@ export class ResourceRepository {
       const sensor = await this.database.sensor.findFirst({ where: { id, userId, deletedAt: null }, include: sensorInclude(userId) });
       if (!sensor) throw new NotFoundError('Sensor');
       const session = await this.database.sensorSession.findFirst({ where: { sensorId: id, status: 'ACTIVE', batch: { userId, deletedAt: null } } });
-      if (!session) throw new ConflictError('Sensor is not assigned');
+      if (!session) throw new ConflictError('Sensor belum ditetapkan');
       await this.database.$transaction([
         this.database.sensorSession.update({ where: { id: session.id }, data: { status: 'COMPLETED', endedAt: new Date() } }),
         this.database.sensor.update({ where: { id, userId, deletedAt: null }, data: { status: 'AVAILABLE' } }),
@@ -364,10 +369,10 @@ export class ResourceRepository {
       this.database.sensor.count({ where: { userId, deletedAt: null } }),
     ]);
     const steps = [
-      { key: 'coldStorages', label: 'Configure cold storage', complete: coldStorages > 0, count: coldStorages },
-      { key: 'vehicles', label: 'Configure trucks', complete: vehicles > 0, count: vehicles },
-      { key: 'destinations', label: 'Configure destinations', complete: destinations > 0, count: destinations },
-      { key: 'sensors', label: 'Configure sensors', complete: sensors > 0, count: sensors },
+      { key: 'coldStorages', label: 'Konfigurasikan penyimpanan dingin', complete: coldStorages > 0, count: coldStorages },
+      { key: 'vehicles', label: 'Konfigurasikan truk', complete: vehicles > 0, count: vehicles },
+      { key: 'destinations', label: 'Konfigurasikan tujuan', complete: destinations > 0, count: destinations },
+      { key: 'sensors', label: 'Konfigurasikan sensor', complete: sensors > 0, count: sensors },
     ];
     return { ready: steps.every((step) => step.complete), completedSteps: steps.filter((step) => step.complete).length, totalSteps: steps.length, steps };
   }

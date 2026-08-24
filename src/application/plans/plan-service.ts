@@ -38,21 +38,21 @@ export class PlanService {
 
   async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint) {
     const plan = await this.repository.get(userId, planId);
-    if (plan.status !== 'ACTIVE' && plan.status !== 'PROPOSED') throw new ConflictError('Only active or proposed plans can be revised');
+    if (plan.status !== 'ACTIVE' && plan.status !== 'PROPOSED') throw new ConflictError('Hanya rencana aktif atau usulan yang dapat direvisi');
     const destinationIds = plan.destinationIds?.length ? plan.destinationIds.map(BigInt) : plan.destinationId ? [BigInt(plan.destinationId)] : [];
-    if (!destinationIds.length) throw new ConflictError('Legacy plan has no destination scope');
+    if (!destinationIds.length) throw new ConflictError('Rencana lama tidak memiliki cakupan tujuan');
     return this.generateAndSave(userId, plan.batches.map(({ id }) => BigInt(id)), destinationIds, plan.deadline, planId, instruction, triggerEventId, plan.status === 'PROPOSED' ? planId : undefined);
   }
 
   private async generateAndSave(userId: bigint, batchIds: bigint[], destinationIds: bigint[], deadline: string | null, planId?: bigint, instruction?: string, triggerEventId?: bigint, replaceProposalId?: bigint): Promise<PlanGenerationResult> {
     const { result, context } = await this.workflow({ userId, batchIds, destinationIds, deadline, ...(planId !== undefined ? { planId } : {}), ...(instruction ? { instruction } : {}) });
     if (result.status === 'NO_VALID_PROPOSAL_FOUND') return result;
-    if (!destinationIds.length) throw new ConflictError('At least one plan destination is required');
+    if (!destinationIds.length) throw new ConflictError('Setidaknya satu tujuan rencana diperlukan');
     const proposal = { summary: result.summary, steps: result.steps, ...(result.timing ? { timing: result.timing } : {}) };
     const validationErrors = this.validate(proposal, context);
     if (validationErrors.length) {
       console.warn('[AI plan final validation rejected]', { planId: planId?.toString() ?? null, errors: validationErrors });
-      throw new RequestError('AI generated an invalid plan', 502);
+      throw new RequestError('AI menghasilkan rencana yang tidak valid', 502);
     }
     return { status: 'PROPOSAL', proposal: await this.repository.saveProposal(userId, proposal, batchIds, destinationIds, deadline, context.currentPlan, { ...(triggerEventId !== undefined ? { triggerEventId } : {}), ...(replaceProposalId !== undefined ? { replaceProposalId } : {}) }) };
   }
@@ -63,7 +63,7 @@ export class PlanService {
 
   async assess(userId: bigint, planId: bigint) {
     const plan = await this.repository.get(userId, planId);
-    if (plan.status !== 'ACTIVE') throw new ConflictError('Only active plans can be assessed');
+    if (plan.status !== 'ACTIVE') throw new ConflictError('Hanya rencana aktif yang dapat dinilai');
     const context = await this.repository.loadContext(userId, plan.batches.map(({ id }) => BigInt(id)), planId);
     const proposal: AiPlanProposal = {
       summary: plan.summary,
@@ -74,7 +74,7 @@ export class PlanService {
         ...(step.resources.find(({ type }) => type === 'COLD_STORAGE') ? { coldStorageId: step.resources.find(({ type }) => type === 'COLD_STORAGE')!.id } : {}),
         ...(step.resources.find(({ type }) => type === 'VEHICLE') ? { vehicleId: step.resources.find(({ type }) => type === 'VEHICLE')!.id } : {}),
         ...(step.resources.find(({ type }) => type === 'DESTINATION') ? { destinationId: step.resources.find(({ type }) => type === 'DESTINATION')!.id } : {}),
-        rationale: step.rationale ?? 'Existing approved step.',
+        rationale: step.rationale ?? 'Langkah yang sudah disetujui.',
         ...(step.timingRationale ? { timingRationale: step.timingRationale } : {}),
         ...(step.latestSafeAt ? { latestSafeAt: step.latestSafeAt } : {}),
       })),

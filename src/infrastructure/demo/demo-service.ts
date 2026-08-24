@@ -4,6 +4,7 @@ import type { Database } from '../persistence/database';
 import { resetSeedBaseline, seededUser } from '../persistence/seed-baseline';
 import { parseTelemetryReadings } from '../telemetry/telemetry-router';
 import type { TelemetryRepository } from '../telemetry/telemetry-repository';
+import type { TelemetryBlocklist } from './telemetry-blocklist';
 
 const hour = 60 * 60_000;
 const day = 24 * hour;
@@ -48,16 +49,20 @@ export function isUnsafeDemoSession(userId: bigint, reservedSensorIds: ReadonlyS
 }
 
 export class DemoService {
-  constructor(private readonly database: Database, private readonly telemetry: Pick<TelemetryRepository, 'ingestMany' | 'monitoring'>) {}
+  constructor(
+    private readonly database: Database,
+    private readonly telemetry: Pick<TelemetryRepository, 'ingestMany' | 'monitoring'>,
+    private readonly blocklist?: Pick<TelemetryBlocklist, 'block' | 'unblock'>,
+  ) {}
 
   async reset(user: AuthUser) {
-    if (user.email !== seededUser.email) throw new RequestError('Demo reset is only available for the seeded account', 403);
+    if (user.email !== seededUser.email) throw new RequestError('Reset demo hanya tersedia untuk akun seed', 403);
     const userId = BigInt(user.id);
     const resetAt = new Date();
     const result = await this.database.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
       const currentUser = await transaction.user.findUnique({ where: { id: userId }, select: { email: true } });
-      if (!currentUser || currentUser.email !== seededUser.email) throw new RequestError('Demo reset is only available for the seeded account', 403);
+      if (!currentUser || currentUser.email !== seededUser.email) throw new RequestError('Reset demo hanya tersedia untuk akun seed', 403);
       await transaction.user.update({ where: { id: userId }, data: { name: seededUser.name, phone: seededUser.phone } });
       return resetSeedBaseline(transaction, userId, true);
     });
@@ -106,7 +111,7 @@ export class DemoService {
         select: { id: true, sensorId: true, batchId: true, sensor: { select: { userId: true } }, batch: { select: { userId: true } } },
       });
       if (sessions.some((session) => isUnsafeDemoSession(userId, reservedSensorIds, reservedBatchIds, session))) {
-        throw new ConflictError('Demo load aborted because reserved sensors or batches have conflicting assignments');
+        throw new ConflictError('Pemuatan demo dibatalkan karena sensor atau batch yang dicadangkan memiliki penetapan yang bertentangan');
       }
 
       const sessionIds = sessions.map(({ id }) => id);
@@ -169,25 +174,39 @@ export class DemoService {
   async simulateOffline(user: AuthUser, sensorId: bigint, now = new Date()) {
     this.assertDemoUser(user);
     const userId = BigInt(user.id);
-    const sensor = await this.demoSensor(userId, sensorId);
+    const sensor = await this.controllableSensor(userId, sensorId);
+    const telemetryBlocked = !sensor.code.startsWith('SIM-S-');
+    if (telemetryBlocked) this.blocklist?.block(sensor.deviceUid);
     const staleAt = new Date(now.getTime() - 31 * 60_000);
-    await this.database.$transaction([
-      this.database.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: staleAt } }),
-      this.database.sensorSession.update({ where: { id: sensor.sessions[0]!.id }, data: { lastSyncedAt: staleAt } }),
-    ]);
-    await this.telemetry.monitoring.sweepStaleSensors(now);
-    return { sensorId: sensor.id.toString(), lastSeenAt: staleAt.toISOString(), lastSyncedAt: staleAt.toISOString(), processedAt: now.toISOString() };
+    try {
+      await this.database.$transaction([
+        this.database.sensor.update({ where: { id: sensor.id }, data: { lastSeenAt: staleAt } }),
+        this.database.sensorSession.update({ where: { id: sensor.sessions[0]!.id }, data: { lastSyncedAt: staleAt } }),
+      ]);
+      await this.telemetry.monitoring.sweepStaleSensors(now);
+      return { sensorId: sensor.id.toString(), lastSeenAt: staleAt.toISOString(), lastSyncedAt: staleAt.toISOString(), processedAt: now.toISOString(), telemetryBlocked };
+    } catch (error) {
+      if (telemetryBlocked) this.blocklist?.unblock(sensor.deviceUid);
+      throw error;
+    }
+  }
+
+  async reconnectSensor(user: AuthUser, sensorId: bigint) {
+    this.assertDemoUser(user);
+    const sensor = await this.controllableSensor(BigInt(user.id), sensorId);
+    this.blocklist?.unblock(sensor.deviceUid);
+    return { sensorId: sensor.id.toString(), reconnectedAt: new Date().toISOString() };
   }
 
   async simulateQualityRisk(user: AuthUser, batchId: bigint, now = new Date()) {
     this.assertDemoUser(user);
     const batch = await this.database.batch.findFirst({ where: { id: batchId, userId: BigInt(user.id), code: { in: demoActiveBatches.map(({ code }) => code) }, deletedAt: null }, select: { sensorSessions: { where: { status: 'ACTIVE' }, take: 1, select: { sensorId: true } } } });
-    if (!batch?.sensorSessions[0]) throw new NotFoundError('Simulated demo batch');
+    if (!batch?.sensorSessions[0]) throw new NotFoundError('Batch demo simulasi');
     return this.simulateTelemetry(user, batch.sensorSessions[0].sensorId, [4], now, 1000);
   }
 
   private assertDemoUser(user: AuthUser) {
-    if (user.email !== seededUser.email) throw new RequestError('Demo simulations are only available for the seeded account', 403);
+    if (user.email !== seededUser.email) throw new RequestError('Simulasi demo hanya tersedia untuk akun seed', 403);
   }
 
   private async demoSensor(userId: bigint, sensorId: bigint) {
@@ -195,8 +214,18 @@ export class DemoService {
       where: { id: sensorId, userId, code: { in: demoActiveBatches.map(({ sensorCode }) => sensorCode) }, deviceUid: { startsWith: `sirip-demo-device:${userId}:` }, deletedAt: null },
       include: { sessions: { where: { status: 'ACTIVE' }, take: 1 } },
     });
-    if (!sensor) throw new NotFoundError('Simulated demo sensor');
-    if (sensor.provisioningStatus !== 'PROVISIONED' || !sensor.sessions[0]) throw new ConflictError('Sensor must be provisioned and assigned before simulating telemetry');
+    if (!sensor) throw new NotFoundError('Sensor demo simulasi');
+    if (sensor.provisioningStatus !== 'PROVISIONED' || !sensor.sessions[0]) throw new ConflictError('Sensor harus diprovisioning dan ditetapkan sebelum telemetri disimulasikan');
+    return sensor;
+  }
+
+  private async controllableSensor(userId: bigint, sensorId: bigint) {
+    const sensor = await this.database.sensor.findFirst({
+      where: { id: sensorId, userId, deletedAt: null },
+      include: { sessions: { where: { status: 'ACTIVE' }, take: 1 } },
+    });
+    if (!sensor) throw new NotFoundError('Sensor simulasi');
+    if (sensor.provisioningStatus !== 'PROVISIONED' || !sensor.sessions[0]) throw new ConflictError('Sensor harus diprovisioning dan ditetapkan sebelum koneksi disimulasikan');
     return sensor;
   }
 
@@ -206,7 +235,7 @@ export class DemoService {
     const sensor = await this.demoSensor(userId, sensorId);
     const maximum = await this.database.temperatureReading.aggregate({ where: { sensorSessionId: sensor.sessions[0].id }, _max: { sequenceNumber: true } });
     const firstSequence = Number(maximum._max.sequenceNumber ?? -1n) + 1;
-    if (!Number.isSafeInteger(firstSequence + 4)) throw new ConflictError('Sensor sequence number is too large to simulate telemetry');
+    if (!Number.isSafeInteger(firstSequence + 4)) throw new ConflictError('Nomor urut sensor terlalu besar untuk menyimulasikan telemetri');
     const payload = temperatures.map((temperature, index) => ({
       sensorId: sensor.code,
       deviceUid: sensor.deviceUid,

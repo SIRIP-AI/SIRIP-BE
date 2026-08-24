@@ -10,10 +10,10 @@ function bounded(value: string | null) {
 }
 
 export function formatWIB(date: Date | string | null | undefined): string {
-  if (!date) return 'never';
+  if (!date) return 'belum pernah';
   const parsed = typeof date === 'string' ? new Date(date) : date;
-  if (Number.isNaN(parsed.getTime())) return 'never';
-  return parsed.toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
+  if (Number.isNaN(parsed.getTime())) return 'belum pernah';
+  return parsed.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }) + ' WIB';
 }
 
 export async function loadTelegramOperationalSnapshot(database: Database, plans: PlanService, userId: bigint) {

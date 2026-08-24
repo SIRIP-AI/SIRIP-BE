@@ -35,7 +35,7 @@ export class TelegramService {
 
   private token() {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-    if (!token) throw new RequestError('Telegram is not configured', 503);
+    if (!token) throw new RequestError('Telegram belum dikonfigurasi', 503);
     return token;
   }
 
@@ -71,7 +71,7 @@ export class TelegramService {
 
   async createLink(userId: bigint) {
     if (!this.botUsername) await this.initialize();
-    if (!this.botUsername) throw new RequestError('Telegram is not configured', 503);
+    if (!this.botUsername) throw new RequestError('Telegram belum dikonfigurasi', 503);
     const token = randomBytes(24).toString('base64url');
     await this.database.$transaction([
       this.database.messagingLinkToken.deleteMany({ where: { userId, channel: 'TELEGRAM' } }),
@@ -130,12 +130,12 @@ export class TelegramService {
     const startToken = /^\/start(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text.trim())?.[1];
     if (startToken) {
       const linked = await this.consumeLink(startToken, externalChatId, typeof chat?.username === 'string' ? `@${chat.username}` : typeof chat?.first_name === 'string' ? chat.first_name : null);
-      await this.send(externalChatId, linked ? '✅ Telegram is connected to SIRIP. Operational alerts will arrive here.' : '⚠️ This connection link is invalid or has expired. Please generate a new link from the SIRIP Overview page.');
+      await this.send(externalChatId, linked ? '✅ Telegram terhubung ke SIRIP. Peringatan operasional akan dikirim ke sini.' : '⚠️ Tautan koneksi ini tidak valid atau sudah kedaluwarsa. Buat tautan baru dari halaman Ringkasan SIRIP.');
       return;
     }
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
     if (!connection) {
-      await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.');
+      await this.send(externalChatId, 'Chat ini belum terhubung. Hubungkan dari halaman Ringkasan SIRIP.');
       return;
     }
     await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback: null }));
@@ -143,7 +143,7 @@ export class TelegramService {
 
   private async receiveConnected(externalChatId: string, text: string | null, callback: string | null) {
     const connection = await this.database.messagingConnection.findUnique({ where: { channel_externalChatId: { channel: 'TELEGRAM', externalChatId } } });
-    if (!connection) { await this.send(externalChatId, 'This chat is not connected yet. Please connect it from the SIRIP Overview page.'); return; }
+    if (!connection) { await this.send(externalChatId, 'Chat ini belum terhubung. Hubungkan dari halaman Ringkasan SIRIP.'); return; }
     await this.sendReply(externalChatId, await this.workflow({ userId: connection.userId, text, callback }));
   }
 

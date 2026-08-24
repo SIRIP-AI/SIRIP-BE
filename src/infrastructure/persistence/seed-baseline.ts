@@ -20,7 +20,7 @@ export async function resetSeedBaseline(transaction: Prisma.TransactionClient, u
     select: { id: true, sensor: { select: { userId: true } }, batch: { select: { userId: true } } },
   });
   if (sessions.some((session) => isUnsafeSeedSession(userId, session))) {
-    throw new ConflictError('Demo reset aborted because sensor data is linked to another account');
+    throw new ConflictError('Reset demo dibatalkan karena data sensor terhubung ke akun lain');
   }
 
   const sessionIds = sessions.map(({ id }) => id);
@@ -48,9 +48,9 @@ export async function resetSeedBaseline(transaction: Prisma.TransactionClient, u
     { userId, code: 'TR-03', capacityKg: 300, operationalStatus: 'AVAILABLE', delayMinutes: 0, restriction: null, availabilityStart: time('12:00'), availabilityEnd: time('16:00') },
   ] });
   await transaction.destination.createMany({ data: [
-    { userId, name: 'Processor A', address: 'Tanjung Perak, Surabaya', travelMinutes: 60, receivingStart: time('11:30'), receivingEnd: time('14:30'), status: 'AVAILABLE', notes: 'Demo destination selected by the operator' },
-    { userId, name: 'Processor B', address: 'Sidoarjo', travelMinutes: 45, receivingStart: time('10:00'), receivingEnd: time('13:00'), status: 'AVAILABLE', notes: 'Configured alternative' },
-    { userId, name: 'Processor C', address: 'Gresik', travelMinutes: 90, receivingStart: time('13:00'), receivingEnd: time('16:00'), status: 'UNAVAILABLE', notes: 'Temporarily unavailable' },
+    { userId, name: 'Pengolah A', address: 'Tanjung Perak, Surabaya', travelMinutes: 60, receivingStart: time('11:30'), receivingEnd: time('14:30'), status: 'AVAILABLE', notes: 'Tujuan demo yang dipilih operator' },
+    { userId, name: 'Pengolah B', address: 'Sidoarjo', travelMinutes: 45, receivingStart: time('10:00'), receivingEnd: time('13:00'), status: 'AVAILABLE', notes: 'Alternatif yang dikonfigurasi' },
+    { userId, name: 'Pengolah C', address: 'Gresik', travelMinutes: 90, receivingStart: time('13:00'), receivingEnd: time('16:00'), status: 'UNAVAILABLE', notes: 'Tidak tersedia sementara' },
   ] });
   return {
     deleted: { fishingTrips: fishingTrips.count, batches: batches.count, plans: plans.count, sensors: sensors.count, telemetry: telemetry.count, alerts: alerts.count, messagingConnections: messagingConnections.count, messagingLinkTokens: messagingLinkTokens.count, messagingConversations: messagingConversations.count },

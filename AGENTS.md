@@ -35,6 +35,7 @@ Core domain rules include:
 - Temperature, quality-window, and sensor-offline alerts share deterministic processing but reconcile independently by rule family. Telemetry resolves offline state only as an explicit connectivity recovery; a composition-root stale sweep creates offline alerts without requiring overview reads.
 - Measurement time and receipt time are distinct.
 - Telemetry ingestion is idempotent.
+- MVP telemetry identifies provisioned devices by the stored `deviceUid + sensorId` binding; it does not claim strong device authentication or use a shared API key.
 - Completed plan steps are historical facts and cannot be replanned.
 - AI proposals require deterministic validation and human approval before activation.
 - Routine landing intake, weighing, grading, sensor association, and deterministic quality assessment happen before AI planning. The planner chooses future logistics only.
@@ -80,6 +81,6 @@ LangGraph Studio reads real development data for the supplied user ID and can ma
 
 The in-app demo reset is restricted to `adi.rahman@sirip.id`. It restores the same resource/operational baseline as `npm run seed`, preserves the Telegram connection, current password, and authenticated sessions, and clears pending conversations and link tokens; the CLI seed also resets credentials, connections, and sessions.
 
-Loading in-app demo data first resets the account, then creates completed trips `FT-101` through `FT-103`, linked monitoring batches `B-101` through `B-103`, linked closed historical batches `B-104` through `B-106`, and three assigned sensors with healthy baseline telemetry near 2C and more than four quality days remaining. Demo quality-risk, excursion, and recovery simulations ingest historically timed readings through the production parser and repository path; offline simulation only backdates authoritative seen/sync timestamps before normal monitoring processing. All simulations are restricted to seeded `SIM-*` entities and the seeded account. The provisioning seed and reset baseline remain resource-only.
+Loading in-app demo data first resets the account, then creates completed trips `FT-101` through `FT-103`, linked monitoring batches `B-101` through `B-103`, linked closed historical batches `B-104` through `B-106`, and three assigned sensors with healthy baseline telemetry near 2C and more than four quality days remaining. Demo quality-risk, excursion, and recovery simulations ingest historically timed readings through the production parser and repository path; simulated-sensor offline backdates authoritative seen/sync timestamps before normal monitoring processing. The seeded account may also temporarily black-hole telemetry from one of its assigned physical sensors to demonstrate real firmware backlog synchronization; these blocks are process-local and clear on restart. Synthetic telemetry remains restricted to seeded `SIM-*` entities. The provisioning seed and reset baseline remain resource-only.
 
 Run the narrowest relevant verification. Update the routed documentation when behavior, contracts, architecture, or setup changes.

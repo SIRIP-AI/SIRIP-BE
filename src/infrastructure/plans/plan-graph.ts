@@ -43,17 +43,17 @@ export type PlanGraphDependencies = {
 };
 
 function requireGenerationContext(context: PlanningContext) {
-  if (!context.batches.length) throw new ConflictError('At least one active batch is required before planning');
-  if (context.batches.length > 100) throw new ConflictError('At most 100 active batches can be planned at once');
-  if (context.batches.some((batch) => !batch.quality)) throw new ConflictError('Every active batch requires a quality state before planning');
-  if (!context.vehicles.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('At least one available vehicle is required before planning');
-  if (!context.destinations.some((resource) => resource.status === 'AVAILABLE')) throw new ConflictError('At least one available destination is required before planning');
-  if (context.selectedDestinationId && !context.destinations.some((resource) => resource.id === context.selectedDestinationId && resource.status === 'AVAILABLE')) throw new ConflictError('Selected destination must be available and owned by the user');
-  if (context.acceptableDestinationIds?.some((destinationId) => !context.destinations.some((resource) => resource.id === destinationId && resource.status === 'AVAILABLE'))) throw new ConflictError('Every acceptable destination must be available and owned by the user');
+  if (!context.batches.length) throw new ConflictError('Setidaknya satu batch aktif diperlukan sebelum perencanaan');
+  if (context.batches.length > 100) throw new ConflictError('Maksimal 100 batch aktif dapat direncanakan sekaligus');
+  if (context.batches.some((batch) => !batch.quality)) throw new ConflictError('Setiap batch aktif memerlukan status mutu sebelum perencanaan');
+  if (!context.vehicles.some((resource) => resource.operationalStatus === 'AVAILABLE')) throw new ConflictError('Setidaknya satu kendaraan tersedia diperlukan sebelum perencanaan');
+  if (!context.destinations.some((resource) => resource.status === 'AVAILABLE')) throw new ConflictError('Setidaknya satu tujuan tersedia diperlukan sebelum perencanaan');
+  if (context.selectedDestinationId && !context.destinations.some((resource) => resource.id === context.selectedDestinationId && resource.status === 'AVAILABLE')) throw new ConflictError('Tujuan yang dipilih harus tersedia dan dimiliki pengguna');
+  if (context.acceptableDestinationIds?.some((destinationId) => !context.destinations.some((resource) => resource.id === destinationId && resource.status === 'AVAILABLE'))) throw new ConflictError('Setiap tujuan yang dapat diterima harus tersedia dan dimiliki pengguna');
 }
 
 function noCandidateResult(): AiPlanResult {
-  return { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'No physically valid plan was found within the seven-day planning horizon. Check resource availability, capacity, and operating windows.' };
+  return { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'Tidak ditemukan rencana yang layak secara fisik dalam horizon perencanaan tujuh hari. Periksa ketersediaan sumber daya, kapasitas, dan jendela operasional.' };
 }
 
 export function createPlanGraph({ repository, validate, model = createPlanningModel }: PlanGraphDependencies) {
@@ -61,7 +61,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   const loadContext = async (state: typeof PlanGraphState.State) => {
     const loaded = await repository.loadContext(BigInt(state.userId), state.batchIds.map(BigInt), state.planId ? BigInt(state.planId) : undefined);
     const destinationIds = destinationScope(state); const context = { ...loaded, selectedDestinationId: destinationIds.length === 1 ? destinationIds[0]! : null, acceptableDestinationIds: destinationIds, deadline: state.deadline };
-    if (context.batches.length !== state.batchIds.length) throw new ConflictError('Every selected batch must be active and owned by the user');
+    if (context.batches.length !== state.batchIds.length) throw new ConflictError('Setiap batch yang dipilih harus aktif dan dimiliki pengguna');
     requireGenerationContext(context);
     return { generationContext: context, generationFacts: null, candidates: [], freshContext: null, freshFacts: null, result: null };
   };
@@ -93,7 +93,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
   const refreshContext = async (state: typeof PlanGraphState.State) => {
     const loaded = await repository.loadContext(BigInt(state.userId), state.batchIds.map(BigInt), state.planId ? BigInt(state.planId) : undefined);
     const destinationIds = destinationScope(state); const context = { ...loaded, selectedDestinationId: destinationIds.length === 1 ? destinationIds[0]! : null, acceptableDestinationIds: destinationIds, deadline: state.deadline };
-    if (context.batches.length !== state.batchIds.length) throw new ConflictError('Selected batch scope changed during generation');
+    if (context.batches.length !== state.batchIds.length) throw new ConflictError('Cakupan batch yang dipilih berubah selama pembuatan');
     requireGenerationContext(context);
     return { freshContext: context };
   };

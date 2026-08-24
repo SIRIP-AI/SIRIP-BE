@@ -46,8 +46,8 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
         const vehicleReturnLimit = Date.parse(vehicleWindow.end) - destination.travelMinutes * 2 * 60_000;
         const latestDispatch = Math.min(destinationLimit, vehicleReturnLimit);
         const bindingConstraints = [
-          ...(latestDispatch === destinationLimit ? ['the destination receiving window'] : []),
-          ...(latestDispatch === vehicleReturnLimit ? [`${vehicle.code}'s availability and return trip`] : []),
+          ...(latestDispatch === destinationLimit ? ['jendela penerimaan tujuan'] : []),
+          ...(latestDispatch === vehicleReturnLimit ? [`ketersediaan dan perjalanan pulang ${vehicle.code}`] : []),
         ];
         const firstDispatch = Math.ceil(earliestDispatch / (stepMinutes * 60_000)) * stepMinutes * 60_000;
         for (let dispatchAt = firstDispatch; dispatchAt <= latestDispatch && choices.length < maximumChoicesPerBatch && vehicleChoices < maximumTimesPerVehicle; dispatchAt += stepMinutes * 60_000) {
@@ -57,8 +57,8 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
             vehicleId,
             destinationId: destination.destinationId,
             scheduledAt: new Date(dispatchAt).toISOString(),
-            rationale: `Dispatch ${batch.code} directly with ${vehicle.code} to avoid unnecessary storage and handling.`,
-            timingRationale: `This departure reaches ${context.destinations.find(({ id }) => id === destination.destinationId)?.name ?? 'the destination'} within its receiving window. The latest safe departure is limited by ${bindingConstraints.join(', ')}.`,
+            rationale: `Kirim langsung ${batch.code} dengan ${vehicle.code} untuk menghindari penyimpanan dan penanganan yang tidak perlu.`,
+            timingRationale: `Keberangkatan ini mencapai ${context.destinations.find(({ id }) => id === destination.destinationId)?.name ?? 'tujuan'} dalam jendela penerimaannya. Batas keberangkatan aman terakhir ditentukan oleh ${bindingConstraints.join(', ')}.`,
             latestSafeAt: new Date(latestDispatch).toISOString(),
           };
           if (state.vehicleId) choices.push([dispatch]);
@@ -68,12 +68,12 @@ function scheduleChoices(context: PlanningContext, facts: PlanningFacts, batchId
             batchId,
               vehicleId,
               scheduledAt: new Date(dispatchAt - stepMinutes * 60_000).toISOString(),
-              rationale: `Load ${batch.code} into ${vehicle.code}, which has sufficient capacity and supports direct dispatch.`,
-              timingRationale: `Loading starts ${stepMinutes} minutes before the selected departure so the batch is ready without avoidable waiting.`,
+              rationale: `Muat ${batch.code} ke ${vehicle.code}, yang memiliki kapasitas memadai dan mendukung pengiriman langsung.`,
+              timingRationale: `Pemuatan dimulai ${stepMinutes} menit sebelum keberangkatan yang dipilih agar batch siap tanpa waktu tunggu yang dapat dihindari.`,
               latestSafeAt: new Date(latestDispatch - stepMinutes * 60_000).toISOString(),
             };
             const shouldStore = (batch.location?.type ?? 'INTAKE') === 'INTAKE' && dispatchAt - now > 30 * 60_000;
-            if (shouldStore && batchFacts.feasibleColdStorageIds.length) for (const storageId of batchFacts.feasibleColdStorageIds) choices.push([{ actionType: 'STORE', batchId, coldStorageId: storageId, scheduledAt: new Date(now + 60_000).toISOString(), rationale: `Protect ${batch.code} in cold storage while it waits for dispatch.`, timingRationale: 'Dispatch is more than 30 minutes away, so storage limits avoidable intake exposure.', latestSafeAt: load.scheduledAt }, load, dispatch]);
+            if (shouldStore && batchFacts.feasibleColdStorageIds.length) for (const storageId of batchFacts.feasibleColdStorageIds) choices.push([{ actionType: 'STORE', batchId, coldStorageId: storageId, scheduledAt: new Date(now + 60_000).toISOString(), rationale: `Lindungi ${batch.code} di penyimpanan dingin selama menunggu pengiriman.`, timingRationale: 'Pengiriman masih lebih dari 30 menit, sehingga penyimpanan membatasi paparan yang dapat dihindari di area penerimaan.', latestSafeAt: load.scheduledAt }, load, dispatch]);
             else choices.push([load, dispatch]);
           }
           vehicleChoices += 1;
@@ -89,7 +89,7 @@ function partialContext(context: PlanningContext, batchIds: Set<string>): Planni
 }
 
 function proposal(context: PlanningContext, steps: AiPlanStep[]): AiPlanProposal {
-  const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic physically valid logistics plan', steps }), context);
+  const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Rencana logistik deterministik yang layak secara fisik', steps }), context);
   return { ...planned, timing: assessPlanTiming(planned, context) };
 }
 
@@ -161,7 +161,7 @@ export function generateMultiDestinationCandidates(context: PlanningContext, des
     if (!feasible) continue;
     for (const steps of partials) {
       const scopedContext = { ...context, selectedDestinationId: null, acceptableDestinationIds: destinationIds };
-      const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Deterministic multi-destination logistics plan', steps }), scopedContext);
+      const planned = addReturnToBaseSteps(orderPlanProposal({ summary: 'Rencana logistik deterministik untuk beberapa tujuan', steps }), scopedContext);
       const proposal = { ...planned, timing: assessPlanTiming(planned, scopedContext) };
       if (validatePlanProposal(proposal, scopedContext, { allowTargetLateness: true }).length === 0) candidates.push(proposal);
     }

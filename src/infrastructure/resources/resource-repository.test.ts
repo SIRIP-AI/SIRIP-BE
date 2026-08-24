@@ -56,3 +56,16 @@ test('operational unavailability overrides an upcoming assignment', async () => 
 
   assert.equal(result?.status, 'UNAVAILABLE');
 });
+
+test('pending sensor cannot be assigned before BLE provisioning is applied', async () => {
+  const createdAt = new Date('2026-08-24T03:00:00.000Z');
+  const pending = { id: 5n, userId: 1n, code: 'S-001', deviceUid: 'ESP32-1', status: 'AVAILABLE', provisioningStatus: 'PENDING', lastSeenAt: null, pendingReadingCount: 0, createdAt, deletedAt: null, sessions: [] };
+  const database = {
+    sensor: { findFirst: async () => pending },
+  } as unknown as Database;
+
+  await assert.rejects(
+    () => new ResourceRepository(database).assignSensor(1n, 5n, { batchCode: 'B-001' }),
+    /Provisioning sensor harus diselesaikan/,
+  );
+});

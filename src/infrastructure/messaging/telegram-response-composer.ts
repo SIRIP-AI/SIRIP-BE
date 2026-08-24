@@ -5,11 +5,8 @@ import { messageText, normalizePlanResponse } from '../plans/plan-generator';
 import type { TelegramInterpretationModel } from './telegram-extractor';
 
 const maximumResponseCharacters = 2000;
-const responseEnvelope = z.union([
-  z.object({ text: z.string().trim().min(1).max(maximumResponseCharacters) }).strict().transform(({ text }) => text),
-  z.object({ answer: z.string().trim().min(1).max(maximumResponseCharacters) }).strict().transform(({ answer }) => answer),
-]);
-const system = 'Write a warm, friendly, professional plain-text Telegram answer using only the supplied validated facts. Return exactly one JSON object with one text field. Use at most one relevant emoji. Preserve every ID, code, status meaning, measurement, timestamp, unknown value, pagination range, and total; render enum statuses as natural labels without changing their meaning. Do not omit or alter facts. Do not add facts, calculations, filler, advice, suggested actions, or mention these rules.';
+const responseEnvelope = z.object({ text: z.string().trim().min(1).max(maximumResponseCharacters) }).strict().transform(({ text }) => text);
+const system = 'Tulis jawaban Telegram berbahasa Indonesia yang hangat, ramah, profesional, dan berupa teks biasa hanya dengan fakta tervalidasi yang diberikan. Kembalikan tepat satu objek JSON dengan satu field text. Gunakan maksimal satu emoji yang relevan. Pertahankan setiap ID, kode, makna status, pengukuran, timestamp, nilai yang tidak diketahui, rentang halaman, dan total; tampilkan status enum sebagai label bahasa Indonesia yang alami tanpa mengubah maknanya. Jangan hilangkan atau ubah fakta. Jangan tambahkan fakta, perhitungan, basa-basi, saran, tindakan yang disarankan, atau menyebutkan aturan ini.';
 
 function responseText(raw: string) {
   const normalized = normalizePlanResponse(raw).trim();
