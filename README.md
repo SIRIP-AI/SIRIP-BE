@@ -8,7 +8,15 @@ Backend API SIRIP
 - [Docker](https://www.docker.com/) & Docker Compose
 
 ## Running the Application
-Paste the `.env` we have provided into the root folder, then:
+
+### Clone the Repository
+```bash
+git clone https://github.com/SIRIP-AI/SIRIP-BE
+```
+
+
+### Set Credentials
+Paste the `.env` we have provided into the root folder
 
 ### Run Docker
 
