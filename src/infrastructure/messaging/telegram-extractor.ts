@@ -72,10 +72,8 @@ export async function extractTelegramRequest(model: () => TelegramInterpretation
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const raw = messageText(await model().invoke(extractionMessages(snapshot, history, pending, text, attempt ? `Repair the previous invalid response. ${rejection.slice(0, 300)}` : undefined)));
-      console.info('[AI Telegram extraction raw]', { attempt, output: raw });
       const parsed = telegramExtraction.safeParse(JSON.parse(normalizePlanResponse(raw)));
       if (parsed.success) {
-        console.info('[AI Telegram extraction validated]', { attempt, extraction: parsed.data });
         return parsed.data;
       }
       rejection = parsed.error.message;

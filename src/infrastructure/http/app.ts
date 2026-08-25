@@ -1,6 +1,7 @@
 import express, { type ErrorRequestHandler } from 'express';
 
 import { PlanService } from '../../application/plans/plan-service';
+import { PlanChangeService } from '../../application/plans/plan-change-service';
 import { RequestError } from '../../domain/errors';
 import { validateApprovablePlanProposal } from '../../domain/plans/plans';
 import { AuthService } from '../auth/auth-service';
@@ -23,6 +24,7 @@ import { createTelemetryRouter } from '../telemetry/telemetry-router';
 import { requireAuth, createAuthRouter } from '../auth/auth-router';
 import type { Database } from '../persistence/database';
 import type { TelegramService } from '../messaging/telegram-service';
+import { createTelegramInterpretationModel } from '../messaging/telegram-extractor';
 import { createTelegramAccountRouter, createTelegramWebhookRouter } from '../messaging/telegram-router';
 
 export function createApp(database: Database, telegram: TelegramService) {
@@ -40,6 +42,14 @@ export function createApp(database: Database, telegram: TelegramService) {
   });
   app.use(express.json());
   app.get('/', (_request, response) => response.json({ message: 'SIRIP API' }));
+  app.get('/health', async (_request, response) => {
+    try {
+      await database.$queryRaw`SELECT 1`;
+      response.json({ status: 'ok' });
+    } catch {
+      response.status(503).json({ status: 'unavailable' });
+    }
+  });
   app.use('/api/integrations/telegram', createTelegramWebhookRouter(telegram));
   app.use('/api/auth', createAuthRouter(auth));
   const telemetry = new TelemetryRepository(database, telegram);
@@ -53,7 +63,8 @@ export function createApp(database: Database, telegram: TelegramService) {
   app.use('/api/batches', createBatchesRouter(new BatchRepository(database)));
   const plans = new PlanRepository(database);
   const planWorkflow = createPlanWorkflow(createPlanGraph({ repository: plans, validate: validateApprovablePlanProposal }));
-  app.use('/api/plans', createPlansRouter(new PlanService(plans, planWorkflow, validateApprovablePlanProposal)));
+  const planService = new PlanService(plans, planWorkflow, validateApprovablePlanProposal);
+  app.use('/api/plans', createPlansRouter(planService, new PlanChangeService(database, planService, createTelegramInterpretationModel)));
 
   const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
     if (error instanceof RequestError) {

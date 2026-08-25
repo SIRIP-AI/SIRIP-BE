@@ -1,5 +1,5 @@
-import { Prisma } from '../../generated/prisma/client';
 import { ConflictError } from '../../domain/errors';
+import { OperationalReportService, operationalReportText, type OperationalReport, type OperationalReportKind } from '../../application/operations/operational-report-service';
 import type { PlanService } from '../../application/plans/plan-service';
 import type { PlanView } from '../../domain/plans/plans';
 import type { Database } from '../persistence/database';
@@ -17,8 +17,8 @@ const maximumHistoryText = 2000;
 export type TelegramReply = { text: string; format?: 'HTML'; buttons?: Array<Array<{ text: string; callback_data: string }>> };
 type QueryKind = 'batches' | 'plans' | 'steps' | 'alerts' | 'sensors' | 'resources';
 type ResourceScope = 'vehicle' | 'storage' | 'destination';
-type ReportKind = 'VEHICLE_DELAY' | 'VEHICLE_STATUS' | 'STORAGE_STATUS' | 'DESTINATION_STATUS' | 'BATCH_STATUS' | 'SENSOR_STATUS';
-type Report = { kind: ReportKind; entityId: string; entityName: string; value: number | 'AVAILABLE' | 'UNAVAILABLE' | 'INSPECTION_HOLD' | 'ACTIVE' | 'ERROR'; occurredAt: string; rawMessage: string; planRef?: string };
+type ReportKind = OperationalReportKind;
+type Report = OperationalReport;
 export type State =
   | { kind: 'CLARIFY'; slots: TelegramExtraction; receivedAt: string }
   | { kind: 'REPORT_CONFIRM'; report: Report; slots?: TelegramExtraction }
@@ -197,7 +197,11 @@ function proposalText(plan: PlanView) {
 }
 
 export class TelegramOperations {
-  constructor(private readonly database: Database, private readonly plans: PlanService, private readonly model: () => TelegramInterpretationModel = createTelegramInterpretationModel) {}
+  private readonly reports: OperationalReportService;
+
+  constructor(private readonly database: Database, private readonly plans: PlanService, private readonly model: () => TelegramInterpretationModel = createTelegramInterpretationModel) {
+    this.reports = new OperationalReportService(database);
+  }
 
   async monitoringImpact(alert: MonitoringAlert): Promise<TelegramReply> {
     const affected = await this.database.plan.findMany({ where: { userId: alert.userId, status: 'ACTIVE', batches: { some: { batchId: alert.batchId } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
@@ -381,60 +385,11 @@ export class TelegramOperations {
   }
 
   private async parseReport(userId: bigint, extraction: TelegramExtraction, text: string, receivedAt: Date): Promise<{ report: Report } | { question: string }> {
-    const resources = await Promise.all([
-      this.database.vehicle.findMany({ where: { userId }, select: { id: true, code: true } }),
-      this.database.coldStorage.findMany({ where: { userId }, select: { id: true, name: true } }),
-      this.database.destination.findMany({ where: { userId }, select: { id: true, name: true } }),
-      this.database.batch.findMany({ where: { userId, deletedAt: null }, select: { id: true, code: true } }),
-      this.database.sensor.findMany({ where: { userId, deletedAt: null }, select: { id: true, code: true } }),
-    ]);
-    const reference = (extraction.entityCode ?? extraction.entityName ?? '').toLowerCase();
-    const matches = <T extends { id: bigint }>(items: T[], name: (item: T) => string) => items.filter((item) => name(item).toLowerCase() === reference);
-    const unavailable = extraction.status === 'UNAVAILABLE';
-    const recovered = extraction.status === 'RECOVERED';
-    const at = reportOccurrence(text, receivedAt).toISOString();
-    const make = (kind: ReportKind, item: { id: bigint }, entityName: string, value: Report['value']): { report: Report } => ({ report: { kind, entityId: item.id.toString(), entityName, value, occurredAt: at, rawMessage: text, ...(extraction.planRef ? { planRef: extraction.planRef } : {}) } });
-    const vehicles = extraction.entityType === 'vehicle' ? matches(resources[0], (item) => item.code) : [];
-    if (extraction.status === 'DELAYED' || extraction.delayMinutes !== null) {
-      if (vehicles.length !== 1) return { question: vehicles.length ? 'Truk mana yang dimaksud?' : 'Truk terkonfigurasi mana yang terlambat?' };
-      if (extraction.delayMinutes === null) return { question: 'Berapa menit keterlambatan truk tersebut?' };
-      return make('VEHICLE_DELAY', vehicles[0]!, vehicles[0]!.code, extraction.delayMinutes);
-    }
-    if (extraction.entityType === 'vehicle') {
-      if (vehicles.length !== 1) return { question: 'Truk terkonfigurasi mana yang dimaksud?' };
-      if (!unavailable && !recovered) return { question: 'Apakah truk tidak tersedia atau sudah pulih?' };
-      return make('VEHICLE_STATUS', vehicles[0]!, vehicles[0]!.code, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
-    }
-    const storages = extraction.entityType === 'storage' ? matches(resources[1], (item) => item.name) : [];
-    if (extraction.entityType === 'storage') {
-      if (storages.length !== 1) return { question: 'Penyimpanan dingin terkonfigurasi mana yang dimaksud?' };
-      if (!unavailable && !recovered) return { question: 'Apakah penyimpanan dingin tidak tersedia atau sudah pulih?' };
-      return make('STORAGE_STATUS', storages[0]!, storages[0]!.name, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
-    }
-    const destinations = extraction.entityType === 'destination' ? matches(resources[2], (item) => item.name) : [];
-    if (extraction.entityType === 'destination') {
-      if (destinations.length !== 1) return { question: 'Tujuan terkonfigurasi mana yang dimaksud?' };
-      if (!unavailable && !recovered) return { question: 'Apakah tujuan tidak tersedia atau sudah pulih?' };
-      return make('DESTINATION_STATUS', destinations[0]!, destinations[0]!.name, unavailable ? 'UNAVAILABLE' : 'AVAILABLE');
-    }
-    const batches = extraction.entityType === 'batch' ? matches(resources[3], (item) => item.code) : [];
-    if (extraction.entityType === 'batch') {
-      if (batches.length !== 1) return { question: 'Batch aktif mana yang dimaksud?' };
-      if (!extraction.status) return { question: 'Apakah batch memasuki penahanan inspeksi atau sedang pulih?' };
-      return make('BATCH_STATUS', batches[0]!, batches[0]!.code, recovered ? 'ACTIVE' : 'INSPECTION_HOLD');
-    }
-    const sensors = extraction.entityType === 'sensor' ? matches(resources[4], (item) => item.code) : [];
-    if (extraction.entityType === 'sensor') {
-      if (sensors.length !== 1) return { question: 'Sensor terkonfigurasi mana yang dimaksud?' };
-      if (!extraction.status) return { question: 'Apakah sensor mengalami kesalahan atau sudah pulih?' };
-      return make('SENSOR_STATUS', sensors[0]!, sensors[0]!.code, recovered ? 'AVAILABLE' : 'ERROR');
-    }
-    return { question: 'Saya dapat mencari batch, rencana, langkah berikutnya, peringatan, sensor, atau sumber daya. Untuk laporan, sertakan nama/kode terkonfigurasi dan apakah kondisinya terlambat, tidak tersedia, terdampak, atau sudah pulih.' };
+    return this.reports.resolve(userId, extraction, text, receivedAt);
   }
 
   private reportText(report: Report) {
-    if (report.kind === 'VEHICLE_DELAY') return `${report.entityName} terlambat ${report.value} menit`;
-    return `${report.entityName} -> ${report.value}`;
+    return operationalReportText(report);
   }
 
   private clarify(userId: bigint, slots: TelegramExtraction, receivedAt: Date, question: string) {
@@ -503,25 +458,7 @@ export class TelegramOperations {
 
   private async confirmReport(userId: bigint, report: Report): Promise<TelegramReply> {
     const entityId = BigInt(report.entityId);
-    const event = await this.database.$transaction(async (transaction) => {
-      const data: Prisma.OperationalEventCreateInput = { type: this.eventType(report.kind), source: 'TELEGRAM', rawMessage: report.rawMessage, occurredAt: new Date(report.occurredAt), structuredData: { report: { kind: report.kind, value: report.value } }, user: { connect: { id: userId } } };
-      if (report.kind === 'VEHICLE_DELAY' || report.kind === 'VEHICLE_STATUS') { await transaction.vehicle.update({ where: { id: entityId, userId }, data: report.kind === 'VEHICLE_DELAY' ? { delayMinutes: report.value as number } : { operationalStatus: report.value as 'AVAILABLE' | 'UNAVAILABLE' } }); data.vehicle = { connect: { id: entityId } }; }
-      if (report.kind === 'STORAGE_STATUS') { await transaction.coldStorage.update({ where: { id: entityId, userId }, data: { operationalStatus: report.value as 'AVAILABLE' | 'UNAVAILABLE' } }); data.coldStorage = { connect: { id: entityId } }; }
-      if (report.kind === 'DESTINATION_STATUS') { await transaction.destination.update({ where: { id: entityId, userId }, data: { status: report.value as 'AVAILABLE' | 'UNAVAILABLE' } }); data.destination = { connect: { id: entityId } }; }
-      if (report.kind === 'BATCH_STATUS') {
-        const recoveredStatus = report.value === 'ACTIVE'
-          ? await transaction.planBatch.findFirst({ where: { batchId: entityId, plan: { userId, status: 'ACTIVE' } }, select: { batchId: true } }).then((active) => recoveredBatchStatus(!!active))
-          : 'INSPECTION_HOLD' as const;
-        await transaction.batch.update({ where: { id: entityId, userId, deletedAt: null }, data: { status: recoveredStatus } }); data.batch = { connect: { id: entityId } };
-      }
-      if (report.kind === 'SENSOR_STATUS') {
-        const recoveredStatus = report.value === 'AVAILABLE'
-          ? await transaction.sensorSession.findFirst({ where: { sensorId: entityId, status: 'ACTIVE', batch: { userId, deletedAt: null } }, select: { id: true } }).then((session) => recoveredSensorStatus(!!session))
-          : 'ERROR' as const;
-        await transaction.sensor.update({ where: { id: entityId, userId, deletedAt: null }, data: { status: recoveredStatus } }); data.sensor = { connect: { id: entityId } };
-      }
-      return transaction.operationalEvent.create({ data, select: { id: true } });
-    });
+    const event = await this.reports.apply(userId, report, 'TELEGRAM');
     const affected = await this.database.plan.findMany({ where: { userId, status: 'ACTIVE', steps: { some: { status: 'UPCOMING', ...(report.kind.startsWith('VEHICLE') ? { vehicleId: entityId } : report.kind === 'STORAGE_STATUS' ? { coldStorageId: entityId } : report.kind === 'DESTINATION_STATUS' ? { destinationId: entityId } : report.kind === 'BATCH_STATUS' ? { batchId: entityId } : { batch: { sensorSessions: { some: { sensorId: entityId, status: 'ACTIVE' } } } }) } } }, orderBy: { version: 'asc' }, select: { id: true, version: true } });
     if (!affected.length || report.value === 'AVAILABLE' || report.value === 'ACTIVE' || report.value === 0) { await this.clearPending(userId); return { format: 'HTML', text: `✅ <b>Laporan dicatat</b>\n\n${html(this.reportText(report))}\n\n<b>Dampak pada rencana</b>\nTidak ada rencana aktif dengan langkah mendatang yang terdampak.` }; }
     const instruction = `Revisi langkah mendatang untuk memperhitungkan laporan operasional yang telah dikonfirmasi ini: ${this.reportText(report)}.`;
@@ -529,14 +466,6 @@ export class TelegramOperations {
     await this.savePending(userId, { kind: 'REPLAN', eventId: event.id.toString(), planIds: affected.map((plan) => plan.id.toString()), instruction });
     const assessmentText = assessments.map((plan) => `<b>V${plan.version}</b> · ${plan.errors.length ? 'Perencanaan ulang disarankan\nKondisi yang dikonfirmasi membuat satu atau beberapa langkah mendatang tidak layak berdasarkan batasan operasional saat ini.' : 'Rencana saat ini tetap layak\nLangkah mendatangnya masih memenuhi batasan waktu, sumber daya, tujuan, dan mutu saat ini.'}`).join('\n\n');
     return { format: 'HTML', text: `✅ <b>Laporan dicatat</b>\n\n${html(this.reportText(report))}\n\n<b>Dampak pada rencana</b>\n${assessmentText}\n\n<i>Anda tetap dapat merevisi rencana meskipun rencana tersebut masih layak.</i>`, buttons: [...affected.map((plan) => [{ text: assessments.find(({ id }) => id === plan.id)!.errors.length ? `Revisi V${plan.version}` : `Tetap rencanakan ulang V${plan.version}`, callback_data: `replan:${plan.id}` }]), [{ text: 'Pertahankan rencana saat ini', callback_data: 'replan:cancel' }]] };
-  }
-
-  private eventType(kind: ReportKind): 'TRUCK_DELAY' | 'STORAGE_CHANGE' | 'DESTINATION_CHANGE' | 'INSPECTION_HOLD' | 'OTHER' {
-    if (kind.startsWith('VEHICLE')) return 'TRUCK_DELAY';
-    if (kind === 'STORAGE_STATUS') return 'STORAGE_CHANGE';
-    if (kind === 'DESTINATION_STATUS') return 'DESTINATION_CHANGE';
-    if (kind === 'BATCH_STATUS') return 'INSPECTION_HOLD';
-    return 'OTHER';
   }
 
   private async revise(userId: bigint, planId: bigint, instruction: string, triggerEventId?: bigint): Promise<TelegramReply> {

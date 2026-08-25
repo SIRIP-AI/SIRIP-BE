@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { messageText, normalizePlanResponse, planningMessages, planningProviderError } from './plan-generator';
+import { applyPlanExplanation, messageText, normalizePlanResponse, planningMessages, planningProviderError } from './plan-generator';
 
 const plan = '{"status":"NO_VALID_PROPOSAL_FOUND","reason":"No route"}';
 
@@ -58,4 +58,26 @@ test('logs sanitized Gemini provider errors while returning a safe request error
     if (previousModel === undefined) delete process.env.AI_MODEL;
     else process.env.AI_MODEL = previousModel;
   }
+});
+
+test('AI explanation replaces only bounded narrative fields', () => {
+  const proposal = {
+    summary: 'Deterministic fallback',
+    steps: [{ actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T12:00:00.000Z', rationale: 'Fallback action.', timingRationale: 'Fixed timing.', latestSafeAt: '2026-08-20T12:15:00.000Z' }],
+    timing: { status: 'ON_TIME', delayedBySeconds: 0, reasons: [] },
+  } as const;
+  const explained = applyPlanExplanation(JSON.stringify({ summary: 'Gunakan truk yang tersedia agar batch segera bergerak.', stepExplanations: [{ stepKey: 'step-1', rationale: 'Pemuatan menyiapkan batch untuk pengiriman langsung.' }] }), proposal as never);
+
+  assert.equal(explained.summary, 'Gunakan truk yang tersedia agar batch segera bergerak.');
+  assert.equal(explained.steps[0]?.rationale, 'Pemuatan menyiapkan batch untuk pengiriman langsung.');
+  assert.equal(explained.steps[0]?.scheduledAt, proposal.steps[0].scheduledAt);
+  assert.equal(explained.steps[0]?.timingRationale, proposal.steps[0].timingRationale);
+  assert.equal(explained.steps[0]?.latestSafeAt, proposal.steps[0].latestSafeAt);
+  assert.deepEqual(explained.timing, proposal.timing);
+});
+
+test('AI explanation rejects incomplete or unexpected step coverage', () => {
+  const proposal = { summary: 'Fallback', steps: [{ actionType: 'LOAD', batchId: '7', vehicleId: '2', scheduledAt: '2026-08-20T12:00:00.000Z', rationale: 'Fallback.' }] };
+  assert.throws(() => applyPlanExplanation(JSON.stringify({ summary: 'Insight', stepExplanations: [] }), proposal as never));
+  assert.throws(() => applyPlanExplanation(JSON.stringify({ summary: 'Insight', stepExplanations: [{ stepKey: 'other', rationale: 'Wrong step.' }] }), proposal as never));
 });

@@ -5,7 +5,7 @@ import type { PlanRepositoryPort, PlanValidator, PlanWorkflow, PlanWorkflowInput
 import { ConflictError } from '../../domain/errors';
 import { generateMultiDestinationCandidates, type PlanCandidate } from '../../domain/plans/plan-candidates';
 import { derivePlanningFacts, planSnapshot, type AiPlanResult, type PlanningContext, type PlanningFacts } from '../../domain/plans/plans';
-import { createPlanningModel, deterministicSelectionSummary, messageText, parsePlanSelection, planningMessages, type PlanningModel } from './plan-generator';
+import { applyPlanExplanation, createPlanExplanationModel, createPlanningModel, deterministicSelectionSummary, messageText, parsePlanSelection, planExplanationMessages, planningMessages, type PlanningModel } from './plan-generator';
 
 const PlanGraphState = Annotation.Root({
   userId: Annotation<string>(),
@@ -40,6 +40,7 @@ export type PlanGraphDependencies = {
   repository: Pick<PlanRepositoryPort, 'loadContext'>;
   validate: PlanValidator;
   model?: () => PlanningModel;
+  explanationModel?: () => PlanningModel;
 };
 
 function requireGenerationContext(context: PlanningContext) {
@@ -56,7 +57,9 @@ function noCandidateResult(): AiPlanResult {
   return { status: 'NO_VALID_PROPOSAL_FOUND', reason: 'Tidak ditemukan rencana yang layak secara fisik dalam horizon perencanaan tujuh hari. Periksa ketersediaan sumber daya, kapasitas, dan jendela operasional.' };
 }
 
-export function createPlanGraph({ repository, validate, model = createPlanningModel }: PlanGraphDependencies) {
+export function createPlanGraph(dependencies: PlanGraphDependencies) {
+  const { repository, validate, model = createPlanningModel } = dependencies;
+  const explanationModel = dependencies.explanationModel ?? (dependencies.model ? null : createPlanExplanationModel);
   const destinationScope = (state: typeof PlanGraphState.State) => state.destinationIds.length ? state.destinationIds : state.destinationId ? [state.destinationId] : [];
   const loadContext = async (state: typeof PlanGraphState.State) => {
     const loaded = await repository.loadContext(BigInt(state.userId), state.batchIds.map(BigInt), state.planId ? BigInt(state.planId) : undefined);
@@ -113,6 +116,18 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     const proposal = freshCandidates[0]!.proposal;
     return { result: { status: 'PROPOSAL' as const, ...proposal, summary: deterministicSelectionSummary(proposal, state.freshContext, state.instruction ?? undefined) } };
   };
+  const explainPlan = async (state: typeof PlanGraphState.State) => {
+    if (!state.result || state.result.status === 'NO_VALID_PROPOSAL_FOUND') return {};
+    if (!state.freshContext || !state.freshFacts) throw new Error('Fresh planning context is unavailable');
+    if (!explanationModel) return {};
+    try {
+      const response = await explanationModel().invoke(planExplanationMessages(state.freshContext, state.freshFacts, state.result, state.instruction ?? undefined));
+      return { result: { status: 'PROPOSAL' as const, ...applyPlanExplanation(messageText(response), state.result) } };
+    } catch {
+      console.warn('[AI plan explanation failed; using deterministic explanation]', { planId: state.planId });
+      return {};
+    }
+  };
 
   return new StateGraph(PlanGraphState, { input: PlanGraphInputSchema, output: PlanGraphOutputSchema })
     .addNode('load_context', loadContext)
@@ -122,6 +137,7 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     .addNode('refresh_context', refreshContext)
     .addNode('derive_fresh_planning_facts', deriveFreshFacts)
     .addNode('validate_or_fallback', validateOrFallback)
+    .addNode('explain_plan', explainPlan)
     .addEdge(START, 'load_context')
     .addEdge('load_context', 'derive_planning_facts')
     .addEdge('derive_planning_facts', 'generate_candidates')
@@ -129,7 +145,8 @@ export function createPlanGraph({ repository, validate, model = createPlanningMo
     .addEdge('select_candidate', 'refresh_context')
     .addEdge('refresh_context', 'derive_fresh_planning_facts')
     .addEdge('derive_fresh_planning_facts', 'validate_or_fallback')
-    .addEdge('validate_or_fallback', END)
+    .addEdge('validate_or_fallback', 'explain_plan')
+    .addEdge('explain_plan', END)
     .compile();
 }
 

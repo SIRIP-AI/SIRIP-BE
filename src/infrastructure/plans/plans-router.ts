@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import type { PlanService } from '../../application/plans/plan-service';
+import type { PlanChangeService } from '../../application/plans/plan-change-service';
 import { RequestError } from '../../domain/errors';
 import type { AuthLocals } from '../auth/auth-router';
 
@@ -52,7 +53,17 @@ function revisionInstruction(body: unknown) {
   return instruction;
 }
 
-export function createPlansRouter(service: PlanService) {
+function changeRequest(body: unknown) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('Isi permintaan harus berupa objek', 400);
+  const request = body as Record<string, unknown>;
+  if (Object.keys(request).some((key) => key !== 'instruction' && key !== 'idempotencyKey')) throw new RequestError('Isi permintaan memuat field yang tidak didukung', 400);
+  const instruction = typeof request.instruction === 'string' ? request.instruction.trim() : '';
+  if (!instruction || instruction.length > 2000) throw new RequestError('instruction harus berisi 1 sampai 2000 karakter', 400);
+  if (typeof request.idempotencyKey !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.idempotencyKey)) throw new RequestError('idempotencyKey harus berupa UUID', 400);
+  return { instruction, idempotencyKey: request.idempotencyKey };
+}
+
+export function createPlansRouter(service: PlanService, changes: PlanChangeService) {
   const router = Router();
   router.get('/', async (_request, response) => response.json(await service.list(userId(response.locals))));
   router.post('/proposals', async (request, response) => {
@@ -64,6 +75,10 @@ export function createPlansRouter(service: PlanService) {
   router.post('/:id/revisions', async (request, response) => {
     const result = await service.revise(userId(response.locals), id(request.params.id, 'Plan ID'), revisionInstruction(request.body));
     response.status(result.status === 'PROPOSAL' ? 201 : 200).json(result);
+  });
+  router.post('/:id/changes', async (request, response) => {
+    const input = changeRequest(request.body);
+    response.status(201).json(await changes.submit(userId(response.locals), id(request.params.id, 'Plan ID'), input.instruction, input.idempotencyKey));
   });
   router.post('/:id/approve', async (request, response) => response.json(await service.approve(userId(response.locals), id(request.params.id, 'Plan ID'))));
   router.post('/:id/dismiss', async (request, response) => response.json(await service.dismiss(userId(response.locals), id(request.params.id, 'Plan ID'))));

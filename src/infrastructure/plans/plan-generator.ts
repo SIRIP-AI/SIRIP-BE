@@ -1,6 +1,7 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
+import { z } from 'zod';
 
 import { RequestError } from '../../domain/errors';
 import type { PlanCandidate } from '../../domain/plans/plan-candidates';
@@ -38,6 +39,19 @@ const responseSchema = {
     additionalProperties: false,
     properties: { candidateId: { type: 'string' } },
     required: ['candidateId'],
+  },
+} as const;
+const explanationResponseSchema = {
+  name: 'sirip_plan_explanation',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      summary: { type: 'string' },
+      stepExplanations: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { stepKey: { type: 'string' }, rationale: { type: 'string' } }, required: ['stepKey', 'rationale'] } },
+    },
+    required: ['summary', 'stepExplanations'],
   },
 } as const;
 
@@ -91,7 +105,7 @@ function boundedProviderFetch(endpoint: string): typeof fetch {
   };
 }
 
-function createModel(modelVariable: 'AI_PLANNING_MODEL' | 'AI_TELEGRAM_MODEL', planning: boolean): PlanningModel {
+function createModel(modelVariable: 'AI_PLANNING_MODEL' | 'AI_TELEGRAM_MODEL', schema?: typeof responseSchema | typeof explanationResponseSchema): PlanningModel {
   const { endpoint, apiKey, model } = configuration(modelVariable);
   return new ChatOpenAI({
     apiKey,
@@ -99,13 +113,14 @@ function createModel(modelVariable: 'AI_PLANNING_MODEL' | 'AI_TELEGRAM_MODEL', p
     maxRetries: 0,
     timeout: timeoutMilliseconds,
     useResponsesApi: false,
-    modelKwargs: { response_format: planning ? { type: 'json_schema', json_schema: responseSchema } : { type: 'json_object' } },
+    modelKwargs: { response_format: schema ? { type: 'json_schema', json_schema: schema } : { type: 'json_object' } },
     configuration: { fetch: boundedProviderFetch(endpoint) },
   });
 }
 
-export const createPlanningModel = () => createModel('AI_PLANNING_MODEL', true);
-export const createTelegramModel = () => createModel('AI_TELEGRAM_MODEL', false);
+export const createPlanningModel = () => createModel('AI_PLANNING_MODEL', responseSchema);
+export const createPlanExplanationModel = () => createModel('AI_PLANNING_MODEL', explanationResponseSchema);
+export const createTelegramModel = () => createModel('AI_TELEGRAM_MODEL');
 
 function errorChain(error: unknown): unknown[] {
   const values: unknown[] = [];
@@ -153,6 +168,47 @@ export function planningMessages(context: PlanningContext, facts: PlanningFacts,
   const task = instruction ? `Select the candidate that best follows this operator instruction: ${JSON.stringify(instruction)}` : 'Select the preferable candidate.';
   const activeCommitments = (context.resourceOccupancies ?? []).map(({ resourceType, resourceId, start, end, destinationId, dispatchAt }) => ({ resourceType, resourceId, start, end, ...(destinationId ? { destinationId } : {}), ...(dispatchAt ? { dispatchAt } : {}) }));
   return [new SystemMessage(systemPrompt), new HumanMessage(`${task}\nDeterministic planning facts:\n${JSON.stringify(facts)}\nActive resource commitments:\n${JSON.stringify(activeCommitments)}\nCurrent plan:\n${JSON.stringify(context.currentPlan)}\nCandidates:\n${JSON.stringify(candidates)}`)];
+}
+
+const explanation = z.object({
+  summary: z.string().trim().min(1).max(1000),
+  stepExplanations: z.array(z.object({ stepKey: z.string(), rationale: z.string().trim().min(1).max(500) }).strict()),
+}).strict();
+
+export function planExplanationMessages(context: PlanningContext, facts: PlanningFacts, proposal: PlanCandidate['proposal'], instruction?: string) {
+  const steps = proposal.steps.map((step, index) => ({
+    stepKey: `step-${index + 1}`,
+    actionType: step.actionType,
+    batchId: step.batchId,
+    coldStorageId: step.coldStorageId,
+    vehicleId: step.vehicleId,
+    destinationId: step.destinationId,
+    scheduledAt: step.scheduledAt,
+    latestSafeAt: step.latestSafeAt,
+  }));
+  const explanationContext = {
+    operatorInstruction: instruction ?? null,
+    deadline: context.deadline,
+    batches: context.batches.map(({ id, code, weightKg, grade, quality }) => ({ id, code, weightKg, grade, quality })),
+    vehicles: context.vehicles.map(({ id, code, capacityKg, operationalStatus, delayMinutes }) => ({ id, code, capacityKg, operationalStatus, delayMinutes })),
+    coldStorages: context.coldStorages.map(({ id, name, capacityKg, availableCapacityKg, operationalStatus }) => ({ id, name, capacityKg, availableCapacityKg, operationalStatus })),
+    destinations: context.destinations.map(({ id, name, travelMinutes, receivingIntervals, status }) => ({ id, name, travelMinutes, receivingIntervals, status })),
+    planningFacts: facts,
+    timing: proposal.timing,
+    steps,
+  };
+  const system = `You explain one already-selected SIRIP cold-chain plan in clear Indonesian for an operations coordinator. The deterministic application owns every action, resource, time, deadline, quality value, and warning. You may not alter, recommend alternatives to, or invent any operational fact. Write one concise high-level summary explaining the strategy and its main constraints, plus one rationale for why each supplied step supports that strategy. Return strict JSON with summary and stepExplanations. Use every supplied stepKey exactly once. Do not include markdown, approval claims, safety guarantees, or facts absent from the JSON data.`;
+  return [new SystemMessage(system), new HumanMessage(JSON.stringify(explanationContext))];
+}
+
+export function applyPlanExplanation(content: string, proposal: PlanCandidate['proposal']) {
+  const parsed = explanation.parse(JSON.parse(normalizePlanResponse(content)));
+  const expected = proposal.steps.map((_, index) => `step-${index + 1}`);
+  if (parsed.stepExplanations.length !== expected.length || new Set(parsed.stepExplanations.map(({ stepKey }) => stepKey)).size !== expected.length || parsed.stepExplanations.some(({ stepKey }) => !expected.includes(stepKey))) {
+    throw new RequestError('Penjelasan rencana AI tidak mencakup langkah yang tepat', 502);
+  }
+  const byKey = new Map(parsed.stepExplanations.map((item) => [item.stepKey, item.rationale]));
+  return { ...proposal, summary: parsed.summary, steps: proposal.steps.map((step, index) => ({ ...step, rationale: byKey.get(`step-${index + 1}`)! })) };
 }
 
 export function parsePlanSelection(content: string, candidates: PlanCandidate[]) {
