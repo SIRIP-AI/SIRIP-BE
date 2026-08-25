@@ -40,6 +40,15 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    command: http http://api:3000 --url=${NGROK_DOMAIN}
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -57,7 +66,7 @@ services:
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-sirip-ai}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PUBLIC_BASE_URL: https://${NGROK_DOMAIN}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
     ports:
